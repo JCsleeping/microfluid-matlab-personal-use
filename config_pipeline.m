@@ -126,6 +126,9 @@ function config = config_pipeline(varargin)
     config.visualization.figure_format = 'png';    % 'png' | 'svg' | 'fig'
     config.visualization.colormap_blobs = 'jet';
 
+    % --- Parallel processing (requires Parallel Computing Toolbox) ---
+    config.parallel.enabled = false;        % true: 使用 parfor 多核并行处理帧
+
     %% ---- Apply user overrides (do not modify below) -----------------------
     for k = 1:2:numel(varargin)
         field_path = varargin{k};
