@@ -127,7 +127,12 @@ function config = config_pipeline(varargin)
     config.visualization.colormap_blobs = 'jet';
 
     % --- Parallel processing (requires Parallel Computing Toolbox) ---
-    config.parallel.enabled = false;        % true: 使用 parfor 多核并行处理帧
+    config.parallel.enabled     = false;    % true: 使用 parfor 多核并行处理帧
+    config.parallel.num_workers = 4;        % 并行工作进程数（建议 CPU 核数的一半）
+
+    % --- Checkpoint / resume (大数据集断点续传) ---
+    config.output.checkpoint    = false;    % true: 定期保存 checkpoint，支持中断恢复
+    config.output.save_interval = 50;       % 每 N 帧保存一次 checkpoint
 
     %% ---- Apply user overrides (do not modify below) -----------------------
     for k = 1:2:numel(varargin)

@@ -39,6 +39,11 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     %% ================================================================
     %  Frame 1: establish threshold (must run first, always sequential)
     %  ================================================================
+    % Check registration config
+    do_registration = isfield(config, 'registration') && ...
+                      isfield(config.registration, 'method') && ...
+                      ~strcmpi(config.registration.method, 'none');
+
     fprintf('\n  --- Frame 1 / %d ---\n', num_frames);
     rgb = load_frame(1, frame_index);
     [rgb_rot, ~, ~] = rotate_and_crop(rgb, config);
@@ -47,6 +52,7 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     if size(rgb_corr,1) ~= size(flow_domain,1) || size(rgb_corr,2) ~= size(flow_domain,2)
         rgb_corr = imresize(rgb_corr, size(flow_domain));
     end
+    ref_image = rgb_corr;  % Frame 1 as registration reference
 
     if endsWith(config.segmentation.method, '_v2')
         [dnapl_mask, ~, seg_info_1] = segment_DNAPL_v2(rgb_corr, flow_domain, config);
@@ -74,7 +80,8 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
         % --- Parallel mode ---
         pool = gcp('nocreate');
         if isempty(pool)
-            pool = parpool('local');
+            n_workers = config.parallel.num_workers;
+            pool = parpool('local', n_workers);
         end
         fprintf('\n  Parallel mode: %d workers\n', pool.NumWorkers);
 
@@ -90,6 +97,9 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
                 config_locked.illumination.method, config_locked.illumination);
             if size(rgb_corr_t,1) ~= size(flow_domain,1) || size(rgb_corr_t,2) ~= size(flow_domain,2)
                 rgb_corr_t = imresize(rgb_corr_t, size(flow_domain));
+            end
+            if do_registration
+                [rgb_corr_t, ~] = align_images(rgb_corr_t, ref_image, config_locked);
             end
 
             if is_v2
@@ -114,7 +124,33 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
         config_locked = config;
         config_locked.segmentation.fixed_threshold = locked_threshold;
 
-        for t = 2:num_frames
+        % Checkpoint: check for resume
+        start_frame = 2;
+        do_checkpoint = isfield(config, 'output') && ...
+                        isfield(config.output, 'checkpoint') && ...
+                        config.output.checkpoint;
+        if do_checkpoint
+            cp_dir = config.output_path;
+            if ~isfolder(cp_dir), mkdir(cp_dir); end
+            cp_files = dir(fullfile(cp_dir, 'checkpoint_*.mat'));
+            if ~isempty(cp_files)
+                [~, idx] = sort({cp_files.name});
+                cp_latest = fullfile(cp_dir, cp_files(idx(end)).name);
+                cp_data = load(cp_latest, 'sn_arr', 'nblobs_arr', 'mbs_arr', ...
+                               'iface_arr', 'masks_arr', 'last_frame');
+                sn_arr     = cp_data.sn_arr;
+                nblobs_arr = cp_data.nblobs_arr;
+                mbs_arr    = cp_data.mbs_arr;
+                iface_arr  = cp_data.iface_arr;
+                masks_arr  = cp_data.masks_arr;
+                start_frame = cp_data.last_frame + 1;
+                fprintf('  Checkpoint: resuming from frame %d (%s)\n', ...
+                    start_frame, cp_files(idx(end)).name);
+            end
+            save_interval = config.output.save_interval;
+        end
+
+        for t = start_frame:num_frames
             fprintf('\n  --- Frame %d / %d ---\n', t, num_frames);
             rgb_t = load_frame(t, frame_index);
             [rgb_rot_t, ~, ~] = rotate_and_crop(rgb_t, config_locked);
@@ -122,6 +158,9 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
                 config_locked.illumination.method, config_locked.illumination);
             if size(rgb_corr_t,1) ~= size(flow_domain,1) || size(rgb_corr_t,2) ~= size(flow_domain,2)
                 rgb_corr_t = imresize(rgb_corr_t, size(flow_domain));
+            end
+            if do_registration
+                [rgb_corr_t, ~] = align_images(rgb_corr_t, ref_image, config);
             end
 
             if endsWith(config.segmentation.method, '_v2')
@@ -138,6 +177,15 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
             mbs_arr(t) = blob_t.size_distribution.mean;
             iface_t = analyze_interfaces(mask_t, flow_domain, px, config_locked);
             iface_arr(t) = iface_t.dnapl_water_length_px;
+
+            % Checkpoint save
+            if do_checkpoint && mod(t, save_interval) == 0
+                last_frame = t; %#ok<NASGU>
+                cp_file = fullfile(cp_dir, sprintf('checkpoint_%04d.mat', t));
+                save(cp_file, 'sn_arr', 'nblobs_arr', 'mbs_arr', ...
+                     'iface_arr', 'masks_arr', 'last_frame', '-v7.3');
+                fprintf('  Checkpoint saved: %s\n', cp_file);
+            end
         end
     end
 
@@ -163,12 +211,13 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
         sol.change(t-1).net_px       = sol.change(t-1).appeared_px - sol.change(t-1).dissolved_px;
     end
 
-    %% Mass dissolved
+    %% Mass dissolved — cumulative time series
     depth = config.physical.depth;
     rho   = config.physical.dnapl_density;
     pore_vol = sum(flow_domain(:)) * px^2 * depth;
-    sol.mass_dissolved = (sol.saturation_vs_time(1) - sol.saturation_vs_time(end)) ...
-                         * pore_vol * rho;
+    sol.mass_dissolved_vs_time = (sol.saturation_vs_time(1) - sol.saturation_vs_time) ...
+                                 * pore_vol * rho;  % cumulative [kg]
+    sol.mass_dissolved = sol.mass_dissolved_vs_time(end);  % backward compat
 
     fprintf('\n  Solubilization complete. Sn: %.3f -> %.3f (%.1f%% removed)\n', ...
         sol.saturation_vs_time(1), sol.saturation_vs_time(end), ...
