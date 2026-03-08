@@ -63,6 +63,7 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     fprintf('  >> Threshold locked at %.4f (from frame 1)\n', locked_threshold);
 
     masks_arr{1} = dnapl_mask;
+    fd_size = [size(flow_domain,1), size(flow_domain,2)];  % reference size for all masks
     sat = calculate_saturation(dnapl_mask, flow_domain, px);
     sn_arr(1) = sat.Sn;
     blob = analyze_blob_geometry(dnapl_mask, px);
@@ -108,6 +109,10 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
                 [mask_t, ~, ~] = segment_DNAPL(rgb_corr_t, flow_domain, config_locked);
             end
             masks_arr{t} = mask_t;
+            % Ensure mask matches flow_domain size
+            if size(mask_t,1) ~= fd_size(1) || size(mask_t,2) ~= fd_size(2)
+                masks_arr{t} = imresize(mask_t, fd_size, 'nearest') > 0;
+            end
 
             sat_t = calculate_saturation(mask_t, flow_domain, px);
             sn_arr(t) = sat_t.Sn;
@@ -169,6 +174,9 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
                 [mask_t, ~, ~] = segment_DNAPL(rgb_corr_t, flow_domain, config_locked);
             end
             masks_arr{t} = mask_t;
+            if size(mask_t,1) ~= fd_size(1) || size(mask_t,2) ~= fd_size(2)
+                masks_arr{t} = imresize(mask_t, fd_size, 'nearest') > 0;
+            end
 
             sat_t = calculate_saturation(mask_t, flow_domain, px);
             sn_arr(t) = sat_t.Sn;
@@ -204,8 +212,14 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     %% Change detection (sequential — needs consecutive frames)
     sol.change = struct('dissolved_px', [], 'appeared_px', [], 'net_px', []);
     for t = 2:num_frames
-        dissolved  = sol.masks{t-1} &  ~sol.masks{t};
-        appeared   = ~sol.masks{t-1} &  sol.masks{t};
+        m_prev = sol.masks{t-1};
+        m_curr = sol.masks{t};
+        % Guard: resize if masks differ (e.g. from different TIF files)
+        if ~isequal(size(m_prev), size(m_curr))
+            m_curr = imresize(m_curr, size(m_prev), 'nearest') > 0;
+        end
+        dissolved  = m_prev &  ~m_curr;
+        appeared   = ~m_prev &  m_curr;
         sol.change(t-1).dissolved_px = sum(dissolved(:));
         sol.change(t-1).appeared_px  = sum(appeared(:));
         sol.change(t-1).net_px       = sol.change(t-1).appeared_px - sol.change(t-1).dissolved_px;
