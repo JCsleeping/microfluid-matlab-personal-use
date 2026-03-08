@@ -70,12 +70,19 @@ function export_results(results, output_path, formats, config)
                     try
                         sol = results.solubilization;
                         fname = fullfile(output_path, ['timeseries_' timestamp '.csv']);
-                        T = table(results.time_vector(:), ...
+                        % Build base columns
+                        cols = {results.time_vector(:), ...
                             sol.saturation_vs_time, ...
                             sol.num_blobs_vs_time, ...
                             sol.mean_blob_size_vs_time, ...
-                            sol.interface_area_vs_time, ...
-                            'VariableNames', {'Time','Sn','NumBlobs','MeanBlobSize','InterfaceArea'});
+                            sol.interface_area_vs_time};
+                        names = {'Time','Sn','NumBlobs','MeanBlobSize','InterfaceArea'};
+                        % Append mass curve if available
+                        if isfield(sol, 'mass_dissolved_vs_time')
+                            cols{end+1} = sol.mass_dissolved_vs_time;
+                            names{end+1} = 'MassDissolvedKg';
+                        end
+                        T = table(cols{:}, 'VariableNames', names);
                         writetable(T, fname);
                         fprintf('  Saved: %s\n', fname);
                     catch ME
@@ -95,12 +102,17 @@ function export_results(results, output_path, formats, config)
                     end
                     if isfield(results, 'solubilization')
                         sol = results.solubilization;
-                        T = table(results.time_vector(:), ...
+                        cols = {results.time_vector(:), ...
                             sol.saturation_vs_time, ...
                             sol.num_blobs_vs_time, ...
                             sol.mean_blob_size_vs_time, ...
-                            sol.interface_area_vs_time, ...
-                            'VariableNames', {'Time','Sn','NumBlobs','MeanBlobSize','InterfaceArea'});
+                            sol.interface_area_vs_time};
+                        names = {'Time','Sn','NumBlobs','MeanBlobSize','InterfaceArea'};
+                        if isfield(sol, 'mass_dissolved_vs_time')
+                            cols{end+1} = sol.mass_dissolved_vs_time;
+                            names{end+1} = 'MassDissolvedKg';
+                        end
+                        T = table(cols{:}, 'VariableNames', names);
                         writetable(T, fname, 'Sheet', 'Time Series');
                     end
                     fprintf('  Saved: %s\n', fname);

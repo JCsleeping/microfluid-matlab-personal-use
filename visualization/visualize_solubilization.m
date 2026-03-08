@@ -63,31 +63,43 @@ function fig = visualize_solubilization(sol, time_vector, config)
         text(0.5, 0.5, 'Need >= 2 frames', 'HorizontalAlignment', 'center');
     end
 
-    %% Panel 6: Summary
+    %% Panel 6: Cumulative dissolved mass OR summary
     subplot(2,3,6);
-    axis off;
-    Sn0 = sol.saturation_vs_time(1);
-    Snf = sol.saturation_vs_time(end);
-    reduction = (1 - Snf / max(Sn0, eps)) * 100;
-
-    txt = {
-        'Solubilization Summary'
-        '----------------------------'
-        sprintf('Initial S_n:    %.4f', Sn0)
-        sprintf('Final S_n:      %.4f', Snf)
-        sprintf('Reduction:      %.1f%%', reduction)
-        ''
-        sprintf('Initial blobs:  %d', sol.num_blobs_vs_time(1))
-        sprintf('Final blobs:    %d', sol.num_blobs_vs_time(end))
-    };
-
-    if isfield(sol, 'mass_dissolved') && ~isnan(sol.mass_dissolved)
-        txt{end+1} = '';
-        txt{end+1} = sprintf('Mass dissolved: %.2e kg', sol.mass_dissolved);
+    if isfield(sol, 'mass_dissolved_vs_time') && any(sol.mass_dissolved_vs_time ~= 0)
+        plot(tv, sol.mass_dissolved_vs_time * 1e6, 'r-p', 'LineWidth', 2, 'MarkerSize', 6);
+        xlabel('Time');
+        ylabel('Dissolved Mass [\mug]');
+        title('Cumulative Dissolved Mass', 'FontSize', 11);
+        grid on;
+        % Add summary text as annotation
+        Sn0 = sol.saturation_vs_time(1);
+        Snf = sol.saturation_vs_time(end);
+        reduction = (1 - Snf / max(Sn0, eps)) * 100;
+        annotation_txt = sprintf('S_n: %.3f→%.3f (−%.0f%%),  m=%.2e kg', ...
+            Sn0, Snf, reduction, sol.mass_dissolved);
+        xlabel({annotation_txt, 'Time'}, 'FontSize', 9);
+    else
+        axis off;
+        Sn0 = sol.saturation_vs_time(1);
+        Snf = sol.saturation_vs_time(end);
+        reduction = (1 - Snf / max(Sn0, eps)) * 100;
+        txt = {
+            'Solubilization Summary'
+            '----------------------------'
+            sprintf('Initial S_n:    %.4f', Sn0)
+            sprintf('Final S_n:      %.4f', Snf)
+            sprintf('Reduction:      %.1f%%', reduction)
+            ''
+            sprintf('Initial blobs:  %d', sol.num_blobs_vs_time(1))
+            sprintf('Final blobs:    %d', sol.num_blobs_vs_time(end))
+        };
+        if isfield(sol, 'mass_dissolved') && ~isnan(sol.mass_dissolved)
+            txt{end+1} = '';
+            txt{end+1} = sprintf('Mass dissolved: %.2e kg', sol.mass_dissolved);
+        end
+        text(0.05, 0.95, txt, 'VerticalAlignment', 'top', ...
+            'FontSize', 10, 'FontName', 'FixedWidth');
     end
-
-    text(0.05, 0.95, txt, 'VerticalAlignment', 'top', ...
-        'FontSize', 10, 'FontName', 'FixedWidth');
 
     sgtitle('DNAPL Dissolution Dynamics', 'FontSize', 14, 'FontWeight', 'bold');
 
