@@ -34,7 +34,7 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     nblobs_arr = zeros(num_frames, 1);
     mbs_arr    = zeros(num_frames, 1);
     iface_arr  = zeros(num_frames, 1);
-    masks_arr  = cell(num_frames, 1);  % stores bwpack'd masks (lossless compression)
+    masks_arr  = cell(num_frames, 1);
 
     %% ================================================================
     %  Frame 1: establish threshold (must run first, always sequential)
@@ -62,8 +62,7 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     locked_threshold = seg_info_1.threshold;
     fprintf('  >> Threshold locked at %.4f (from frame 1)\n', locked_threshold);
 
-    mask_size = size(dnapl_mask);  % save dimensions for bwunpack
-    masks_arr{1} = bwpack(dnapl_mask);
+    masks_arr{1} = dnapl_mask;
     sat = calculate_saturation(dnapl_mask, flow_domain, px);
     sn_arr(1) = sat.Sn;
     blob = analyze_blob_geometry(dnapl_mask, px);
@@ -108,7 +107,7 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
             else
                 [mask_t, ~, ~] = segment_DNAPL(rgb_corr_t, flow_domain, config_locked);
             end
-            masks_arr{t} = bwpack(mask_t);
+            masks_arr{t} = mask_t;
 
             sat_t = calculate_saturation(mask_t, flow_domain, px);
             sn_arr(t) = sat_t.Sn;
@@ -169,7 +168,7 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
             else
                 [mask_t, ~, ~] = segment_DNAPL(rgb_corr_t, flow_domain, config_locked);
             end
-            masks_arr{t} = bwpack(mask_t);
+            masks_arr{t} = mask_t;
 
             sat_t = calculate_saturation(mask_t, flow_domain, px);
             sn_arr(t) = sat_t.Sn;
@@ -196,7 +195,6 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     sol.mean_blob_size_vs_time = mbs_arr;
     sol.interface_area_vs_time = iface_arr;
     sol.masks                  = masks_arr;
-    sol.mask_size               = mask_size;  % for bwunpack
 
     %% Dissolution rate: dSn/dt
     dt = diff(time_vector(:));
@@ -206,10 +204,8 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     %% Change detection (sequential — needs consecutive frames)
     sol.change = struct('dissolved_px', [], 'appeared_px', [], 'net_px', []);
     for t = 2:num_frames
-        prev_mask  = bwunpack(sol.masks{t-1}, mask_size(1));
-        curr_mask  = bwunpack(sol.masks{t},   mask_size(1));
-        dissolved  = prev_mask &  ~curr_mask;
-        appeared   = ~prev_mask &  curr_mask;
+        dissolved  = sol.masks{t-1} &  ~sol.masks{t};
+        appeared   = ~sol.masks{t-1} &  sol.masks{t};
         sol.change(t-1).dissolved_px = sum(dissolved(:));
         sol.change(t-1).appeared_px  = sum(appeared(:));
         sol.change(t-1).net_px       = sol.change(t-1).appeared_px - sol.change(t-1).dissolved_px;
