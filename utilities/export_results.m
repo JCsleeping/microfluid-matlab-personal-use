@@ -1,14 +1,17 @@
-function export_results(results, output_path, formats)
+function export_results(results, output_path, formats, config)
 % EXPORT_RESULTS  Save analysis results to files.
 %
 %   export_results(results, output_path, formats)
+%   export_results(results, output_path, formats, config)
 %
 %   Inputs:
 %       results     - Pipeline results struct
 %       output_path - Directory to save files
 %       formats     - Cell array of format strings: 'mat', 'csv', 'xlsx'
+%       config      - (optional) Pipeline config struct, saved in .mat
 
     if nargin < 3, formats = {'mat', 'csv'}; end
+    if nargin < 4, config = []; end
     if ~isfolder(output_path), mkdir(output_path); end
 
     timestamp = datestr(now, 'yyyymmdd_HHMMSS');
@@ -18,7 +21,11 @@ function export_results(results, output_path, formats)
             case 'mat'
                 try
                     fname = fullfile(output_path, ['results_' timestamp '.mat']);
-                    save(fname, 'results', '-v7.3');
+                    if ~isempty(config)
+                        save(fname, 'results', 'config', '-v7.3');
+                    else
+                        save(fname, 'results', '-v7.3');
+                    end
                     fprintf('  Saved: %s\n', fname);
                 catch ME
                     warning('export_results:saveFailed', ...

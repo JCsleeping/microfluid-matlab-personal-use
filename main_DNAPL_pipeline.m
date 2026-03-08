@@ -459,7 +459,7 @@ function results = main_DNAPL_pipeline(config)
     %  ====================================================================
     fprintf('\n\nSTEP 5: Exporting Results\n');
     fprintf('--------------------------------------------------------\n');
-    export_results(results, config.output_path, {'mat', 'csv'});
+    export_results(results, config.output_path, {'mat', 'csv'}, config);
     generate_report(results, config);
 
     %% ====================================================================
