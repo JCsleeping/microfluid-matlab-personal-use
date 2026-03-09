@@ -127,8 +127,9 @@ function config = config_pipeline(varargin)
     config.visualization.colormap_blobs = 'jet';
 
     % --- Parallel processing (requires Parallel Computing Toolbox) ---
-    config.parallel.enabled     = false;    % true: 使用 parfor 多核并行处理帧
-    config.parallel.num_workers = 4;        % 并行工作进程数（建议 CPU 核数的一半）
+    config.parallel.enabled     = true;     % true: 使用 parfor 多核并行处理帧
+    config.parallel.num_workers = 8;        % 并行工作进程数（建议 CPU 核数的一半）
+    config.parallel.use_gpu     = true;     % true: GPU 加速形态学运算（需 NVIDIA GPU）
 
     % --- Checkpoint / resume (大数据集断点续传) ---
     config.output.checkpoint    = false;    % true: 定期保存 checkpoint，支持中断恢复

@@ -52,7 +52,17 @@ function [corrected, illum] = correct_morphological(img, kernel_size)
 
     % Estimate illumination from grayscale
     gray = rgb2gray(im2uint8(img));
-    illum = im2double(imopen(gray, se));
+
+    % GPU acceleration for imopen (heaviest operation)
+    try
+        if gpuDeviceCount > 0
+            illum = im2double(gather(imopen(gpuArray(gray), se)));
+        else
+            illum = im2double(imopen(gray, se));
+        end
+    catch
+        illum = im2double(imopen(gray, se));
+    end
     illum(illum < 0.01) = 0.01;  % avoid division by zero
 
     mean_illum = mean(illum(:));

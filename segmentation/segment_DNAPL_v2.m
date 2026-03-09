@@ -50,8 +50,18 @@ function [dnapl_mask, confidence_map, seg_info] = segment_DNAPL_v2(ref_image, fl
 
     bg = flow_domain & ~mask_red;               % background in pore space
     se = strel('disk', fill_r);
-    bg_eroded = imerode(bg, se);                 % destroy small fragments
-    bg_reconstructed = imreconstruct(bg_eroded, bg);  % recover survivors
+
+    % GPU-accelerated erosion (auto-fallback to CPU)
+    try
+        if gpuDeviceCount > 0
+            bg_eroded = gather(imerode(gpuArray(bg), se));
+        else
+            bg_eroded = imerode(bg, se);
+        end
+    catch
+        bg_eroded = imerode(bg, se);
+    end
+    bg_reconstructed = imreconstruct(bg_eroded, bg);  % CPU (GPU support limited)
     holes = bg & ~bg_reconstructed;              % what was destroyed = holes
 
     hole_px = sum(holes(:));
