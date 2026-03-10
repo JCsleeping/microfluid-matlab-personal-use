@@ -131,7 +131,6 @@ function config = config_pipeline(varargin)
     config.parallel.num_workers = 8;        % 并行工作进程数
     config.parallel.use_gpu     = true;     % true: GPU 加速（主线程安全，parfor 内自动禁用）
     %   ⚠ parfor + GPU 并发会导致堆损坏(0xc0000374)，代码已做防护
-    config.illumination.use_gpu  = config.parallel.use_gpu;  % 同步到 illumination 参数
 
     % --- Checkpoint / resume (大数据集断点续传) ---
     config.output.checkpoint    = false;    % true: 定期保存 checkpoint，支持中断恢复
@@ -143,6 +142,9 @@ function config = config_pipeline(varargin)
         value      = varargin{k+1};
         config     = setfield_nested(config, field_path, value);
     end
+
+    %% Sync derived settings (must be AFTER user overrides)
+    config.illumination.use_gpu = config.parallel.use_gpu;
 
     %% Validate configuration
     config = validate_config(config);
