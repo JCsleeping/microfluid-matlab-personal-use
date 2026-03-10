@@ -21,16 +21,15 @@ function export_results(results, output_path, formats, config)
             case 'mat'
                 try
                     fname = fullfile(output_path, ['results_' timestamp '.mat']);
-                    % Strip bulky masks before saving to avoid OOM on serialize
-                    results_save = results;
-                    if isfield(results_save, 'solubilization') && ...
-                            isfield(results_save.solubilization, 'masks')
-                        results_save.solubilization = rmfield(results_save.solubilization, 'masks');
+                    % Strip bulky masks before saving (copy-on-write: caller unaffected)
+                    if isfield(results, 'solubilization') && ...
+                            isfield(results.solubilization, 'masks')
+                        results.solubilization = rmfield(results.solubilization, 'masks');
                     end
                     if ~isempty(config)
-                        save(fname, 'results_save', 'config', '-v7.3');
+                        save(fname, 'results', 'config', '-v7.3');
                     else
-                        save(fname, 'results_save', '-v7.3');
+                        save(fname, 'results', '-v7.3');
                     end
                     fprintf('  Saved: %s (masks excluded to reduce size)\n', fname);
                 catch ME

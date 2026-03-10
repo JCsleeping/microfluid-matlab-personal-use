@@ -20,7 +20,7 @@ function [corrected, illumination_field] = correct_illumination(rgb_image, metho
         if isfield(params, 'use_gpu')
             use_gpu = params.use_gpu;
         else
-            use_gpu = true;
+            use_gpu = false;  % safe default: no GPU unless explicitly enabled
         end
     end
 
