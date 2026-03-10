@@ -1,4 +1,4 @@
-function [corrected, illumination_field] = correct_illumination(rgb_image, method, params)
+function [corrected, illumination_field] = correct_illumination(rgb_image, method, params, use_gpu)
 % CORRECT_ILLUMINATION  Correct non-uniform illumination across an RGB image.
 %
 %   [corrected, illumination_field] = correct_illumination(rgb_image, method, params)
@@ -15,6 +15,14 @@ function [corrected, illumination_field] = correct_illumination(rgb_image, metho
 
     if nargin < 2 || isempty(method), method = 'morphological'; end
     if nargin < 3, params = struct(); end
+    if nargin < 4
+        % Default: read from params if available, else true (backward compat)
+        if isfield(params, 'use_gpu')
+            use_gpu = params.use_gpu;
+        else
+            use_gpu = true;
+        end
+    end
 
     img_double = im2double(rgb_image);
 
@@ -24,7 +32,7 @@ function [corrected, illumination_field] = correct_illumination(rgb_image, metho
             if isfield(params, 'kernel_size')
                 kernel_size = params.kernel_size;
             end
-            [corrected, illumination_field] = correct_morphological(img_double, kernel_size);
+            [corrected, illumination_field] = correct_morphological(img_double, kernel_size, use_gpu);
 
         case 'polynomial'
             poly_order = 3;
@@ -43,9 +51,11 @@ function [corrected, illumination_field] = correct_illumination(rgb_image, metho
 end
 
 
-function [corrected, illum] = correct_morphological(img, kernel_size)
+function [corrected, illum] = correct_morphological(img, kernel_size, use_gpu)
 % Estimate background illumination via morphological opening on each
-% channel, then normalize.
+% channel, then normalize. Supports optional GPU acceleration.
+
+    if nargin < 3, use_gpu = true; end
 
     se = strel('disk', kernel_size);
     corrected = zeros(size(img));
@@ -53,14 +63,18 @@ function [corrected, illum] = correct_morphological(img, kernel_size)
     % Estimate illumination from grayscale
     gray = rgb2gray(im2uint8(img));
 
-    % GPU acceleration for imopen (heaviest operation)
-    try
-        if gpuDeviceCount > 0
-            illum = im2double(gather(imopen(gpuArray(gray), se)));
-        else
+    % GPU acceleration for imopen (only when use_gpu=true and GPU available)
+    if use_gpu
+        try
+            if gpuDeviceCount > 0
+                illum = im2double(gather(imopen(gpuArray(gray), se)));
+            else
+                illum = im2double(imopen(gray, se));
+            end
+        catch
             illum = im2double(imopen(gray, se));
         end
-    catch
+    else
         illum = im2double(imopen(gray, se));
     end
     illum(illum < 0.01) = 0.01;  % avoid division by zero

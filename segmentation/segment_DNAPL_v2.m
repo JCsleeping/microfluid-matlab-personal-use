@@ -51,14 +51,23 @@ function [dnapl_mask, confidence_map, seg_info] = segment_DNAPL_v2(ref_image, fl
     bg = flow_domain & ~mask_red;               % background in pore space
     se = strel('disk', fill_r);
 
-    % GPU-accelerated erosion (auto-fallback to CPU)
-    try
-        if gpuDeviceCount > 0
-            bg_eroded = gather(imerode(gpuArray(bg), se));
-        else
+    % GPU config (defensive: default false if field missing)
+    use_gpu = isfield(config, 'parallel') && ...
+              isfield(config.parallel, 'use_gpu') && ...
+              config.parallel.use_gpu;
+
+    % GPU-accelerated erosion (only when use_gpu=true and GPU available)
+    if use_gpu
+        try
+            if gpuDeviceCount > 0
+                bg_eroded = gather(imerode(gpuArray(bg), se));
+            else
+                bg_eroded = imerode(bg, se);
+            end
+        catch
             bg_eroded = imerode(bg, se);
         end
-    catch
+    else
         bg_eroded = imerode(bg, se);
     end
     bg_reconstructed = imreconstruct(bg_eroded, bg);  % CPU (GPU support limited)

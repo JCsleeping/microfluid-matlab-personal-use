@@ -89,13 +89,16 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
         % Prepare config with locked threshold
         config_locked = config;
         config_locked.segmentation.fixed_threshold = locked_threshold;
+        % CRITICAL: disable GPU inside parfor — multiple workers hitting
+        % the same GPU causes heap corruption (exit 0xc0000374)
+        config_locked.parallel.use_gpu = false;
         is_v2 = endsWith(config.segmentation.method, '_v2');
 
         parfor t = 2:num_frames
             rgb_t = load_frame(t, frame_index);
             [rgb_rot_t, ~, ~] = rotate_and_crop(rgb_t, config_locked);
             [rgb_corr_t, ~]   = correct_illumination(rgb_rot_t, ...
-                config_locked.illumination.method, config_locked.illumination);
+                config_locked.illumination.method, config_locked.illumination, false);
             if size(rgb_corr_t,1) ~= size(flow_domain,1) || size(rgb_corr_t,2) ~= size(flow_domain,2)
                 rgb_corr_t = imresize(rgb_corr_t, size(flow_domain));
             end
@@ -223,6 +226,15 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
         sol.change(t-1).dissolved_px = sum(dissolved(:));
         sol.change(t-1).appeared_px  = sum(appeared(:));
         sol.change(t-1).net_px       = sol.change(t-1).appeared_px - sol.change(t-1).dissolved_px;
+    end
+
+    %% Free mask memory — keep only first and last for visualization
+    if num_frames > 2
+        first_mask = sol.masks{1};
+        last_mask  = sol.masks{num_frames};
+        sol.masks = cell(num_frames, 1);  % release all
+        sol.masks{1} = first_mask;
+        sol.masks{num_frames} = last_mask;
     end
 
     %% Mass dissolved — cumulative time series
