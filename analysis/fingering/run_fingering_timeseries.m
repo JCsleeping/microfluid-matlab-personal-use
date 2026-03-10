@@ -324,7 +324,7 @@ function results_k = load_and_segment_frame_internal(results, config, fidx, fram
 
     [rgb_rot, ~, ~] = rotate_and_crop(rgb, config);
     [rgb_corr, ~]   = correct_illumination(rgb_rot, ...
-        config.illumination.method, config.illumination);
+        config.illumination.method, config.illumination, config.parallel.use_gpu);
 
     [H_fd, W_fd] = size(results.flow_domain);
     if size(rgb_corr, 1) ~= H_fd || size(rgb_corr, 2) ~= W_fd

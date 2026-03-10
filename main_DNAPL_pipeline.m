@@ -41,9 +41,6 @@ function results = main_DNAPL_pipeline(config)
     pipeline_root = fileparts(mfilename('fullpath'));
     addpath(genpath(pipeline_root));
 
-    % Sync GPU flag: config.parallel.use_gpu is the single source of truth
-    config.illumination.use_gpu = config.parallel.use_gpu;
-
     % Ensure output directory exists
     if ~isfolder(config.output_path)
         mkdir(config.output_path);
@@ -339,7 +336,7 @@ function results = main_DNAPL_pipeline(config)
 
     % 1c. Illumination correction
     [rgb_fd_corr, illum_field] = correct_illumination(rgb_fd_rot, ...
-        config.illumination.method, config.illumination);
+        config.illumination.method, config.illumination, config.parallel.use_gpu);
 
     results.preprocessing.rotation_angle = angle_deg;
     results.preprocessing.crop_rect      = crop_rect;
@@ -379,7 +376,7 @@ function results = main_DNAPL_pipeline(config)
     rgb1 = load_frame(1, frame_index);
     [rgb1_rot, ~, ~] = rotate_and_crop(rgb1, config);
     [rgb1_corr, ~]   = correct_illumination(rgb1_rot, ...
-        config.illumination.method, config.illumination);
+        config.illumination.method, config.illumination, config.parallel.use_gpu);
 
     % Resize to match flow domain if needed
     if size(rgb1_corr,1) ~= size(flow_domain,1) || size(rgb1_corr,2) ~= size(flow_domain,2)

@@ -314,7 +314,7 @@ function results = load_and_segment_frame(results, config, frame_idx)
 
     %% 4. Illumination correction
     [rgb_corr, ~] = correct_illumination(rgb_rot, ...
-        config.illumination.method, config.illumination);
+        config.illumination.method, config.illumination, config.parallel.use_gpu);
 
     % Resize to match flow_domain if needed
     [H_fd, W_fd] = size(results.flow_domain);
