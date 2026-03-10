@@ -92,13 +92,14 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
         % CRITICAL: disable GPU inside parfor — multiple workers hitting
         % the same GPU causes heap corruption (exit 0xc0000374)
         config_locked.parallel.use_gpu = false;
+        config_locked.illumination.use_gpu = false;  % sync to illumination params
         is_v2 = endsWith(config.segmentation.method, '_v2');
 
         parfor t = 2:num_frames
             rgb_t = load_frame(t, frame_index);
             [rgb_rot_t, ~, ~] = rotate_and_crop(rgb_t, config_locked);
             [rgb_corr_t, ~]   = correct_illumination(rgb_rot_t, ...
-                config_locked.illumination.method, config_locked.illumination, false);
+                config_locked.illumination.method, config_locked.illumination);
             if size(rgb_corr_t,1) ~= size(flow_domain,1) || size(rgb_corr_t,2) ~= size(flow_domain,2)
                 rgb_corr_t = imresize(rgb_corr_t, size(flow_domain));
             end

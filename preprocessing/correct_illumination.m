@@ -1,4 +1,4 @@
-function [corrected, illumination_field] = correct_illumination(rgb_image, method, params, use_gpu)
+function [corrected, illumination_field] = correct_illumination(rgb_image, method, params)
 % CORRECT_ILLUMINATION  Correct non-uniform illumination across an RGB image.
 %
 %   [corrected, illumination_field] = correct_illumination(rgb_image, method, params)
@@ -8,6 +8,7 @@ function [corrected, illumination_field] = correct_illumination(rgb_image, metho
 %       method     - 'morphological' (default) or 'polynomial'
 %       params     - Struct with method-specific parameters:
 %                      .kernel_size  - disk SE radius (morphological, default 50)
+%                      .use_gpu      - GPU accelerate imopen (default false)
 %
 %   Outputs:
 %       corrected        - Illumination-corrected uint8 RGB image
@@ -15,13 +16,12 @@ function [corrected, illumination_field] = correct_illumination(rgb_image, metho
 
     if nargin < 2 || isempty(method), method = 'morphological'; end
     if nargin < 3, params = struct(); end
-    if nargin < 4
-        % Default: read from params if available, else true (backward compat)
-        if isfield(params, 'use_gpu')
-            use_gpu = params.use_gpu;
-        else
-            use_gpu = false;  % safe default: no GPU unless explicitly enabled
-        end
+
+    % GPU flag: read from params (single source: config.parallel.use_gpu)
+    if isfield(params, 'use_gpu')
+        use_gpu = params.use_gpu;
+    else
+        use_gpu = false;  % safe default: no GPU unless explicitly enabled
     end
 
     img_double = im2double(rgb_image);

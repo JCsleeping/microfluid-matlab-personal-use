@@ -41,6 +41,9 @@ function results = main_DNAPL_pipeline(config)
     pipeline_root = fileparts(mfilename('fullpath'));
     addpath(genpath(pipeline_root));
 
+    % Sync GPU flag: config.parallel.use_gpu is the single source of truth
+    config.illumination.use_gpu = config.parallel.use_gpu;
+
     % Ensure output directory exists
     if ~isfolder(config.output_path)
         mkdir(config.output_path);

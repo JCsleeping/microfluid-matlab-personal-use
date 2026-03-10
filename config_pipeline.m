@@ -143,9 +143,6 @@ function config = config_pipeline(varargin)
         config     = setfield_nested(config, field_path, value);
     end
 
-    %% Sync derived settings (must be AFTER user overrides)
-    config.illumination.use_gpu = config.parallel.use_gpu;
-
     %% Validate configuration
     config = validate_config(config);
 end
