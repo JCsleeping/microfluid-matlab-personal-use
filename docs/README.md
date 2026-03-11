@@ -37,7 +37,7 @@ This MATLAB toolbox automates the analysis of Dense Non-Aqueous Phase Liquid (DN
 
 ### Optional
 
-- **Parallel Computing Toolbox** — for faster processing (not currently used, but enables `parfor` extension)
+- **Parallel Computing Toolbox** — enables `parfor` acceleration for Step 4. Worker GPU use is disabled automatically in parallel mode.
 
 ---
 
@@ -89,6 +89,10 @@ Output is saved to `<data_path>/output_<timestamp>/`:
 | `blob_properties_*.csv` | Per-blob geometry metrics |
 | `analysis_report.md` | Formatted summary report |
 | `fig_*.png` | Publication-quality figures |
+| `logs/pipeline_log_*.txt` | Full command-window run log (enabled by default) |
+| `progress/progress_latest.*` | Lightweight Step-4 progress snapshot (optional) |
+
+`progress_latest.mat/.csv` only store numeric time-series progress. They do not save full per-frame masks or diagnostic images.
 
 ---
 

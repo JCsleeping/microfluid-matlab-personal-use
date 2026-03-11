@@ -57,6 +57,13 @@ function config = validate_config(config)
             strjoin(valid_modes, ', '), config.input_mode);
     end
 
+    %% Output controls
+    assert_logical_scalar(config.output.checkpoint, 'output.checkpoint');
+    assert_logical_scalar(config.output.save_log, 'output.save_log');
+    assert_logical_scalar(config.output.save_progress, 'output.save_progress');
+    assert_pos_integer(config.output.save_interval, 'output.save_interval');
+    assert_pos_integer(config.output.progress_interval, 'output.progress_interval');
+
     %% Segmentation method
     valid_seg = {'gmm', 'otsu', 'adaptive', 'gmm_v2', 'otsu_v2'};
     if ~ismember(lower(config.segmentation.method), valid_seg)
@@ -78,5 +85,19 @@ function assert_nonneg(val, name)
     if isempty(val) || ~isnumeric(val) || val < 0
         error('validate_config:badParam', ...
             '%s must be non-negative, got %s.', name, mat2str(val));
+    end
+end
+
+function assert_pos_integer(val, name)
+    if isempty(val) || ~isnumeric(val) || ~isscalar(val) || val < 1 || mod(val, 1) ~= 0
+        error('validate_config:badParam', ...
+            '%s must be a positive integer, got %s.', name, mat2str(val));
+    end
+end
+
+function assert_logical_scalar(val, name)
+    if ~(islogical(val) && isscalar(val))
+        error('validate_config:badParam', ...
+            '%s must be a logical scalar, got %s.', name, mat2str(val));
     end
 end

@@ -27,15 +27,11 @@ function results = main_DNAPL_pipeline(config)
     %% ====================================================================
     %  Initialization
     %  ====================================================================
-    fprintf('==========================================================\n');
-    fprintf('   DNAPL Image Analysis Pipeline v2.5\n');
-    fprintf('==========================================================\n\n');
-
-    total_timer = tic;
-
     if nargin < 1 || isempty(config)
         config = config_pipeline();
     end
+
+    total_timer = tic;
 
     % Add all sub-folders to MATLAB path
     pipeline_root = fileparts(mfilename('fullpath'));
@@ -44,6 +40,28 @@ function results = main_DNAPL_pipeline(config)
     % Ensure output directory exists
     if ~isfolder(config.output_path)
         mkdir(config.output_path);
+    end
+
+    log_cleanup = []; %#ok<NASGU>
+    [save_log, ~] = get_output_option(config, 'save_log', true);
+    if save_log
+        log_dir = fullfile(config.output_path, 'logs');
+        if ~isfolder(log_dir)
+            mkdir(log_dir);
+        end
+        log_path = fullfile(log_dir, ['pipeline_log_' datestr(now, 'yyyymmdd_HHMMSS') '.txt']);
+        safe_diary_off();
+        diary(log_path);
+        log_cleanup = onCleanup(@safe_diary_off);
+    else
+        log_path = '';
+    end
+
+    fprintf('==========================================================\n');
+    fprintf('   DNAPL Image Analysis Pipeline v2.5\n');
+    fprintf('==========================================================\n\n');
+    if save_log
+        fprintf('  Log file: %s\n\n', log_path);
     end
 
     %% ====================================================================
@@ -470,4 +488,23 @@ function results = main_DNAPL_pipeline(config)
     fprintf('  Pipeline completed in %.1f seconds\n', total_time);
     fprintf('  Results saved to: %s\n', config.output_path);
     fprintf('==========================================================\n');
+end
+
+
+function [value, exists] = get_output_option(config, field_name, default_value)
+    exists = isfield(config, 'output') && isfield(config.output, field_name);
+    if exists && ~isempty(config.output.(field_name))
+        value = config.output.(field_name);
+    else
+        value = default_value;
+    end
+end
+
+
+function safe_diary_off()
+    try
+        diary off;
+    catch
+        % Best effort cleanup if diary is not active.
+    end
 end

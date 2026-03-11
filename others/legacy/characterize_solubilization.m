@@ -42,7 +42,7 @@ function sol = characterize_solubilization(image_paths, flow_domain, time_vector
         if isa(rgb, 'uint16'), rgb = im2uint8(rgb); end
         [rgb_rot, ~, ~] = rotate_and_crop(rgb, config);
         [rgb_corr, ~]   = correct_illumination(rgb_rot, ...
-            config.illumination.method, config.illumination);
+            config.illumination.method, config.illumination, config.parallel.use_gpu);
 
         % Align to flow domain size
         if size(rgb_corr,1) ~= size(flow_domain,1) || size(rgb_corr,2) ~= size(flow_domain,2)

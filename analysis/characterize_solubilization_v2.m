@@ -28,6 +28,15 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     use_parallel = isfield(config, 'parallel') && ...
                    isfield(config.parallel, 'enabled') && ...
                    config.parallel.enabled;
+    do_save_progress = isfield(config, 'output') && ...
+                       isfield(config.output, 'save_progress') && ...
+                       config.output.save_progress;
+    progress_interval = 50;
+    last_progress_frame_saved = 0;
+    if isfield(config, 'output') && isfield(config.output, 'progress_interval') && ...
+            ~isempty(config.output.progress_interval)
+        progress_interval = config.output.progress_interval;
+    end
 
     %% Preallocate
     sn_arr     = zeros(num_frames, 1);
@@ -197,6 +206,12 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
                      'iface_arr', 'masks_arr', 'last_frame', '-v7.3');
                 fprintf('  Checkpoint saved: %s\n', cp_file);
             end
+
+            if do_save_progress && mod(t, progress_interval) == 0
+                export_progress_snapshot(config.output_path, time_vector, sn_arr, ...
+                    nblobs_arr, mbs_arr, iface_arr, t, locked_threshold);
+                last_progress_frame_saved = t;
+            end
         end
     end
 
@@ -244,6 +259,11 @@ function sol = characterize_solubilization_v2(frame_index, flow_domain, time_vec
     sol.mass_dissolved_vs_time = (sol.saturation_vs_time(1) - sol.saturation_vs_time) ...
                                  * pore_vol * rho;  % cumulative [kg]
     sol.mass_dissolved = sol.mass_dissolved_vs_time(end);  % backward compat
+
+    if do_save_progress && last_progress_frame_saved ~= num_frames
+        export_progress_snapshot(config.output_path, time_vector, sn_arr, ...
+            nblobs_arr, mbs_arr, iface_arr, num_frames, locked_threshold);
+    end
 
     fprintf('\n  Solubilization complete. Sn: %.3f -> %.3f (%.1f%% removed)\n', ...
         sol.saturation_vs_time(1), sol.saturation_vs_time(end), ...

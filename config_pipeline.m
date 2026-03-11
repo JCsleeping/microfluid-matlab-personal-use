@@ -19,7 +19,7 @@ function config = config_pipeline(varargin)
     %  其余参数（算法参数）在下方"高级设置"区域，通常不需要改动。
 
     % --- 数据路径 ---
-    config.data_path = 'D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\07 1-BD 4UL\01 NAPL';
+    config.data_path = 'D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\06 LNAPL-4UL\03 DISSLUTION';
     %   ↑ 实验数据所在目录。下面的 TIF 路径基于此目录。
 
     % --- 输入文件 (自动扫描目录中所有 .tif 文件) ---
@@ -127,14 +127,18 @@ function config = config_pipeline(varargin)
     config.visualization.colormap_blobs = 'jet';
 
     % --- Parallel processing (requires Parallel Computing Toolbox) ---
-    config.parallel.enabled     = false;    % true: 使用 parfor（默认关闭，避免 GPU 冲突）
-    config.parallel.num_workers = 8;        % 并行工作进程数
-    config.parallel.use_gpu     = true;     % true: GPU 加速（主线程安全，parfor 内自动禁用）
+    config.parallel.enabled     = true;    % true: 使用 parfor（默认关闭，避免 GPU 冲突）
+    config.parallel.num_workers = 4;        % 并行工作进程数
+    config.parallel.use_gpu     = false;     % true: GPU 加速（主线程安全，parfor 内自动禁用）
     %   ⚠ parfor + GPU 并发会导致堆损坏(0xc0000374)，代码已做防护
 
     % --- Checkpoint / resume (大数据集断点续传) ---
     config.output.checkpoint    = false;    % true: 定期保存 checkpoint，支持中断恢复
     config.output.save_interval = 50;       % 每 N 帧保存一次 checkpoint
+
+    config.output.save_log      = true;     % true: save command-window output to logs/
+    config.output.save_progress = false;    % true: save lightweight Step-4 progress snapshots
+    config.output.progress_interval = 50;   % save progress every N frames in sequential mode
 
     %% ---- Apply user overrides (do not modify below) -----------------------
     for k = 1:2:numel(varargin)

@@ -6,12 +6,12 @@
 
 ## 当前状态
 
-- **版本**: v3.0
-- **最后更新**: 2026-03-03
-- **总文件数**: 28 个 .m 文件 + 4 个 .md 文件
+- **版本**: v3.1
+- **最后更新**: 2026-03-11
+- **总文件数**: 54 个 .m 文件 + 13 个 .md 文件
 - **输入模式**: 多页 TIF + 独立文件模式
 - **默认数据**: 02 Pretest 4 / 01 NAPL WATER (3 TIF, 145 页, 1s/帧)
-- **新增功能**: 多次分割叠加 v2, 流式帧加载, 子图独立保存
+- **新增功能**: 多次分割叠加 v2, 流式帧加载, 子图独立保存, 安全日志输出, 轻量进度快照
 
 ---
 
@@ -50,6 +50,7 @@
 - [x] **旋转角度**: 芯片 45 deg 设计, 默认 `rotation_angle = 0`
 - [x] **流域提取验证**: 双方法检测 + 面积阈值优化
 - [x] **小柱子检测**: 面积阈值 15->5, 20->8, imopen 半径 2->1, CAD 补漏
+- [ ] **默认并行 4 workers 稳定性**: `parfor` 已可用，但部分环境下 `parallel.num_workers = 4` 在 MATLAB 退出时仍可能触发 `0xc0000374 / heap corruption`。当前更稳妥的设置仍是 `2 workers` 或顺序模式。
 - [ ] **72 页 TIF 内存占用**: 建议 `config.pages` 指定子集
 
 ### P2 — 中优先级
@@ -60,7 +61,7 @@
 
 ### P3 — 低优先级
 
-- [ ] 添加 `parfor` 并行处理支持（需 Parallel Computing Toolbox）
+- [x] 添加 `parfor` 并行处理支持（需 Parallel Computing Toolbox）
 - [ ] 添加图像降采样选项（用于快速预览大图像）
 - [ ] 生成 HTML/PDF 自动报告
 - [ ] 支持视频输入（.avi, .mp4）
@@ -235,6 +236,21 @@ results = main_DNAPL_pipeline(config);
 **柱子检测改进:**
 
 - `extract_flow_domain.m`: MIN_BLOB_AREA 15→2/20→3, imopen 半径 2→1
+
+### v3.1 (2026-03-11) - Safe Output Logging + Progress Snapshots
+
+**新增功能:**
+
+- **NEW** `main_DNAPL_pipeline.m`: 默认将命令窗口输出写入 `logs/pipeline_log_*.txt`
+- **NEW** `utilities/export_progress_snapshot.m`: 导出轻量 Step-4 进度快照到 `progress/progress_latest.mat/.csv`
+- **NEW** `config.output.save_log`, `config.output.save_progress`, `config.output.progress_interval`
+
+**稳定性 / 兼容性:**
+
+- **FIX** `utilities/validate_config.m`: 增加新的 output 配置项校验
+- **FIX** `analysis/characterize_solubilization_v2.m`: 顺序模式按间隔写出轻量进度，并在结束时统一落盘最终快照
+- **FIX** `others/legacy/characterize_solubilization.m`: legacy 路径补上 `config.parallel.use_gpu` 透传，避免静默退回 CPU
+- **NOTE** `results_*.mat` 仍不保存全量 `solubilization.masks`，progress 快照只保存数值级时序状态
 
 ### v3.0 (2026-03-03) - 多次分割叠加 + 流式帧加载
 
