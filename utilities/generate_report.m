@@ -30,6 +30,13 @@ function generate_report(results, config)
     if isfield(results, 'saturation')
         R.Sn_single = results.saturation.Sn;
         R.Sw_single = results.saturation.Sw;
+        R.dnapl_volume_m3 = results.saturation.dnapl_volume_m3;
+    end
+    if isfield(results, 'chip_geometric_volume_m3')
+        R.chip_geometric_volume_m3 = results.chip_geometric_volume_m3;
+    end
+    if isfield(results, 'flow_domain_volume_m3')
+        R.flow_domain_volume_m3 = results.flow_domain_volume_m3;
     end
     if isfield(results, 'blobs')
         R.num_blobs_single = results.blobs.num_blobs;
@@ -125,6 +132,12 @@ function write_report(fid, R, has_sol, fmt)
     else
         kv(fid, 'Pixel Size', R.pixel_size, is_md);
     end
+    if isfield(R, 'chip_geometric_volume_m3')
+        kv(fid, 'Chip Geometric Volume', sprintf('%.4e m^3', R.chip_geometric_volume_m3), is_md);
+    end
+    if isfield(R, 'flow_domain_volume_m3')
+        kv(fid, 'Flow Domain Pore Volume', sprintf('%.4e m^3', R.flow_domain_volume_m3), is_md);
+    end
     fprintf(fid, '\n');
 
     %% Section 2: Single-Frame Analysis
@@ -132,6 +145,9 @@ function write_report(fid, R, has_sol, fmt)
         section_header(fid, '2. Single-Frame Analysis (Frame 1)', is_md);
         kv(fid, 'DNAPL Saturation (Sn)',  sprintf('%.4f', R.Sn_single), is_md);
         kv(fid, 'Water Saturation (Sw)',   sprintf('%.4f', R.Sw_single), is_md);
+        if isfield(R, 'dnapl_volume_m3')
+            kv(fid, 'DNAPL Volume (Frame 1)', sprintf('%.4e m^3', R.dnapl_volume_m3), is_md);
+        end
         if isfield(R, 'num_blobs_single')
             kv(fid, 'Number of Blobs',     sprintf('%d', R.num_blobs_single), is_md);
         end

@@ -13,6 +13,20 @@
 - **默认数据**: 02 Pretest 4 / 01 NAPL WATER (3 TIF, 145 页, 1s/帧)
 - **新增功能**: 多次分割叠加 v2, 流式帧加载, 子图独立保存, 安全日志输出, 轻量进度快照
 
+## 2026-03-14 Implementation Notes
+
+- Sequential Step 4 checkpoints now persist `locked_threshold`, making new checkpoints self-contained resume points.
+- Legacy checkpoints without `locked_threshold` still resume, but they print a warning and recompute the frame-1 threshold once.
+- `max_frames_per_session` now follows the documented session-budget model:
+  - a fresh run counts frame 1 because it establishes the locked threshold
+  - resumed runs count only newly advanced frames beyond the loaded checkpoint
+- Heartbeat payloads now include `matlab_pid` and `hostname`.
+- `watch_pipeline_status.ps1` now prefers run-specific PID checks and uses a conservative fallback:
+  - fresh artifacts => `running`
+  - stale artifacts + some MATLAB process => `stalled`
+  - stale artifacts + no matching MATLAB process => `crashed`
+- Step 4 blob/interface time-series metrics now use lightweight helpers instead of full per-frame blob/interface reports, while Step 3 and exported result fields remain unchanged.
+
 ---
 
 ## 已完成

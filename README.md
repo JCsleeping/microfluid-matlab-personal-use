@@ -87,12 +87,38 @@ Output is saved to `<data_path>/output_<timestamp>/`:
 | `results_*.mat` | Full results struct |
 | `timeseries_*.csv` | Sn, blob count, interface area vs. time |
 | `blob_properties_*.csv` | Per-blob geometry metrics |
+| `saturation_*.csv` | Frame-1 saturation, chip/pore volume, and DNAPL 2.5D volume summary |
 | `analysis_report.md` | Formatted summary report |
 | `fig_*.png` | Publication-quality figures |
 | `logs/pipeline_log_*.txt` | Full command-window run log (enabled by default) |
 | `progress/progress_latest.*` | Lightweight Step-4 progress snapshot (optional) |
+| `status/heartbeat_latest.*` | Latest structured run status for watchers and debugging |
 
 `progress_latest.mat/.csv` only store numeric time-series progress. They do not save full per-frame masks or diagnostic images.
+`heartbeat_latest.json/.mat` store only the latest pipeline status snapshot; they are overwritten in place.
+Heartbeat `status` may be `starting`, `running`, `paused`, `completed`, or `failed`. A `paused` run is a safe checkpoint-boundary stop, not an error.
+Heartbeat payloads now include `matlab_pid` and `hostname`, which let the watcher bind a live status file to the specific MATLAB process that created it.
+Sequential checkpoints now persist the locked Step-4 threshold, so resumed runs continue with the same segmentation threshold instead of re-locking from frame 1. Older checkpoints remain readable, but they emit a legacy warning and recompute the threshold once.
+`results.chip_geometric_volume_m3`, `results.flow_domain_volume_m3`, and `results.saturation.dnapl_volume_m3` are estimated as `2D area × config.physical.depth`; they are 2.5D volume estimates, not full 3D reconstructions. `flow_domain_volume_m3` is the pore-space volume after subtracting pillars, while `chip_geometric_volume_m3` is the full ROI geometric volume.
+
+To monitor a run from another terminal:
+
+```powershell
+powershell -File utilities/watch_pipeline_status.ps1 -OutputPath <output_path>
+```
+
+The watcher polls the specified `output_path` every 10 minutes by default. It prefers `status/heartbeat_latest.json` and falls back to logs/checkpoints when heartbeat is unavailable. When heartbeat is present it checks the recorded `matlab_pid`; when heartbeat is missing it uses a conservative fallback: fresh artifacts mean `running`, stale artifacts mean `stalled`, and only stale artifacts with no matching MATLAB process are treated as `crashed`.
+
+To cap long MATLAB sessions without changing segmentation math, enable checkpoint-boundary safe pause:
+
+```matlab
+config.output.checkpoint = true;
+config.output.save_interval = 72;
+config.output.max_frames_per_session = 288;
+config.parallel.enabled = false;
+```
+
+When `max_frames_per_session` is finite, the pipeline only pauses after a checkpoint is saved. The budget tracks Step-4 work done in the current MATLAB session: on a fresh run frame 1 counts because it establishes the locked threshold, while resumed runs count only newly advanced frames beyond the checkpoint. Re-run the same config with the same `output_path` to continue from the latest checkpoint. This mode is only supported for sequential Step 4 runs.
 
 ---
 

@@ -61,8 +61,31 @@ function config = validate_config(config)
     assert_logical_scalar(config.output.checkpoint, 'output.checkpoint');
     assert_logical_scalar(config.output.save_log, 'output.save_log');
     assert_logical_scalar(config.output.save_progress, 'output.save_progress');
+    assert_logical_scalar(config.output.save_heartbeat, 'output.save_heartbeat');
     assert_pos_integer(config.output.save_interval, 'output.save_interval');
     assert_pos_integer(config.output.progress_interval, 'output.progress_interval');
+    assert_pos_integer(config.output.heartbeat_frame_interval, 'output.heartbeat_frame_interval');
+    assert_pos_integer(config.output.heartbeat_time_interval_sec, 'output.heartbeat_time_interval_sec');
+    assert_pos_integer_or_inf(config.output.max_frames_per_session, 'output.max_frames_per_session');
+
+    if isfinite(config.output.max_frames_per_session)
+        if ~config.output.checkpoint
+            error('validate_config:badParam', ...
+                ['output.max_frames_per_session requires output.checkpoint=true ' ...
+                 'so the pipeline can pause on a safe resume boundary.']);
+        end
+        if mod(config.output.max_frames_per_session, config.output.save_interval) ~= 0
+            error('validate_config:badParam', ...
+                ['output.max_frames_per_session (%g) must be an integer multiple of ' ...
+                 'output.save_interval (%g).'], ...
+                config.output.max_frames_per_session, config.output.save_interval);
+        end
+        if isfield(config, 'parallel') && isfield(config.parallel, 'enabled') && config.parallel.enabled
+            error('validate_config:badParam', ...
+                ['output.max_frames_per_session only supports sequential Step 4 runs. ' ...
+                 'Set parallel.enabled=false when using session pause.']);
+        end
+    end
 
     %% Segmentation method
     valid_seg = {'gmm', 'otsu', 'adaptive', 'gmm_v2', 'otsu_v2'};
@@ -92,6 +115,24 @@ function assert_pos_integer(val, name)
     if isempty(val) || ~isnumeric(val) || ~isscalar(val) || val < 1 || mod(val, 1) ~= 0
         error('validate_config:badParam', ...
             '%s must be a positive integer, got %s.', name, mat2str(val));
+    end
+end
+
+function assert_pos_integer_or_inf(val, name)
+    if isempty(val) || ~isnumeric(val) || ~isscalar(val)
+        error('validate_config:badParam', ...
+            '%s must be Inf or a positive integer, got %s.', name, mat2str(val));
+    end
+    if isinf(val)
+        if val < 0
+            error('validate_config:badParam', ...
+                '%s must be Inf or a positive integer, got %s.', name, mat2str(val));
+        end
+        return;
+    end
+    if val < 1 || mod(val, 1) ~= 0
+        error('validate_config:badParam', ...
+            '%s must be Inf or a positive integer, got %s.', name, mat2str(val));
     end
 end
 
