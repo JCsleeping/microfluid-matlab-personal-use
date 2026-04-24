@@ -238,18 +238,28 @@ end
 function config = derive_config_pipeline_defaults(tif_path)
     shadow_dir = tempname(tempdir);
     mkdir(shadow_dir);
-    write_dir_shadow(shadow_dir, tif_path);
-
-    original_dir = pwd;
+    bootstrap_query = get_config_pipeline_bootstrap_query();
+    write_dir_shadow(shadow_dir, bootstrap_query, tif_path);
     warning_state = warning('query', 'MATLAB:dispatcher:nameConflict');
     warning('off', 'MATLAB:dispatcher:nameConflict');
-    cleanup = onCleanup(@() restore_shadow_environment(original_dir, shadow_dir, warning_state)); %#ok<NASGU>
+    addpath(shadow_dir, '-begin');
+    clear('dir');
+    rehash();
+    cleanup = onCleanup(@() restore_shadow_environment(shadow_dir, warning_state)); %#ok<NASGU>
 
-    cd(shadow_dir);
     config = config_pipeline();
 end
 
-function write_dir_shadow(shadow_dir, tif_path)
+function bootstrap_query = get_config_pipeline_bootstrap_query()
+    pipeline_source = fileread(which('config_pipeline'));
+    tokens = regexp(pipeline_source, "config\.data_path\s*=\s*'((?:''|[^'])*)';", 'tokens', 'once');
+    assert(~isempty(tokens), 'test_fixture:parseFailure', ...
+        'Failed to derive default data_path from config_pipeline.m.');
+    default_data_path = strrep(tokens{1}, '''''', '''');
+    bootstrap_query = fullfile(default_data_path, '*.tif');
+end
+
+function write_dir_shadow(shadow_dir, bootstrap_query, tif_path)
     shadow_file = fullfile(shadow_dir, 'dir.m');
     fid = fopen(shadow_file, 'w');
     assert(fid ~= -1, 'test_fixture:fileIO', 'Failed to create dir shadow helper.');
@@ -258,7 +268,7 @@ function write_dir_shadow(shadow_dir, tif_path)
     fprintf(fid, 'function listing = dir(query)\n');
     fprintf(fid, 'if nargin == 1 && (ischar(query) || isstring(query))\n');
     fprintf(fid, '    query = char(query);\n');
-    fprintf(fid, '    if endsWith(lower(query), ''.tif'')\n');
+    fprintf(fid, '    if strcmp(query, ''%s'')\n', escape_for_matlab_string(bootstrap_query));
     fprintf(fid, '        info = builtin(''dir'', ''%s'');\n', escape_for_matlab_string(tif_path));
     fprintf(fid, '        listing = info;\n');
     fprintf(fid, '        return;\n');
@@ -276,8 +286,10 @@ function escaped = escape_for_matlab_string(value)
     escaped = strrep(value, '''', '''''');
 end
 
-function restore_shadow_environment(original_dir, shadow_dir, warning_state)
-    cd(original_dir);
+function restore_shadow_environment(shadow_dir, warning_state)
+    if exist(shadow_dir, 'dir')
+        rmpath(shadow_dir);
+    end
     clear('dir');
     rehash();
 
