@@ -20,6 +20,58 @@ function test_validate_config_accepts_valid_defaults(testCase)
     verifyTrue(testCase, isstruct(config));
 end
 
+function test_validate_config_accepts_residual_metric_defaults(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+
+    verifyFalse(testCase, config.output.save_blob_detail);
+    verifyEqual(testCase, config.architecture.pool_like.max_blob_fraction_min, 0.50);
+    verifyEqual(testCase, config.architecture.pool_like.num_blobs_max, 10);
+    verifyEqual(testCase, config.architecture.pool_like.a_i_2D_max, 3.0e4);
+    verifyEqual(testCase, config.architecture.ganglia_rich.max_blob_fraction_max, 0.30);
+    verifyEqual(testCase, config.architecture.ganglia_rich.num_blobs_min, 25);
+    verifyEqual(testCase, config.architecture.ganglia_rich.a_i_2D_min, 6.0e4);
+
+    config = validate_config(config);
+    verifyTrue(testCase, isstruct(config));
+end
+
+function test_validate_config_rejects_blob_detail_with_parallel(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.output.save_blob_detail = true;
+    config.parallel.enabled = true;
+
+    verifyError(testCase, ...
+        @() validate_config(config), ...
+        'validate_config:badParam');
+end
+
+function test_validate_config_rejects_crossed_architecture_thresholds(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.architecture.pool_like.max_blob_fraction_min = ...
+        config.architecture.ganglia_rich.max_blob_fraction_max;
+
+    verifyError(testCase, ...
+        @() validate_config(config), ...
+        'validate_config:badParam');
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.architecture.pool_like.a_i_2D_max = ...
+        config.architecture.ganglia_rich.a_i_2D_min;
+
+    verifyError(testCase, ...
+        @() validate_config(config), ...
+        'validate_config:badParam');
+end
+
 function test_validate_config_rejects_negative_pixel_size(testCase)
     setup_path();
     [fixture_dir, tif_path] = create_temp_tif_fixture();

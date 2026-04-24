@@ -118,6 +118,14 @@ function config = config_pipeline(varargin)
     config.interface.solid_dilation = 1;  % 固体膨胀像素数
 
     % --- 传质模型 ---
+    % --- Residual structure metrics ---
+    config.architecture.pool_like.max_blob_fraction_min = 0.50;
+    config.architecture.pool_like.num_blobs_max = 10;
+    config.architecture.pool_like.a_i_2D_max = 3.0e4;
+    config.architecture.ganglia_rich.max_blob_fraction_max = 0.30;
+    config.architecture.ganglia_rich.num_blobs_min = 25;
+    config.architecture.ganglia_rich.a_i_2D_min = 6.0e4;
+
     config.physical.sherwood_correlation = 'powers'; % 'powers' | 'wilson' | 'interfacial'
 
     % --- 可视化 ---
@@ -142,6 +150,7 @@ function config = config_pipeline(varargin)
     config.output.save_heartbeat = true;    % true: save structured status heartbeat to status/
     config.output.heartbeat_frame_interval = 10;      % flush heartbeat at least every N frames
     config.output.heartbeat_time_interval_sec = 30;   % flush heartbeat at least every N seconds
+    config.output.save_blob_detail = false; % true: save per-blob residual-structure detail tables
     config.output.max_frames_per_session = inf;       % inf: no auto-pause; finite values pause only on checkpoint boundaries
 
     %% ---- Apply user overrides (do not modify below) -----------------------
