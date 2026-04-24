@@ -52,18 +52,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
     do_save_blob_detail = isfield(config, 'output') && ...
                           isfield(config.output, 'save_blob_detail') && ...
                           config.output.save_blob_detail;
-    do_write_blob_detail = do_save_blob_detail && ~use_parallel;
     blob_detail_csv_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
-    if do_write_blob_detail && ~isfolder(config.output_path)
-        mkdir(config.output_path);
-    end
-    if do_write_blob_detail
-        fprintf('  Per-blob detail CSV: %s\n', blob_detail_csv_path);
-    elseif do_save_blob_detail && use_parallel
-        fprintf('  Per-blob detail CSV: disabled in parallel mode\n');
-    else
-        fprintf('  Per-blob detail CSV: disabled (set output.save_blob_detail=true for sequential runs)\n');
-    end
     save_interval = [];
     if do_checkpoint
         save_interval = config.output.save_interval;
@@ -111,6 +100,36 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
     locked_threshold = [];
     is_resumed_checkpoint = false;
     used_legacy_checkpoint = false;
+
+    parallel_mask_limit_gb = 2.0;
+    estimated_mask_gb = prod(double(fd_size)) * double(num_frames) / (1024 ^ 3);
+    if use_parallel && estimated_mask_gb > parallel_mask_limit_gb
+        warning('characterize_solubilization_v2:parallelMaskFootprint', ...
+            ['Estimated mask footprint %.2f GB across %d frames exceeds the %.2f GB ', ...
+             'parallel safety limit. Falling back to sequential mode.'], ...
+            estimated_mask_gb, num_frames, parallel_mask_limit_gb);
+        use_parallel = false;
+        heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
+            'status', 'running', ...
+            'step', 'STEP 4', ...
+            'step_label', 'Solubilization Dynamics', ...
+            'current_frame', last_completed_frame, ...
+            'total_frames', num_frames, ...
+            'message', sprintf('Sequential fallback: estimated mask footprint %.2f GB', estimated_mask_gb), ...
+            'force', true));
+    end
+
+    do_write_blob_detail = do_save_blob_detail && ~use_parallel;
+    if do_write_blob_detail && ~isfolder(config.output_path)
+        mkdir(config.output_path);
+    end
+    if do_write_blob_detail
+        fprintf('  Per-blob detail CSV: %s\n', blob_detail_csv_path);
+    elseif do_save_blob_detail && use_parallel
+        fprintf('  Per-blob detail CSV: disabled in parallel mode\n');
+    else
+        fprintf('  Per-blob detail CSV: disabled (set output.save_blob_detail=true for sequential runs)\n');
+    end
 
     %% Sequential checkpoint resume happens before frame-1 threshold lock.
     if ~use_parallel && do_checkpoint
@@ -388,23 +407,6 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         % memory() is Windows-only; skip on other platforms
     end
 
-    parallel_mask_limit_gb = 2.0;
-    estimated_mask_gb = prod(double(fd_size)) * double(num_frames) / (1024 ^ 3);
-    if use_parallel && estimated_mask_gb > parallel_mask_limit_gb
-        warning('characterize_solubilization_v2:parallelMaskFootprint', ...
-            ['Estimated mask footprint %.2f GB across %d frames exceeds the %.2f GB ', ...
-             'parallel safety limit. Falling back to sequential mode.'], ...
-            estimated_mask_gb, num_frames, parallel_mask_limit_gb);
-        use_parallel = false;
-        heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
-            'status', 'running', ...
-            'step', 'STEP 4', ...
-            'step_label', 'Solubilization Dynamics', ...
-            'current_frame', last_completed_frame, ...
-            'total_frames', num_frames, ...
-            'message', sprintf('Sequential fallback: estimated mask footprint %.2f GB', estimated_mask_gb), ...
-            'force', true));
-    end
     if use_parallel
         masks_arr = cell(num_frames, 1);
         masks_arr{1} = first_mask;

@@ -416,6 +416,20 @@ function test_blob_detail_status_line_reports_disabled_and_enabled_path(testCase
     verifyFalse(testCase, contains(parallel_log, ['Per-blob detail CSV: ' expected_path]));
     verifyFalse(testCase, isfield(sol_parallel, 'blob_detail_csv'));
     verifyFalse(testCase, isfile(expected_path));
+
+    source_path = fullfile(root_dir, 'analysis', 'characterize_solubilization_v2.m');
+    source_text = fileread(source_path);
+    fallback_pos = strfind(source_text, 'characterize_solubilization_v2:parallelMaskFootprint');
+    decision_pos = strfind(source_text, 'do_write_blob_detail = do_save_blob_detail && ~use_parallel');
+    log_pos = strfind(source_text, 'Per-blob detail CSV:');
+    reconcile_pos = strfind(source_text, 'reconcile_blob_detail_csv(blob_detail_csv_path');
+    verifyNotEmpty(testCase, fallback_pos);
+    verifyNotEmpty(testCase, decision_pos);
+    verifyNotEmpty(testCase, log_pos);
+    verifyNotEmpty(testCase, reconcile_pos);
+    verifyLessThan(testCase, fallback_pos(1), decision_pos(1));
+    verifyLessThan(testCase, decision_pos(1), log_pos(1));
+    verifyLessThan(testCase, log_pos(1), reconcile_pos(1));
 end
 
 
