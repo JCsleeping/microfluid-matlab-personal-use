@@ -56,6 +56,11 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
     if do_save_blob_detail && ~isfolder(config.output_path)
         mkdir(config.output_path);
     end
+    if do_save_blob_detail
+        fprintf('  Per-blob detail CSV: %s\n', blob_detail_csv_path);
+    else
+        fprintf('  Per-blob detail CSV: disabled (set output.save_blob_detail=true for sequential runs)\n');
+    end
     save_interval = [];
     if do_checkpoint
         save_interval = config.output.save_interval;

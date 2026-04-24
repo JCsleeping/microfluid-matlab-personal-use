@@ -382,6 +382,30 @@ function test_prefixed_ai2d_checkpoint_units_mark_history_unknown(testCase)
 end
 
 
+function test_blob_detail_status_line_reports_disabled_and_enabled_path(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    fixture_dir = fullfile(tempdir, ['dnapl_blob_detail_status_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    c1 = onCleanup(@() cleanup_tempdir(fixture_dir)); %#ok<NASGU>
+    mkdir(fixture_dir);
+
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(fixture_dir);
+    config = make_synthetic_step4_config(fixture_dir, size(flow_domain));
+    config.output.checkpoint = false;
+    config.output.max_frames_per_session = inf;
+
+    disabled_log = evalc('characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);');
+    verifyTrue(testCase, contains(disabled_log, ...
+        'Per-blob detail CSV: disabled (set output.save_blob_detail=true for sequential runs)'));
+
+    config.output.save_blob_detail = true;
+    expected_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
+    enabled_log = evalc('characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);');
+    verifyTrue(testCase, contains(enabled_log, ['Per-blob detail CSV: ' expected_path]));
+end
+
+
 function cleanup_tempdir(out_dir)
     if isfolder(out_dir)
         try
