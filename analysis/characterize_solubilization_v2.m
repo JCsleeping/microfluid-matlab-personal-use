@@ -123,7 +123,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                                   'n_columns_arr', 'n_clusters_arr', 'frac_droplets_arr', ...
                                   'frac_columns_arr', 'frac_clusters_arr', 'iface_arr', ...
                                   'last_frame', 'change_arr', 'first_mask', 'prev_mask', ...
-                                  'last_mask', 'masks_arr', 'locked_threshold'};
+                                  'last_mask', 'masks_arr', 'locked_threshold', ...
+                                  'a_i_2D_units', 'a_i_2D_pixel_size'};
                 load_vars = requested_vars(ismember(requested_vars, available_vars));
                 cp_data = load(cp_latest, load_vars{:});
             catch ME_cp
@@ -151,6 +152,16 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'mean_circularity_arr', is_missing);
             [a_i_2D_arr, is_missing] = checkpoint_series(cp_data, 'a_i_2D_arr', num_frames, checkpoint_last_frame);
             missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'a_i_2D_arr', is_missing);
+            if ~is_missing
+                [a_i_2D_arr, has_incompatible_ai_units] = ...
+                    invalidate_incompatible_ai_2d_checkpoint(a_i_2D_arr, cp_data, checkpoint_last_frame, px);
+                if has_incompatible_ai_units
+                    warning('characterize_solubilization_v2:legacyAi2DCheckpointUnits', ...
+                        ['Checkpoint %s has no compatible a_i_2D units metadata. ' ...
+                         'Historical a_i_2D values through frame %d will be marked NaN until recomputed.'], ...
+                        cp_files(idx(end)).name, checkpoint_last_frame);
+                end
+            end
             [n_droplets_arr, is_missing] = checkpoint_series(cp_data, 'n_droplets_arr', num_frames, checkpoint_last_frame);
             missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'n_droplets_arr', is_missing);
             [n_columns_arr, is_missing] = checkpoint_series(cp_data, 'n_columns_arr', num_frames, checkpoint_last_frame);
@@ -553,6 +564,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
             if do_checkpoint && mod(t, save_interval) == 0
                 last_frame = t; %#ok<NASGU>
+                a_i_2D_units = ai_2d_units_for_pixel_size(px); %#ok<NASGU>
+                a_i_2D_pixel_size = ai_2d_checkpoint_pixel_size(px); %#ok<NASGU>
                 cp_file = fullfile(cp_dir, sprintf('checkpoint_%04d.mat', t));
                 try
                     save(cp_file, 'sn_arr', 'nblobs_arr', 'mbs_arr', ...
@@ -561,7 +574,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                          'n_droplets_arr', 'n_columns_arr', 'n_clusters_arr', ...
                          'frac_droplets_arr', 'frac_columns_arr', 'frac_clusters_arr', ...
                          'iface_arr', 'change_arr', 'first_mask', 'prev_mask', ...
-                         'last_mask', 'last_frame', 'locked_threshold', '-v7.3');
+                         'last_mask', 'last_frame', 'locked_threshold', ...
+                         'a_i_2D_units', 'a_i_2D_pixel_size', '-v7.3');
                     last_checkpoint_path = cp_file;
                 catch ME_save
                     warning('characterize_solubilization_v2:checkpointSaveFailed', ...
@@ -758,6 +772,48 @@ end
 function missing_metric_fields = collect_missing_metric_field(missing_metric_fields, field_name, is_missing)
     if is_missing
         missing_metric_fields{end + 1} = field_name; %#ok<AGROW>
+    end
+end
+
+
+function [a_i_2D_arr, is_incompatible] = invalidate_incompatible_ai_2d_checkpoint( ...
+        a_i_2D_arr, cp_data, checkpoint_last_frame, px)
+    expected_units = ai_2d_units_for_pixel_size(px);
+    is_incompatible = true;
+
+    if isfield(cp_data, 'a_i_2D_units') && ...
+            strcmp(char(string(cp_data.a_i_2D_units)), expected_units)
+        if strcmp(expected_units, 'm^-1')
+            is_incompatible = ~(isfield(cp_data, 'a_i_2D_pixel_size') && ...
+                isnumeric(cp_data.a_i_2D_pixel_size) && ...
+                isscalar(cp_data.a_i_2D_pixel_size) && ...
+                isfinite(cp_data.a_i_2D_pixel_size) && ...
+                cp_data.a_i_2D_pixel_size == px);
+        else
+            is_incompatible = false;
+        end
+    end
+
+    if is_incompatible && checkpoint_last_frame > 0
+        a_i_2D_arr(1:checkpoint_last_frame) = NaN;
+    end
+end
+
+
+function units = ai_2d_units_for_pixel_size(px)
+    if isnumeric(px) && isscalar(px) && isfinite(px) && px > 0
+        units = 'm^-1';
+    else
+        units = 'px^-1';
+    end
+end
+
+
+function pixel_size = ai_2d_checkpoint_pixel_size(px)
+    if strcmp(ai_2d_units_for_pixel_size(px), 'm^-1')
+        pixel_size = px;
+    else
+        pixel_size = NaN;
     end
 end
 

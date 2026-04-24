@@ -336,6 +336,52 @@ function test_legacy_checkpoint_marks_task4_history_unknown(testCase)
 end
 
 
+function test_prefixed_ai2d_checkpoint_units_mark_history_unknown(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    fixture_dir = fullfile(tempdir, ['dnapl_ai2d_checkpoint_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    c1 = onCleanup(@() cleanup_tempdir(fixture_dir)); %#ok<NASGU>
+    mkdir(fixture_dir);
+
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(fixture_dir);
+    config = make_synthetic_step4_config(fixture_dir, size(flow_domain));
+    config.physical.pixel_size = 2.0;
+
+    sol1 = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    verifyEqual(testCase, string(sol1.pipeline_status), "paused");
+
+    checkpoint_path = fullfile(fixture_dir, 'checkpoint_0002.mat');
+    verifyTrue(testCase, isfile(checkpoint_path));
+    checkpoint_vars = who('-file', checkpoint_path);
+    verifyTrue(testCase, any(strcmp(checkpoint_vars, 'a_i_2D_arr')));
+    verifyTrue(testCase, any(strcmp(checkpoint_vars, 'a_i_2D_units')));
+    verifyTrue(testCase, any(strcmp(checkpoint_vars, 'a_i_2D_pixel_size')));
+
+    rewrite_checkpoint_without_ai2d_units(checkpoint_path);
+    checkpoint_vars = who('-file', checkpoint_path);
+    verifyTrue(testCase, any(strcmp(checkpoint_vars, 'a_i_2D_arr')));
+    verifyFalse(testCase, any(strcmp(checkpoint_vars, 'a_i_2D_units')));
+    verifyFalse(testCase, any(strcmp(checkpoint_vars, 'a_i_2D_pixel_size')));
+
+    lastwarn('');
+    sol2 = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    [warn_msg, warn_id] = lastwarn;
+
+    verifyEqual(testCase, warn_id, 'characterize_solubilization_v2:legacyAi2DCheckpointUnits');
+    verifyTrue(testCase, contains(warn_msg, 'a_i_2D'));
+    verifyEqual(testCase, string(sol2.pipeline_status), "completed");
+
+    historical_idx = 1:2;
+    resumed_idx = 3:4;
+
+    verifyTrue(testCase, all(isnan(sol2.a_i_2D_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.a_i_2D_vs_time(resumed_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.max_blob_frac_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.mean_circularity_vs_time(historical_idx))));
+end
+
+
 function cleanup_tempdir(out_dir)
     if isfolder(out_dir)
         try
@@ -344,6 +390,22 @@ function cleanup_tempdir(out_dir)
             % Best effort cleanup for test output.
         end
     end
+end
+
+
+function rewrite_checkpoint_without_ai2d_units(checkpoint_path)
+    checkpoint_data = load(checkpoint_path);
+    if isfield(checkpoint_data, 'a_i_2D_units')
+        checkpoint_data = rmfield(checkpoint_data, 'a_i_2D_units');
+    end
+    if isfield(checkpoint_data, 'a_i_2D_pixel_size')
+        checkpoint_data = rmfield(checkpoint_data, 'a_i_2D_pixel_size');
+    end
+    if isfield(checkpoint_data, 'a_i_2D_arr')
+        checkpoint_data.a_i_2D_arr(1:checkpoint_data.last_frame) = ...
+            (1:checkpoint_data.last_frame).';
+    end
+    save(checkpoint_path, '-v7.3', '-struct', 'checkpoint_data');
 end
 
 
