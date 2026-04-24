@@ -242,10 +242,19 @@ function test_blob_geometry_empty_mask(testCase)
     verifyTrue(testCase, isempty(blob.props));
     verifyEqual(testCase, blob.size_distribution.total, 0);
     verifyEqual(testCase, blob.max_blob_fraction, 0);
+    verifyEqual(testCase, blob.Req_distribution.mean, 0);
     verifyEqual(testCase, blob.Req_distribution.median, 0);
+    verifyEqual(testCase, blob.Req_distribution.std, 0);
+    verifyEqual(testCase, blob.Req_distribution.p10, 0);
+    verifyEqual(testCase, blob.Req_distribution.p25, 0);
+    verifyEqual(testCase, blob.Req_distribution.p75, 0);
+    verifyEqual(testCase, blob.Req_distribution.p90, 0);
     verifyEqual(testCase, blob.topology_summary.n_droplets, 0);
     verifyEqual(testCase, blob.topology_summary.n_columns, 0);
     verifyEqual(testCase, blob.topology_summary.n_clusters, 0);
+    verifyEqual(testCase, blob.topology_summary.frac_droplets, 0);
+    verifyEqual(testCase, blob.topology_summary.frac_columns, 0);
+    verifyEqual(testCase, blob.topology_summary.frac_clusters, 0);
 end
 
 function test_blob_geometry_single_blob(testCase)
@@ -296,6 +305,9 @@ end
 function test_blob_geometry_reports_topology_and_req_statistics(testCase)
     setup_path();
     mask = false(120, 120);
+    expected_areas = [49, 93, 176];
+    expected_radii = sort(sqrt(expected_areas / pi));
+    total_area = sum(expected_areas);
 
     mask(10:16, 10:16) = true;
     mask(20:22, 40:70) = true;
@@ -311,11 +323,31 @@ function test_blob_geometry_reports_topology_and_req_statistics(testCase)
     verifyTrue(testCase, any(topology_types == "droplet"));
     verifyTrue(testCase, any(topology_types == "column"));
     verifyTrue(testCase, any(topology_types == "cluster"));
-    verifyGreaterThan(testCase, blob.max_blob_fraction, 0);
-    verifyLessThanOrEqual(testCase, blob.max_blob_fraction, 1);
-    verifyGreaterThan(testCase, blob.Req_distribution.median, 0);
-    verifyEqual(testCase, blob.topology_summary.n_droplets + ...
-        blob.topology_summary.n_columns + blob.topology_summary.n_clusters, 3);
+    verifyEqual(testCase, blob.max_blob_fraction, max(expected_areas) / total_area, ...
+        'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.Req_distribution.mean, mean(expected_radii), ...
+        'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.Req_distribution.median, median(expected_radii), ...
+        'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.Req_distribution.std, std(expected_radii), ...
+        'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.Req_distribution.p10, ...
+        local_percentile(expected_radii, 10), 'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.Req_distribution.p25, ...
+        local_percentile(expected_radii, 25), 'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.Req_distribution.p75, ...
+        local_percentile(expected_radii, 75), 'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.Req_distribution.p90, ...
+        local_percentile(expected_radii, 90), 'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.topology_summary.n_droplets, 1);
+    verifyEqual(testCase, blob.topology_summary.n_columns, 1);
+    verifyEqual(testCase, blob.topology_summary.n_clusters, 1);
+    verifyEqual(testCase, blob.topology_summary.frac_droplets, expected_areas(1) / total_area, ...
+        'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.topology_summary.frac_columns, expected_areas(2) / total_area, ...
+        'AbsTol', 1e-12);
+    verifyEqual(testCase, blob.topology_summary.frac_clusters, expected_areas(3) / total_area, ...
+        'AbsTol', 1e-12);
     verifyEqual(testCase, blob.topology_summary.frac_droplets + ...
         blob.topology_summary.frac_columns + blob.topology_summary.frac_clusters, ...
         1, 'AbsTol', 1e-10);
@@ -330,10 +362,12 @@ function test_analyze_interfaces_reports_ai_2d(testCase)
     dnapl_mask = false(20, 20);
     dnapl_mask(6:9, 7:10) = true;
     pixel_size = 2e-6;
+    expected_water_length_px = 12;
+    expected_dnapl_area_px = 16;
+    expected_ai_2d = (expected_water_length_px * pixel_size) / ...
+        (expected_dnapl_area_px * pixel_size^2);
 
     iface = analyze_interfaces(dnapl_mask, flow_domain, pixel_size, struct());
-    expected_ai_2d = iface.dnapl_water_length_m / ...
-        (sum(dnapl_mask(:) & flow_domain(:)) * pixel_size^2);
 
     verifyEqual(testCase, iface.a_i_2D, expected_ai_2d, 'AbsTol', 1e-12);
     verifyGreaterThan(testCase, iface.a_i_2D, iface.specific_interfacial_area);
@@ -434,4 +468,31 @@ function restore_shadow_environment(shadow_dir, warning_state)
     end
 
     warning(warning_state.state, 'MATLAB:dispatcher:nameConflict');
+end
+
+function value = local_percentile(values, percentile)
+    values = sort(values(:));
+    n = numel(values);
+
+    if n == 0
+        value = 0;
+        return;
+    end
+
+    if n == 1
+        value = values(1);
+        return;
+    end
+
+    position = 1 + (n - 1) * (percentile / 100);
+    lower_idx = floor(position);
+    upper_idx = ceil(position);
+
+    if lower_idx == upper_idx
+        value = values(lower_idx);
+        return;
+    end
+
+    weight = position - lower_idx;
+    value = values(lower_idx) + weight * (values(upper_idx) - values(lower_idx));
 end
