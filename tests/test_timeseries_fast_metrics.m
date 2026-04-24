@@ -13,11 +13,14 @@ function test_fast_blob_metrics_match_full_analysis(testCase)
     mask(8:10, 7:9) = true;
     mask(12, 13) = true;
 
-    full_blob = analyze_blob_geometry(mask, 3.92e-6);
-    [num_blobs, mean_blob_size] = compute_timeseries_blob_metrics(mask);
+    full_blob = analyze_blob_geometry(mask, []);
+    [metrics, blob_table] = compute_timeseries_blob_metrics(mask);
 
-    verifyEqual(testCase, num_blobs, full_blob.num_blobs);
-    verifyEqual(testCase, mean_blob_size, full_blob.size_distribution.mean, 'AbsTol', 1e-12);
+    verifyEqual(testCase, metrics.num_blobs, full_blob.num_blobs);
+    verifyEqual(testCase, metrics.mean_blob_size, full_blob.size_distribution.mean, 'AbsTol', 1e-12);
+    verifyEqual(testCase, metrics.max_blob_frac, full_blob.max_blob_fraction, 'AbsTol', 1e-12);
+    verifyEqual(testCase, metrics.Req_median, full_blob.Req_distribution.median, 'AbsTol', 1e-12);
+    verifyEqual(testCase, blob_table, full_blob.blob_table);
 end
 
 
@@ -48,8 +51,11 @@ function test_fast_blob_metrics_handle_empty_mask(testCase)
     addpath(genpath(root_dir));
 
     mask = false(12, 12);
-    [num_blobs, mean_blob_size] = compute_timeseries_blob_metrics(mask);
+    [metrics, blob_table] = compute_timeseries_blob_metrics(mask);
 
-    verifyEqual(testCase, num_blobs, 0);
-    verifyEqual(testCase, mean_blob_size, 0);
+    verifyEqual(testCase, metrics.num_blobs, 0);
+    verifyEqual(testCase, metrics.mean_blob_size, 0);
+    verifyEqual(testCase, metrics.max_blob_frac, 0);
+    verifyEqual(testCase, metrics.Req_median, 0);
+    verifyTrue(testCase, isempty(blob_table));
 end

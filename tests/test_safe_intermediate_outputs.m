@@ -284,6 +284,58 @@ function test_main_pipeline_pauses_on_checkpoint_boundary_and_resumes(testCase)
 end
 
 
+function test_legacy_checkpoint_marks_task4_history_unknown(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    fixture_dir = fullfile(tempdir, ['dnapl_legacy_checkpoint_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    c1 = onCleanup(@() cleanup_tempdir(fixture_dir)); %#ok<NASGU>
+    mkdir(fixture_dir);
+
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(fixture_dir);
+    config = make_synthetic_step4_config(fixture_dir, size(flow_domain));
+
+    sol1 = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    verifyEqual(testCase, string(sol1.pipeline_status), "paused");
+
+    checkpoint_path = fullfile(fixture_dir, 'checkpoint_0002.mat');
+    verifyTrue(testCase, isfile(checkpoint_path));
+    rewrite_checkpoint_as_legacy(checkpoint_path);
+
+    checkpoint_vars = who('-file', checkpoint_path);
+    verifyTrue(testCase, any(strcmp(checkpoint_vars, 'locked_threshold')));
+    verifyFalse(testCase, any(ismember(task4_checkpoint_metric_fields(), checkpoint_vars)));
+
+    lastwarn('');
+    sol2 = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    [warn_msg, warn_id] = lastwarn;
+
+    verifyEqual(testCase, warn_id, 'characterize_solubilization_v2:legacyResidualMetricsCheckpoint');
+    verifyTrue(testCase, contains(warn_msg, 'marked NaN'));
+    verifyEqual(testCase, string(sol2.pipeline_status), "completed");
+
+    historical_idx = 1:2;
+    resumed_idx = 3:4;
+
+    verifyTrue(testCase, all(isnan(sol2.max_blob_frac_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isnan(sol2.Req_mean_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isnan(sol2.mean_circularity_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isnan(sol2.a_i_2D_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isnan(sol2.n_droplets_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isnan(sol2.frac_droplets_vs_time(historical_idx))));
+
+    verifyTrue(testCase, all(isfinite(sol2.max_blob_frac_vs_time(resumed_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.Req_mean_vs_time(resumed_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.mean_circularity_vs_time(resumed_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.a_i_2D_vs_time(resumed_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.n_droplets_vs_time(resumed_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.frac_droplets_vs_time(resumed_idx))));
+
+    verifyTrue(testCase, all(isfinite(sol2.num_blobs_vs_time(historical_idx))));
+    verifyTrue(testCase, all(isfinite(sol2.mean_blob_size_vs_time(historical_idx))));
+end
+
+
 function cleanup_tempdir(out_dir)
     if isfolder(out_dir)
         try
@@ -292,4 +344,115 @@ function cleanup_tempdir(out_dir)
             % Best effort cleanup for test output.
         end
     end
+end
+
+
+function rewrite_checkpoint_as_legacy(checkpoint_path)
+    checkpoint_data = load(checkpoint_path);
+    field_names = task4_checkpoint_metric_fields();
+    for i = 1:numel(field_names)
+        field_name = field_names{i};
+        if isfield(checkpoint_data, field_name)
+            checkpoint_data = rmfield(checkpoint_data, field_name);
+        end
+    end
+    save(checkpoint_path, '-v7.3', '-struct', 'checkpoint_data');
+end
+
+
+function field_names = task4_checkpoint_metric_fields()
+    field_names = { ...
+        'max_blob_frac_arr', ...
+        'Req_median_arr', ...
+        'Req_mean_arr', ...
+        'Req_std_arr', ...
+        'mean_circularity_arr', ...
+        'a_i_2D_arr', ...
+        'n_droplets_arr', ...
+        'n_columns_arr', ...
+        'n_clusters_arr', ...
+        'frac_droplets_arr', ...
+        'frac_columns_arr', ...
+        'frac_clusters_arr'};
+end
+
+
+function [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(fixture_dir)
+    flow_domain = true(32, 32);
+    time_vector = (0:3).';
+    frame_masks = cell(4, 1);
+    frame_masks{1} = false(32, 32);
+    frame_masks{1}(4:15, 4:15) = true;
+    frame_masks{2} = false(32, 32);
+    frame_masks{2}(5:12, 5:12) = true;
+    frame_masks{2}(20:25, 20:24) = true;
+    frame_masks{3} = false(32, 32);
+    frame_masks{3}(6:10, 6:10) = true;
+    frame_masks{3}(18:22, 19:22) = true;
+    frame_masks{4} = false(32, 32);
+    frame_masks{4}(8:11, 8:11) = true;
+
+    frame_index = repmat(struct('tif_path', '', 'page', 1), numel(frame_masks), 1);
+    for i = 1:numel(frame_masks)
+        rgb = render_mask_frame(frame_masks{i});
+        tif_path = fullfile(fixture_dir, sprintf('frame_%02d.tif', i));
+        imwrite(rgb, tif_path);
+        frame_index(i).tif_path = tif_path;
+        frame_index(i).page = 1;
+    end
+end
+
+
+function rgb = render_mask_frame(mask)
+    rgb = uint8(235 * ones([size(mask), 3]));
+    rgb(:, :, 2) = uint8(230);
+    rgb(:, :, 3) = uint8(230);
+
+    red_channel = rgb(:, :, 1);
+    green_channel = rgb(:, :, 2);
+    blue_channel = rgb(:, :, 3);
+
+    red_channel(mask) = 220;
+    green_channel(mask) = 40;
+    blue_channel(mask) = 60;
+
+    rgb(:, :, 1) = red_channel;
+    rgb(:, :, 2) = green_channel;
+    rgb(:, :, 3) = blue_channel;
+end
+
+
+function config = make_synthetic_step4_config(output_dir, image_size)
+    config = struct();
+    config.segmentation = struct( ...
+        'method', 'otsu', ...
+        'fixed_threshold', NaN, ...
+        'min_blob_area', 1, ...
+        'morph_radius', 0, ...
+        'num_components', 2);
+    config.physical = struct( ...
+        'pixel_size', 1.0, ...
+        'depth', 1.0, ...
+        'dnapl_density', 1.0);
+    config.parallel = struct( ...
+        'enabled', false, ...
+        'use_gpu', false, ...
+        'num_workers', 1);
+    config.illumination = struct( ...
+        'method', 'morphological', ...
+        'kernel_size', 1);
+    config.registration = struct('method', 'none');
+    config.preprocess = struct( ...
+        'rotation_angle', 0, ...
+        'manual_crop_rect', [1, 1, image_size(2) - 1, image_size(1) - 1], ...
+        'saved_crop_rect', []);
+    config.interface = struct('solid_dilation', 1);
+    config.output = struct( ...
+        'save_progress', false, ...
+        'progress_interval', 1, ...
+        'checkpoint', true, ...
+        'save_interval', 2, ...
+        'max_frames_per_session', 2, ...
+        'save_blob_detail', false);
+    config.output_path = output_dir;
 end

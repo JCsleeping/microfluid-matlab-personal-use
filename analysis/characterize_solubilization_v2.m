@@ -134,22 +134,43 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             end
         end
         if ~isempty(cp_files)
+            checkpoint_last_frame = min(cp_data.last_frame, num_frames);
             sn_arr     = cp_data.sn_arr;
             nblobs_arr = cp_data.nblobs_arr;
             mbs_arr    = cp_data.mbs_arr;
-            max_blob_frac_arr = checkpoint_series(cp_data, 'max_blob_frac_arr', num_frames);
-            Req_median_arr = checkpoint_series(cp_data, 'Req_median_arr', num_frames);
-            Req_mean_arr = checkpoint_series(cp_data, 'Req_mean_arr', num_frames);
-            Req_std_arr = checkpoint_series(cp_data, 'Req_std_arr', num_frames);
-            mean_circularity_arr = checkpoint_series(cp_data, 'mean_circularity_arr', num_frames);
-            a_i_2D_arr = checkpoint_series(cp_data, 'a_i_2D_arr', num_frames);
-            n_droplets_arr = checkpoint_series(cp_data, 'n_droplets_arr', num_frames);
-            n_columns_arr = checkpoint_series(cp_data, 'n_columns_arr', num_frames);
-            n_clusters_arr = checkpoint_series(cp_data, 'n_clusters_arr', num_frames);
-            frac_droplets_arr = checkpoint_series(cp_data, 'frac_droplets_arr', num_frames);
-            frac_columns_arr = checkpoint_series(cp_data, 'frac_columns_arr', num_frames);
-            frac_clusters_arr = checkpoint_series(cp_data, 'frac_clusters_arr', num_frames);
+            missing_metric_fields = {};
+            [max_blob_frac_arr, is_missing] = checkpoint_series(cp_data, 'max_blob_frac_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'max_blob_frac_arr', is_missing);
+            [Req_median_arr, is_missing] = checkpoint_series(cp_data, 'Req_median_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'Req_median_arr', is_missing);
+            [Req_mean_arr, is_missing] = checkpoint_series(cp_data, 'Req_mean_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'Req_mean_arr', is_missing);
+            [Req_std_arr, is_missing] = checkpoint_series(cp_data, 'Req_std_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'Req_std_arr', is_missing);
+            [mean_circularity_arr, is_missing] = checkpoint_series(cp_data, 'mean_circularity_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'mean_circularity_arr', is_missing);
+            [a_i_2D_arr, is_missing] = checkpoint_series(cp_data, 'a_i_2D_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'a_i_2D_arr', is_missing);
+            [n_droplets_arr, is_missing] = checkpoint_series(cp_data, 'n_droplets_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'n_droplets_arr', is_missing);
+            [n_columns_arr, is_missing] = checkpoint_series(cp_data, 'n_columns_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'n_columns_arr', is_missing);
+            [n_clusters_arr, is_missing] = checkpoint_series(cp_data, 'n_clusters_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'n_clusters_arr', is_missing);
+            [frac_droplets_arr, is_missing] = checkpoint_series(cp_data, 'frac_droplets_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'frac_droplets_arr', is_missing);
+            [frac_columns_arr, is_missing] = checkpoint_series(cp_data, 'frac_columns_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'frac_columns_arr', is_missing);
+            [frac_clusters_arr, is_missing] = checkpoint_series(cp_data, 'frac_clusters_arr', num_frames, checkpoint_last_frame);
+            missing_metric_fields = collect_missing_metric_field(missing_metric_fields, 'frac_clusters_arr', is_missing);
             iface_arr  = cp_data.iface_arr;
+
+            if ~isempty(missing_metric_fields)
+                warning('characterize_solubilization_v2:legacyResidualMetricsCheckpoint', ...
+                    ['Legacy checkpoint %s is missing Task-4 residual-structure arrays (%s). ' ...
+                     'Historical values through frame %d will be marked NaN until recomputed.'], ...
+                    cp_files(idx(end)).name, strjoin(missing_metric_fields, ', '), checkpoint_last_frame);
+            end
 
             if isfield(cp_data, 'change_arr')
                 change_arr = cp_data.change_arr;
@@ -178,7 +199,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             end
 
             start_frame = min(cp_data.last_frame + 1, num_frames + 1);
-            last_completed_frame = min(cp_data.last_frame, num_frames);
+            last_completed_frame = checkpoint_last_frame;
             last_checkpoint_path = cp_latest;
             is_resumed_checkpoint = true;
 
@@ -716,16 +737,28 @@ function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, max_blob_fra
 end
 
 
-function value = checkpoint_series(cp_data, field_name, num_frames)
-    value = zeros(num_frames, 1);
-    if ~isfield(cp_data, field_name) || isempty(cp_data.(field_name))
+function [value, is_missing] = checkpoint_series(cp_data, field_name, num_frames, checkpoint_last_frame)
+    is_missing = ~isfield(cp_data, field_name) || isempty(cp_data.(field_name));
+    if is_missing
+        value = nan(num_frames, 1);
+        if checkpoint_last_frame <= 0
+            value(:) = 0;
+        end
         return;
     end
 
+    value = nan(num_frames, 1);
     src = cp_data.(field_name);
     src = src(:);
     n = min(num_frames, numel(src));
     value(1:n) = src(1:n);
+end
+
+
+function missing_metric_fields = collect_missing_metric_field(missing_metric_fields, field_name, is_missing)
+    if is_missing
+        missing_metric_fields{end + 1} = field_name; %#ok<AGROW>
+    end
 end
 
 
