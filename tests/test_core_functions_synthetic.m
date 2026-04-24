@@ -38,6 +38,70 @@ function test_validate_config_accepts_residual_metric_defaults(testCase)
     verifyTrue(testCase, isstruct(config));
 end
 
+function test_config_pipeline_scans_overridden_data_path(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+
+    config = config_pipeline('data_path', fixture_dir);
+
+    verifyEqual(testCase, config.data_path, fixture_dir);
+    verifyEqual(testCase, config.multipage_tif_path, {tif_path});
+    verifyEqual(testCase, fileparts(config.output_path), fixture_dir);
+end
+
+function test_config_pipeline_sorts_scanned_tifs_by_datenum(testCase)
+    setup_path();
+    [fixture_dir, older_tif, newer_tif] = create_ordered_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+
+    config = config_pipeline('data_path', fixture_dir);
+
+    verifyEqual(testCase, config.multipage_tif_path(:)', {older_tif, newer_tif});
+end
+
+function test_config_pipeline_default_scan_smoke_if_data_exists(testCase)
+    setup_path();
+    default_data_path = get_config_pipeline_default_data_path();
+    assumeTrue(testCase, exist(default_data_path, 'dir') == 7);
+    assumeFalse(testCase, isempty(dir(fullfile(default_data_path, '*.tif'))));
+
+    config = config_pipeline();
+    datenums = cellfun(@(p) dir(p).datenum, config.multipage_tif_path);
+
+    verifyFalse(testCase, isempty(config.multipage_tif_path));
+    verifyTrue(testCase, issorted(datenums(:)));
+end
+
+function test_config_pipeline_preserves_supplied_multipage_tif_path(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    missing_dir = tempname(tempdir);
+
+    config = config_pipeline( ...
+        'data_path', missing_dir, ...
+        'multipage_tif_path', {tif_path});
+
+    verifyEqual(testCase, config.data_path, missing_dir);
+    verifyEqual(testCase, config.multipage_tif_path, {tif_path});
+    verifyEqual(testCase, fileparts(config.output_path), missing_dir);
+end
+
+function test_config_pipeline_preserves_explicit_output_path(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    explicit_output_path = tempname(tempdir);
+
+    config = config_pipeline( ...
+        'data_path', fixture_dir, ...
+        'output_path', explicit_output_path);
+
+    verifyEqual(testCase, config.multipage_tif_path, {tif_path});
+    verifyEqual(testCase, config.output_path, explicit_output_path);
+end
+
 function test_validate_config_rejects_blob_detail_with_parallel(testCase)
     setup_path();
     [fixture_dir, tif_path] = create_temp_tif_fixture();
@@ -392,6 +456,21 @@ function [fixture_dir, tif_path] = create_temp_tif_fixture()
     imwrite(rgb_image, tif_path);
 end
 
+function [fixture_dir, older_tif, newer_tif] = create_ordered_tif_fixture()
+    fixture_dir = tempname(tempdir);
+    mkdir(fixture_dir);
+
+    rgb_image = uint8(zeros(4, 4, 3));
+    rgb_image(:, :, 1) = 255;
+
+    older_tif = fullfile(fixture_dir, 'z_older_by_time.tif');
+    newer_tif = fullfile(fixture_dir, 'a_newer_by_time.tif');
+
+    imwrite(rgb_image, older_tif);
+    pause(1.1);
+    imwrite(rgb_image, newer_tif);
+end
+
 function cleanup_temp_tif_fixture(fixture_dir)
     if exist(fixture_dir, 'dir')
         rmdir(fixture_dir, 's');
@@ -399,75 +478,18 @@ function cleanup_temp_tif_fixture(fixture_dir)
 end
 
 function config = make_valid_test_config(fixture_dir, tif_path)
-    config = derive_config_pipeline_defaults(tif_path);
-    config.data_path = fixture_dir;
-    config.multipage_tif_path = {tif_path};
-    config.output_path = fullfile(fixture_dir, 'output');
+    config = config_pipeline( ...
+        'data_path', fixture_dir, ...
+        'multipage_tif_path', {tif_path}, ...
+        'output_path', fullfile(fixture_dir, 'output'));
 end
 
-function config = derive_config_pipeline_defaults(tif_path)
-    shadow_dir = tempname(tempdir);
-    mkdir(shadow_dir);
-    bootstrap_query = get_config_pipeline_bootstrap_query();
-    write_dir_shadow(shadow_dir, bootstrap_query, tif_path);
-    warning_state = warning('query', 'MATLAB:dispatcher:nameConflict');
-    warning('off', 'MATLAB:dispatcher:nameConflict');
-    addpath(shadow_dir, '-begin');
-    clear('dir');
-    rehash();
-    cleanup = onCleanup(@() restore_shadow_environment(shadow_dir, warning_state)); %#ok<NASGU>
-
-    config = config_pipeline();
-end
-
-function bootstrap_query = get_config_pipeline_bootstrap_query()
+function default_data_path = get_config_pipeline_default_data_path()
     pipeline_source = fileread(which('config_pipeline'));
     tokens = regexp(pipeline_source, "config\.data_path\s*=\s*'((?:''|[^'])*)';", 'tokens', 'once');
     assert(~isempty(tokens), 'test_fixture:parseFailure', ...
         'Failed to derive default data_path from config_pipeline.m.');
     default_data_path = strrep(tokens{1}, '''''', '''');
-    bootstrap_query = fullfile(default_data_path, '*.tif');
-end
-
-function write_dir_shadow(shadow_dir, bootstrap_query, tif_path)
-    shadow_file = fullfile(shadow_dir, 'dir.m');
-    fid = fopen(shadow_file, 'w');
-    assert(fid ~= -1, 'test_fixture:fileIO', 'Failed to create dir shadow helper.');
-    file_cleanup = onCleanup(@() fclose(fid)); %#ok<NASGU>
-
-    fprintf(fid, 'function listing = dir(query)\n');
-    fprintf(fid, 'if nargin == 1 && (ischar(query) || isstring(query))\n');
-    fprintf(fid, '    query = char(query);\n');
-    fprintf(fid, '    if strcmp(query, ''%s'')\n', escape_for_matlab_string(bootstrap_query));
-    fprintf(fid, '        info = builtin(''dir'', ''%s'');\n', escape_for_matlab_string(tif_path));
-    fprintf(fid, '        listing = info;\n');
-    fprintf(fid, '        return;\n');
-    fprintf(fid, '    end\n');
-    fprintf(fid, 'end\n');
-    fprintf(fid, 'if nargin == 0\n');
-    fprintf(fid, '    listing = builtin(''dir'');\n');
-    fprintf(fid, 'else\n');
-    fprintf(fid, '    listing = builtin(''dir'', query);\n');
-    fprintf(fid, 'end\n');
-    fprintf(fid, 'end\n');
-end
-
-function escaped = escape_for_matlab_string(value)
-    escaped = strrep(value, '''', '''''');
-end
-
-function restore_shadow_environment(shadow_dir, warning_state)
-    if exist(shadow_dir, 'dir')
-        rmpath(shadow_dir);
-    end
-    clear('dir');
-    rehash();
-
-    if exist(shadow_dir, 'dir')
-        rmdir(shadow_dir, 's');
-    end
-
-    warning(warning_state.state, 'MATLAB:dispatcher:nameConflict');
 end
 
 function value = local_percentile(values, percentile)

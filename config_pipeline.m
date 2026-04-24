@@ -23,18 +23,7 @@ function config = config_pipeline(varargin)
     %   ↑ 实验数据所在目录。下面的 TIF 路径基于此目录。
 
     % --- 输入文件 (自动扫描目录中所有 .tif 文件) ---
-    tif_list = dir(fullfile(config.data_path, '*.tif'));
-    if isempty(tif_list)
-        error('config_pipeline:noTIF', ...
-            ['No .tif files found in:\n  %s\n' ...
-             'Please set config.data_path to the folder containing your TIF files.\n' ...
-             'Example: config.data_path = ''...\\01 databased\\01 Pretest 5\\03 Water Dis'';'], ...
-            config.data_path);
-    end
-    [~, date_order] = sort([tif_list.datenum]);  % 按文件修改日期排序（从早到晚）
-    tif_list = tif_list(date_order);
-    config.multipage_tif_path = arrayfun(@(f) fullfile(f.folder, f.name), ...
-        tif_list, 'UniformOutput', false);
+    config.multipage_tif_path = {};
     %   ↑ 自动读取 data_path 下所有 .tif，按文件日期从早到晚排序
     %   ↑ 如需手动指定，改为 config.multipage_tif_path = {'path1.tif'; 'path2.tif'};
 
@@ -93,7 +82,8 @@ function config = config_pipeline(varargin)
 
     % --- 输出路径 ---
     %   每次运行自动创建带时间戳的新文件夹，放在图片同目录下，不会覆盖旧结果
-    config.output_path = fullfile(config.data_path, ['output_' datestr(now, 'yyyymmdd_HHMMSS')]);
+    default_output_name = ['output_' datestr(now, 'yyyymmdd_HHMMSS')];
+    config.output_path = '';
 
     % --- 预处理 ---
     config.preprocess.auto_rotate       = false;
@@ -154,14 +144,52 @@ function config = config_pipeline(varargin)
     config.output.max_frames_per_session = inf;       % inf: no auto-pause; finite values pause only on checkpoint boundaries
 
     %% ---- Apply user overrides (do not modify below) -----------------------
+    output_path_overridden = has_override(varargin, 'output_path');
     for k = 1:2:numel(varargin)
         field_path = varargin{k};
         value      = varargin{k+1};
         config     = setfield_nested(config, field_path, value);
     end
 
+    if isempty(config.multipage_tif_path)
+        config.multipage_tif_path = discover_tif_paths(config.data_path);
+    end
+
+    if ~output_path_overridden
+        config.output_path = fullfile(config.data_path, default_output_name);
+    end
+
     %% Validate configuration
     config = validate_config(config);
+end
+
+% -------------------------------------------------------------------------
+function tf = has_override(args, field_name)
+    tf = false;
+    for idx = 1:2:numel(args)
+        if ischar(args{idx}) || isstring(args{idx})
+            if strcmp(char(args{idx}), field_name)
+                tf = true;
+                return;
+            end
+        end
+    end
+end
+
+% -------------------------------------------------------------------------
+function tif_paths = discover_tif_paths(data_path)
+    tif_list = dir(fullfile(data_path, '*.tif'));
+    if isempty(tif_list)
+        error('config_pipeline:noTIF', ...
+            ['No .tif files found in:\n  %s\n' ...
+             'Please set config.data_path to the folder containing your TIF files.\n' ...
+             'Example: config.data_path = ''...\\01 databased\\01 Pretest 5\\03 Water Dis'';'], ...
+            data_path);
+    end
+    [~, date_order] = sort([tif_list.datenum]);  % 按文件修改日期排序（从早到晚）
+    tif_list = tif_list(date_order);
+    tif_paths = arrayfun(@(f) fullfile(f.folder, f.name), ...
+        tif_list, 'UniformOutput', false);
 end
 
 % -------------------------------------------------------------------------
