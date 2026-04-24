@@ -403,6 +403,19 @@ function test_blob_detail_status_line_reports_disabled_and_enabled_path(testCase
     expected_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
     enabled_log = evalc('characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);');
     verifyTrue(testCase, contains(enabled_log, ['Per-blob detail CSV: ' expected_path]));
+
+    if isfile(expected_path)
+        delete(expected_path);
+    end
+    config.parallel.enabled = true;
+    parallel_frame_index = frame_index(1);
+    parallel_time_vector = time_vector(1);
+    parallel_log = evalc('sol_parallel = characterize_solubilization_v2(parallel_frame_index, flow_domain, parallel_time_vector, config);');
+    verifyTrue(testCase, contains(parallel_log, ...
+        'Per-blob detail CSV: disabled in parallel mode'));
+    verifyFalse(testCase, contains(parallel_log, ['Per-blob detail CSV: ' expected_path]));
+    verifyFalse(testCase, isfield(sol_parallel, 'blob_detail_csv'));
+    verifyFalse(testCase, isfile(expected_path));
 end
 
 

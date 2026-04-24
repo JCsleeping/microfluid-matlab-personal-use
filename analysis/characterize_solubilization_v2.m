@@ -52,12 +52,15 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
     do_save_blob_detail = isfield(config, 'output') && ...
                           isfield(config.output, 'save_blob_detail') && ...
                           config.output.save_blob_detail;
+    do_write_blob_detail = do_save_blob_detail && ~use_parallel;
     blob_detail_csv_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
-    if do_save_blob_detail && ~isfolder(config.output_path)
+    if do_write_blob_detail && ~isfolder(config.output_path)
         mkdir(config.output_path);
     end
-    if do_save_blob_detail
+    if do_write_blob_detail
         fprintf('  Per-blob detail CSV: %s\n', blob_detail_csv_path);
+    elseif do_save_blob_detail && use_parallel
+        fprintf('  Per-blob detail CSV: disabled in parallel mode\n');
     else
         fprintf('  Per-blob detail CSV: disabled (set output.save_blob_detail=true for sequential runs)\n');
     end
@@ -255,7 +258,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         end
     end
 
-    if ~use_parallel && do_save_blob_detail
+    if do_write_blob_detail
         if is_resumed_checkpoint
             reconcile_blob_detail_csv(blob_detail_csv_path, nblobs_arr, last_completed_frame);
         elseif exist(blob_detail_csv_path, 'file') == 2
@@ -312,7 +315,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             frac_droplets_arr(1) = blob_metrics_1.frac_droplets;
             frac_columns_arr(1) = blob_metrics_1.frac_columns;
             frac_clusters_arr(1) = blob_metrics_1.frac_clusters;
-            if ~use_parallel && do_save_blob_detail && ~is_resumed_checkpoint
+            if do_write_blob_detail && ~is_resumed_checkpoint
                 append_blob_detail_csv(blob_detail_csv_path, 1, time_vector(1), blob_table_1);
             end
             last_completed_frame = max(last_completed_frame, 1);
@@ -524,7 +527,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                 frac_columns_arr(t) = blob_metrics_t.frac_columns;
                 frac_clusters_arr(t) = blob_metrics_t.frac_clusters;
                 change_arr(t-1) = compute_change_metrics(prev_mask, mask_t);
-                if do_save_blob_detail
+                if do_write_blob_detail
                     append_blob_detail_csv(blob_detail_csv_path, t, time_vector(t), blob_table_t);
                 end
                 prev_mask = mask_t;
@@ -635,7 +638,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                         flow_domain, px, config.physical.depth, config.physical.dnapl_density, ...
                         last_completed_frame, session_status, ...
                         resume_from_frame, last_checkpoint_path, ...
-                        do_save_blob_detail, blob_detail_csv_path);
+                        do_write_blob_detail, blob_detail_csv_path);
                     return;
                 end
             end
@@ -670,7 +673,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         flow_domain, px, config.physical.depth, config.physical.dnapl_density, ...
         last_completed_frame, session_status, ...
         resume_from_frame, last_checkpoint_path, ...
-        do_save_blob_detail, blob_detail_csv_path);
+        do_write_blob_detail, blob_detail_csv_path);
     heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
         'status', 'running', ...
         'step', 'STEP 4', ...
@@ -693,7 +696,7 @@ function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, max_blob_fra
         change_arr, change_template, masks_arr, first_mask, last_mask, ...
         use_parallel, time_vector, flow_domain, px, depth, rho, last_completed_frame, ...
         session_status, resume_from_frame, last_checkpoint_path, ...
-        do_save_blob_detail, blob_detail_csv_path)
+        do_write_blob_detail, blob_detail_csv_path)
 
     valid_frames = max(min(last_completed_frame, numel(sn_arr)), 1);
 
@@ -753,7 +756,7 @@ function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, max_blob_fra
     if strcmp(session_status, 'paused')
         sol.resume_from_frame = resume_from_frame;
     end
-    if do_save_blob_detail
+    if do_write_blob_detail
         sol.blob_detail_csv = blob_detail_csv_path;
     end
 end
