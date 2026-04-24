@@ -141,6 +141,26 @@ function test_reconcile_blob_detail_csv_truncates_future_rows(testCase)
 end
 
 
+function test_reconcile_blob_detail_csv_truncates_invalid_future_rows(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    T = table([1; 1; 2; 3.5; Inf], [1; 2; 3; 4; 5], [10; 20; 30; 40; 50], ...
+        'VariableNames', {'FrameIndex', 'BlobID', 'Area'});
+    writetable(T, csv_path);
+
+    reconcile_blob_detail_csv(csv_path, [2; 1; 0], 2);
+
+    T = readtable(csv_path, 'VariableNamingRule', 'preserve');
+    verifyEqual(testCase, height(T), 3);
+    verifyEqual(testCase, T.FrameIndex, [1; 1; 2]);
+    verifyEqual(testCase, T.BlobID, [1; 2; 3]);
+    verifyEqual(testCase, T.Area, [10; 20; 30]);
+end
+
+
 function test_reconcile_blob_detail_csv_per_frame_mismatch_errors(testCase)
     setup_path();
     fixture_dir = make_temp_dir();
