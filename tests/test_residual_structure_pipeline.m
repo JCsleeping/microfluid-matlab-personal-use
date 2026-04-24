@@ -141,6 +141,36 @@ function test_reconcile_blob_detail_csv_truncates_future_rows(testCase)
 end
 
 
+function test_reconcile_blob_detail_csv_per_frame_mismatch_errors(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    append_blob_detail_csv(csv_path, 1, 0.0, make_blob_detail_table([1; 2; 3]));
+
+    verifyError(testCase, ...
+        @() reconcile_blob_detail_csv(csv_path, [2; 1], 2), ...
+        'reconcile_blob_detail_csv:perFrameCountMismatch');
+end
+
+
+function test_reconcile_blob_detail_csv_invalid_frame_index_errors(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    T = table([1; NaN; 3], [1; 2; 3], [10; 20; 30], ...
+        'VariableNames', {'FrameIndex', 'BlobID', 'Area'});
+    writetable(T, csv_path);
+
+    verifyError(testCase, ...
+        @() reconcile_blob_detail_csv(csv_path, [1], 1), ...
+        'reconcile_blob_detail_csv:invalidFrameIndex');
+end
+
+
 function test_reconcile_blob_detail_csv_missing_expected_history_errors(testCase)
     setup_path();
     fixture_dir = make_temp_dir();

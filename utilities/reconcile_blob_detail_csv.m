@@ -20,7 +20,16 @@ function reconcile_blob_detail_csv(csv_path, nblobs_arr, checkpoint_last_frame)
             'Blob detail CSV %s does not contain required FrameIndex column.', csv_path);
     end
 
-    historical_rows = T.FrameIndex <= checkpoint_last_frame;
+    frame_index = T.FrameIndex;
+    if ~isnumeric(frame_index) || any(~isfinite(frame_index)) || ...
+            any(frame_index < 1) || any(frame_index ~= fix(frame_index))
+        error('reconcile_blob_detail_csv:invalidFrameIndex', ...
+            ['Blob detail CSV %s contains invalid FrameIndex values. ' ...
+             'FrameIndex must contain finite positive integers.'], ...
+            csv_path);
+    end
+
+    historical_rows = frame_index <= checkpoint_last_frame;
     T_history = T(historical_rows, :);
     actual_rows = height(T_history);
     if actual_rows ~= expected_rows
@@ -28,6 +37,20 @@ function reconcile_blob_detail_csv(csv_path, nblobs_arr, checkpoint_last_frame)
             ['Blob detail CSV %s has %d historical rows through frame %d, ' ...
              'but checkpoint nblobs_arr expects %d.'], ...
             csv_path, actual_rows, checkpoint_last_frame, expected_rows);
+    end
+
+    if checkpoint_last_frame > 0
+        expected_counts = nblobs_arr(1:checkpoint_last_frame);
+        actual_counts = accumarray(frame_index(historical_rows), 1, ...
+            [checkpoint_last_frame, 1], @sum, 0);
+        mismatch_frame = find(actual_counts ~= expected_counts(:), 1, 'first');
+        if ~isempty(mismatch_frame)
+            error('reconcile_blob_detail_csv:perFrameCountMismatch', ...
+                ['Blob detail CSV %s has %d rows for historical frame %d, ' ...
+                 'but checkpoint nblobs_arr expects %d.'], ...
+                csv_path, actual_counts(mismatch_frame), mismatch_frame, ...
+                expected_counts(mismatch_frame));
+        end
     end
 
     if any(~historical_rows)
