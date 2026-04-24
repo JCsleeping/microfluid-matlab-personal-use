@@ -528,7 +528,13 @@ function results = main_DNAPL_pipeline(config)
         visualize_interfaces(dnapl_mask, flow_domain, iface, config);
     end
 
-    %% 3e. Mass Transfer Estimation
+    %% 3e. Residual Architecture Classification
+    fprintf('\n  Classifying residual architecture...\n');
+    arch = classify_residual_architecture(blob, iface, sat, config);
+    results.architecture = arch;
+    fprintf('    Architecture: %s\n', arch.type);
+
+    %% 3f. Mass Transfer Estimation
     fprintf('\n  Estimating mass transfer...\n');
     mt = calculate_mass_transfer(iface, sat, blob, config);
     results.mass_transfer = mt;
