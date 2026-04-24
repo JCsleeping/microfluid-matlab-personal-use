@@ -72,6 +72,37 @@ function test_validate_config_rejects_crossed_architecture_thresholds(testCase)
         'validate_config:badParam');
 end
 
+function test_validate_config_rejects_out_of_range_architecture_fraction(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.architecture.pool_like.max_blob_fraction_min = 1.25;
+
+    verifyError(testCase, ...
+        @() validate_config(config), ...
+        'validate_config:badParam');
+end
+
+function test_validate_config_rejects_invalid_architecture_blob_counts(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.architecture.pool_like.num_blobs_max = 2.5;
+
+    verifyError(testCase, ...
+        @() validate_config(config), ...
+        'validate_config:badParam');
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.architecture.ganglia_rich.num_blobs_min = inf;
+
+    verifyError(testCase, ...
+        @() validate_config(config), ...
+        'validate_config:badParam');
+end
+
 function test_validate_config_rejects_negative_pixel_size(testCase)
     setup_path();
     [fixture_dir, tif_path] = create_temp_tif_fixture();
