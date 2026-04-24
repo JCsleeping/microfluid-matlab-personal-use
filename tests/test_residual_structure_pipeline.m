@@ -121,6 +121,78 @@ function test_append_blob_detail_csv_appends_without_duplicate_headers(testCase)
 end
 
 
+function test_reconcile_blob_detail_csv_truncates_future_rows(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    append_blob_detail_csv(csv_path, 1, 0.0, make_blob_detail_table([1; 2]));
+    append_blob_detail_csv(csv_path, 2, 1.0, make_blob_detail_table(3));
+    append_blob_detail_csv(csv_path, 3, 2.0, make_blob_detail_table(4));
+
+    reconcile_blob_detail_csv(csv_path, [2; 1; 1], 2);
+
+    T = readtable(csv_path, 'VariableNamingRule', 'preserve');
+    verifyEqual(testCase, height(T), 3);
+    verifyEqual(testCase, T.FrameIndex, [1; 1; 2]);
+    verifyEqual(testCase, T.BlobID, [1; 2; 3]);
+    verifyEqual(testCase, T.Area, [10; 20; 30]);
+end
+
+
+function test_reconcile_blob_detail_csv_missing_expected_history_errors(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    verifyError(testCase, ...
+        @() reconcile_blob_detail_csv(csv_path, [0; 2; 1], 2), ...
+        'reconcile_blob_detail_csv:missingHistoricalCsv');
+end
+
+
+function test_reconcile_blob_detail_csv_truncated_history_errors(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    append_blob_detail_csv(csv_path, 1, 0.0, make_blob_detail_table(1));
+
+    verifyError(testCase, ...
+        @() reconcile_blob_detail_csv(csv_path, [1; 1], 2), ...
+        'reconcile_blob_detail_csv:rowCountMismatch');
+end
+
+
+function test_reconcile_blob_detail_csv_extra_historical_rows_error(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    append_blob_detail_csv(csv_path, 1, 0.0, make_blob_detail_table([1; 2]));
+
+    verifyError(testCase, ...
+        @() reconcile_blob_detail_csv(csv_path, [1], 1), ...
+        'reconcile_blob_detail_csv:rowCountMismatch');
+end
+
+
+function test_reconcile_blob_detail_csv_zero_history_allows_missing(testCase)
+    setup_path();
+    fixture_dir = make_temp_dir();
+    cleanup = onCleanup(@() cleanup_temp_dir(fixture_dir)); %#ok<NASGU>
+    csv_path = fullfile(fixture_dir, 'blob_detail_all_frames.csv');
+
+    reconcile_blob_detail_csv(csv_path, [0; 0; 1], 2);
+
+    verifyFalse(testCase, exist(csv_path, 'file') == 2);
+end
+
+
 function test_export_progress_snapshot_writes_extended_columns(testCase)
     setup_path();
     fixture_dir = make_temp_dir();
@@ -269,6 +341,13 @@ function config = make_architecture_config()
             'max_blob_fraction_max', 0.30, ...
             'num_blobs_min', 25, ...
             'a_i_2D_min', 6.0e4));
+end
+
+
+function blob_table = make_blob_detail_table(blob_ids)
+    blob_ids = blob_ids(:);
+    blob_table = table(blob_ids, blob_ids * 10, 0.5 + blob_ids * 0.01, ...
+        'VariableNames', {'BlobID', 'Area', 'Circularity'});
 end
 
 

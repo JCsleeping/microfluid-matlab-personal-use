@@ -250,9 +250,12 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         end
     end
 
-    if ~use_parallel && do_save_blob_detail && ~is_resumed_checkpoint && ...
-            exist(blob_detail_csv_path, 'file') == 2
-        delete(blob_detail_csv_path);
+    if ~use_parallel && do_save_blob_detail
+        if is_resumed_checkpoint
+            reconcile_blob_detail_csv(blob_detail_csv_path, nblobs_arr, last_completed_frame);
+        elseif exist(blob_detail_csv_path, 'file') == 2
+            delete(blob_detail_csv_path);
+        end
     end
 
     %% Frame 1 establishes the locked threshold or rebuilds the registration reference.
