@@ -13,49 +13,76 @@ end
 
 function test_validate_config_accepts_valid_defaults(testCase)
     setup_path();
-    config = config_pipeline();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config = validate_config(config);
     verifyTrue(testCase, isstruct(config));
 end
 
 function test_validate_config_rejects_negative_pixel_size(testCase)
     setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.physical.pixel_size = -1;
     verifyError(testCase, ...
-        @() config_pipeline('physical.pixel_size', -1), ...
+        @() validate_config(config), ...
         'validate_config:badParam');
 end
 
 function test_validate_config_rejects_zero_pixel_size(testCase)
     setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.physical.pixel_size = 0;
     verifyError(testCase, ...
-        @() config_pipeline('physical.pixel_size', 0), ...
+        @() validate_config(config), ...
         'validate_config:badParam');
 end
 
 function test_validate_config_rejects_negative_morph_radius(testCase)
     setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.segmentation.morph_radius = -1;
     verifyError(testCase, ...
-        @() config_pipeline('segmentation.morph_radius', -1), ...
+        @() validate_config(config), ...
         'validate_config:badParam');
 end
 
 function test_validate_config_rejects_zero_min_blob_area(testCase)
     setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.segmentation.min_blob_area = 0;
     verifyError(testCase, ...
-        @() config_pipeline('segmentation.min_blob_area', 0), ...
+        @() validate_config(config), ...
         'validate_config:badParam');
 end
 
 function test_validate_config_rejects_bad_input_mode(testCase)
     setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.input_mode = 'invalid';
     verifyError(testCase, ...
-        @() config_pipeline('input_mode', 'invalid'), ...
+        @() validate_config(config), ...
         'validate_config:badParam');
 end
 
 function test_validate_config_rejects_fractional_pages(testCase)
     setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.pages = [1, 2.5, 3];
     verifyError(testCase, ...
-        @() config_pipeline('pages', [1, 2.5, 3]), ...
+        @() validate_config(config), ...
         'validate_config:badParam');
 end
 
@@ -182,4 +209,57 @@ end
 function setup_path()
     root_dir = fileparts(fileparts(mfilename('fullpath')));
     addpath(genpath(root_dir));
+end
+
+function [fixture_dir, tif_path] = create_temp_tif_fixture()
+    fixture_dir = tempname(tempdir);
+    mkdir(fixture_dir);
+
+    rgb_image = uint8(zeros(4, 4, 3));
+    rgb_image(:, :, 1) = 255;
+
+    tif_path = fullfile(fixture_dir, 'fixture.tif');
+    imwrite(rgb_image, tif_path);
+end
+
+function cleanup_temp_tif_fixture(fixture_dir)
+    if exist(fixture_dir, 'dir')
+        rmdir(fixture_dir, 's');
+    end
+end
+
+function config = make_valid_test_config(fixture_dir, tif_path)
+    config = struct();
+    config.data_path = fixture_dir;
+    config.multipage_tif_path = {tif_path};
+    config.pages = [];
+    config.input_mode = 'multipage_tif';
+    config.output_path = fullfile(fixture_dir, 'output');
+
+    config.physical = struct( ...
+        'pixel_size', 'calibrate', ...
+        'diffusion_coeff', 0.43e-9, ...
+        'solubility', 4, ...
+        'dnapl_density', 1038, ...
+        'depth', 20e-6);
+
+    config.segmentation = struct( ...
+        'num_components', 2, ...
+        'morph_radius', 2, ...
+        'min_blob_area', 10, ...
+        'method', 'gmm_v2');
+
+    config.interface = struct('solid_dilation', 1);
+    config.time_interval = 1;
+    config.parallel = struct('enabled', false);
+    config.output = struct( ...
+        'checkpoint', true, ...
+        'save_log', true, ...
+        'save_progress', false, ...
+        'save_heartbeat', true, ...
+        'save_interval', 72, ...
+        'progress_interval', 50, ...
+        'heartbeat_frame_interval', 10, ...
+        'heartbeat_time_interval_sec', 30, ...
+        'max_frames_per_session', inf);
 end
