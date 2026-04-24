@@ -88,19 +88,7 @@ function export_results(results, output_path, formats, config)
                     try
                         sol = results.solubilization;
                         fname = fullfile(output_path, ['timeseries_' timestamp '.csv']);
-                        % Build base columns
-                        cols = {results.time_vector(:), ...
-                            sol.saturation_vs_time, ...
-                            sol.num_blobs_vs_time, ...
-                            sol.mean_blob_size_vs_time, ...
-                            sol.interface_area_vs_time};
-                        names = {'Time','Sn','NumBlobs','MeanBlobSize','InterfaceArea'};
-                        % Append mass curve if available
-                        if isfield(sol, 'mass_dissolved_vs_time')
-                            cols{end+1} = sol.mass_dissolved_vs_time;
-                            names{end+1} = 'MassDissolvedKg';
-                        end
-                        T = table(cols{:}, 'VariableNames', names);
+                        T = build_solubilization_timeseries_table(results.time_vector, sol);
                         writetable(T, fname);
                         fprintf('  Saved: %s\n', fname);
                     catch ME
@@ -109,6 +97,21 @@ function export_results(results, output_path, formats, config)
                     end
                 else
                     fprintf('  Skipped: timeseries.csv (no solubilization data)\n');
+                end
+
+                % Architecture summary
+                if isfield(results, 'architecture')
+                    try
+                        fname = fullfile(output_path, ['architecture_' timestamp '.csv']);
+                        T = build_architecture_export_table(results.architecture);
+                        writetable(T, fname);
+                        fprintf('  Saved: %s\n', fname);
+                    catch ME
+                        warning('export_results:saveFailed', ...
+                            'Failed to save architecture CSV: %s', ME.message);
+                    end
+                else
+                    fprintf('  Skipped: architecture.csv (no architecture data)\n');
                 end
 
             case 'xlsx'
@@ -120,18 +123,12 @@ function export_results(results, output_path, formats, config)
                     end
                     if isfield(results, 'solubilization')
                         sol = results.solubilization;
-                        cols = {results.time_vector(:), ...
-                            sol.saturation_vs_time, ...
-                            sol.num_blobs_vs_time, ...
-                            sol.mean_blob_size_vs_time, ...
-                            sol.interface_area_vs_time};
-                        names = {'Time','Sn','NumBlobs','MeanBlobSize','InterfaceArea'};
-                        if isfield(sol, 'mass_dissolved_vs_time')
-                            cols{end+1} = sol.mass_dissolved_vs_time;
-                            names{end+1} = 'MassDissolvedKg';
-                        end
-                        T = table(cols{:}, 'VariableNames', names);
+                        T = build_solubilization_timeseries_table(results.time_vector, sol);
                         writetable(T, fname, 'Sheet', 'Time Series');
+                    end
+                    if isfield(results, 'architecture')
+                        T = build_architecture_export_table(results.architecture);
+                        writetable(T, fname, 'Sheet', 'Architecture');
                     end
                     fprintf('  Saved: %s\n', fname);
                 catch ME
@@ -140,4 +137,36 @@ function export_results(results, output_path, formats, config)
                 end
         end
     end
+end
+
+
+function T = build_architecture_export_table(architecture)
+    T = table( ...
+        {read_architecture_field(architecture, {'type'}, '')}, ...
+        read_architecture_field(architecture, {'indicators', 'Sn0'}, NaN), ...
+        read_architecture_field(architecture, {'indicators', 'N_b'}, NaN), ...
+        read_architecture_field(architecture, {'indicators', 'L_ow'}, NaN), ...
+        read_architecture_field(architecture, {'indicators', 'a_i_2D'}, NaN), ...
+        read_architecture_field(architecture, {'indicators', 'max_blob_fraction'}, NaN), ...
+        read_architecture_field(architecture, {'indicators', 'Req_median'}, NaN), ...
+        read_architecture_field(architecture, {'scores', 'pool_like'}, NaN), ...
+        read_architecture_field(architecture, {'scores', 'ganglia_rich'}, NaN), ...
+        'VariableNames', {'Type', 'Sn0', 'NumBlobs', 'L_ow', 'a_i_2D', ...
+        'MaxBlobFraction', 'ReqMedian', 'PoolScore', 'GangliaScore'});
+end
+
+
+function value = read_architecture_field(s, path_tokens, default_value)
+    value = default_value;
+    current = s;
+
+    for i = 1:numel(path_tokens)
+        token = path_tokens{i};
+        if ~isstruct(current) || ~isfield(current, token)
+            return;
+        end
+        current = current.(token);
+    end
+
+    value = current;
 end
