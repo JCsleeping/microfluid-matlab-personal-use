@@ -229,37 +229,61 @@ function cleanup_temp_tif_fixture(fixture_dir)
 end
 
 function config = make_valid_test_config(fixture_dir, tif_path)
-    config = struct();
+    config = derive_config_pipeline_defaults(tif_path);
     config.data_path = fixture_dir;
     config.multipage_tif_path = {tif_path};
-    config.pages = [];
-    config.input_mode = 'multipage_tif';
     config.output_path = fullfile(fixture_dir, 'output');
+end
 
-    config.physical = struct( ...
-        'pixel_size', 'calibrate', ...
-        'diffusion_coeff', 0.43e-9, ...
-        'solubility', 4, ...
-        'dnapl_density', 1038, ...
-        'depth', 20e-6);
+function config = derive_config_pipeline_defaults(tif_path)
+    shadow_dir = tempname(tempdir);
+    mkdir(shadow_dir);
+    write_dir_shadow(shadow_dir, tif_path);
 
-    config.segmentation = struct( ...
-        'num_components', 2, ...
-        'morph_radius', 2, ...
-        'min_blob_area', 10, ...
-        'method', 'gmm_v2');
+    original_dir = pwd;
+    warning_state = warning('query', 'MATLAB:dispatcher:nameConflict');
+    warning('off', 'MATLAB:dispatcher:nameConflict');
+    cleanup = onCleanup(@() restore_shadow_environment(original_dir, shadow_dir, warning_state)); %#ok<NASGU>
 
-    config.interface = struct('solid_dilation', 1);
-    config.time_interval = 1;
-    config.parallel = struct('enabled', false);
-    config.output = struct( ...
-        'checkpoint', true, ...
-        'save_log', true, ...
-        'save_progress', false, ...
-        'save_heartbeat', true, ...
-        'save_interval', 72, ...
-        'progress_interval', 50, ...
-        'heartbeat_frame_interval', 10, ...
-        'heartbeat_time_interval_sec', 30, ...
-        'max_frames_per_session', inf);
+    cd(shadow_dir);
+    config = config_pipeline();
+end
+
+function write_dir_shadow(shadow_dir, tif_path)
+    shadow_file = fullfile(shadow_dir, 'dir.m');
+    fid = fopen(shadow_file, 'w');
+    assert(fid ~= -1, 'test_fixture:fileIO', 'Failed to create dir shadow helper.');
+    file_cleanup = onCleanup(@() fclose(fid)); %#ok<NASGU>
+
+    fprintf(fid, 'function listing = dir(query)\n');
+    fprintf(fid, 'if nargin == 1 && (ischar(query) || isstring(query))\n');
+    fprintf(fid, '    query = char(query);\n');
+    fprintf(fid, '    if endsWith(lower(query), ''.tif'')\n');
+    fprintf(fid, '        info = builtin(''dir'', ''%s'');\n', escape_for_matlab_string(tif_path));
+    fprintf(fid, '        listing = info;\n');
+    fprintf(fid, '        return;\n');
+    fprintf(fid, '    end\n');
+    fprintf(fid, 'end\n');
+    fprintf(fid, 'if nargin == 0\n');
+    fprintf(fid, '    listing = builtin(''dir'');\n');
+    fprintf(fid, 'else\n');
+    fprintf(fid, '    listing = builtin(''dir'', query);\n');
+    fprintf(fid, 'end\n');
+    fprintf(fid, 'end\n');
+end
+
+function escaped = escape_for_matlab_string(value)
+    escaped = strrep(value, '''', '''''');
+end
+
+function restore_shadow_environment(original_dir, shadow_dir, warning_state)
+    cd(original_dir);
+    clear('dir');
+    rehash();
+
+    if exist(shadow_dir, 'dir')
+        rmdir(shadow_dir, 's');
+    end
+
+    warning(warning_state.state, 'MATLAB:dispatcher:nameConflict');
 end
