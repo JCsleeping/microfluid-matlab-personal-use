@@ -286,7 +286,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             Req_mean_arr(1) = blob_metrics_1.Req_mean;
             Req_std_arr(1) = blob_metrics_1.Req_std;
             mean_circularity_arr(1) = blob_metrics_1.mean_circularity;
-            a_i_2D_arr(1) = compute_ai_2d(first_mask, iface_arr(1));
+            a_i_2D_arr(1) = compute_ai_2d(first_mask, iface_arr(1), px, flow_domain);
             n_droplets_arr(1) = blob_metrics_1.n_droplets;
             n_columns_arr(1) = blob_metrics_1.n_columns;
             n_clusters_arr(1) = blob_metrics_1.n_clusters;
@@ -442,7 +442,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             Req_mean_arr(t) = blob_metrics_t.Req_mean;
             Req_std_arr(t) = blob_metrics_t.Req_std;
             mean_circularity_arr(t) = blob_metrics_t.mean_circularity;
-            a_i_2D_arr(t) = compute_ai_2d(mask_t, iface_arr(t));
+            a_i_2D_arr(t) = compute_ai_2d(mask_t, iface_arr(t), px, flow_domain);
             n_droplets_arr(t) = blob_metrics_t.n_droplets;
             n_columns_arr(t) = blob_metrics_t.n_columns;
             n_clusters_arr(t) = blob_metrics_t.n_clusters;
@@ -497,7 +497,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                 Req_mean_arr(t) = blob_metrics_t.Req_mean;
                 Req_std_arr(t) = blob_metrics_t.Req_std;
                 mean_circularity_arr(t) = blob_metrics_t.mean_circularity;
-                a_i_2D_arr(t) = compute_ai_2d(mask_t, iface_arr(t));
+                a_i_2D_arr(t) = compute_ai_2d(mask_t, iface_arr(t), px, flow_domain);
                 n_droplets_arr(t) = blob_metrics_t.n_droplets;
                 n_columns_arr(t) = blob_metrics_t.n_columns;
                 n_clusters_arr(t) = blob_metrics_t.n_clusters;
@@ -762,14 +762,18 @@ function missing_metric_fields = collect_missing_metric_field(missing_metric_fie
 end
 
 
-function a_i_2D = compute_ai_2d(mask, interface_length)
-    dnapl_area = sum(mask(:));
-    if dnapl_area <= 0
+function a_i_2D = compute_ai_2d(mask, interface_length_px, px, flow_domain)
+    dnapl_area_px = sum(mask(:) & flow_domain(:));
+    if dnapl_area_px <= 0
         a_i_2D = 0;
         return;
     end
 
-    a_i_2D = interface_length / dnapl_area;
+    if isnumeric(px) && isscalar(px) && isfinite(px) && px > 0
+        a_i_2D = (interface_length_px * px) / (dnapl_area_px * px^2);
+    else
+        a_i_2D = interface_length_px / dnapl_area_px;
+    end
 end
 
 
