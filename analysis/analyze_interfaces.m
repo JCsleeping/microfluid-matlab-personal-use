@@ -65,6 +65,18 @@ function iface = analyze_interfaces(dnapl_mask, flow_domain, pixel_size, config)
             iface.dnapl_water_length_px / max(sum(flow_domain(:)), 1);
     end
 
+    dnapl_area_px = sum(dnapl_mask(:) & flow_domain(:));
+    if dnapl_area_px > 0
+        if ~isempty(pixel_size) && pixel_size > 0
+            dnapl_area_m2 = dnapl_area_px * pixel_size^2;
+            iface.a_i_2D = iface.dnapl_water_length_m / dnapl_area_m2;
+        else
+            iface.a_i_2D = iface.dnapl_water_length_px / dnapl_area_px;
+        end
+    else
+        iface.a_i_2D = 0;
+    end
+
     %% Step 7: Per-blob interface analysis
     cc = bwconncomp(dnapl_mask, 8);
     n_blobs = cc.NumObjects;

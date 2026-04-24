@@ -240,6 +240,12 @@ function test_blob_geometry_empty_mask(testCase)
     blob = analyze_blob_geometry(mask, 1e-6);
     verifyEqual(testCase, blob.num_blobs, 0);
     verifyTrue(testCase, isempty(blob.props));
+    verifyEqual(testCase, blob.size_distribution.total, 0);
+    verifyEqual(testCase, blob.max_blob_fraction, 0);
+    verifyEqual(testCase, blob.Req_distribution.median, 0);
+    verifyEqual(testCase, blob.topology_summary.n_droplets, 0);
+    verifyEqual(testCase, blob.topology_summary.n_columns, 0);
+    verifyEqual(testCase, blob.topology_summary.n_clusters, 0);
 end
 
 function test_blob_geometry_single_blob(testCase)
@@ -284,6 +290,53 @@ function test_blob_geometry_ganglia_without_pixel_size(testCase)
     verifyTrue(testCase, any(types == "singlet"));
     verifyTrue(testCase, any(types == "ganglion"));
     verifyTrue(testCase, any(types == "pool"));
+end
+
+
+function test_blob_geometry_reports_topology_and_req_statistics(testCase)
+    setup_path();
+    mask = false(120, 120);
+
+    mask(10:16, 10:16) = true;
+    mask(20:22, 40:70) = true;
+    mask(60:74, 80:94) = true;
+    mask(64:70, 84:90) = false;
+
+    blob = analyze_blob_geometry(mask, 2e-6);
+    topology_types = string({blob.props.TopologyType});
+
+    verifyEqual(testCase, blob.num_blobs, 3);
+    verifyTrue(testCase, all(ismember(["EulerNumber", "EquivRadius", "TopologyType"], ...
+        string(blob.blob_table.Properties.VariableNames))));
+    verifyTrue(testCase, any(topology_types == "droplet"));
+    verifyTrue(testCase, any(topology_types == "column"));
+    verifyTrue(testCase, any(topology_types == "cluster"));
+    verifyGreaterThan(testCase, blob.max_blob_fraction, 0);
+    verifyLessThanOrEqual(testCase, blob.max_blob_fraction, 1);
+    verifyGreaterThan(testCase, blob.Req_distribution.median, 0);
+    verifyEqual(testCase, blob.topology_summary.n_droplets + ...
+        blob.topology_summary.n_columns + blob.topology_summary.n_clusters, 3);
+    verifyEqual(testCase, blob.topology_summary.frac_droplets + ...
+        blob.topology_summary.frac_columns + blob.topology_summary.frac_clusters, ...
+        1, 'AbsTol', 1e-10);
+end
+
+
+%% ========== analyze_interfaces ==========
+
+function test_analyze_interfaces_reports_ai_2d(testCase)
+    setup_path();
+    flow_domain = true(20, 20);
+    dnapl_mask = false(20, 20);
+    dnapl_mask(6:9, 7:10) = true;
+    pixel_size = 2e-6;
+
+    iface = analyze_interfaces(dnapl_mask, flow_domain, pixel_size, struct());
+    expected_ai_2d = iface.dnapl_water_length_m / ...
+        (sum(dnapl_mask(:) & flow_domain(:)) * pixel_size^2);
+
+    verifyEqual(testCase, iface.a_i_2D, expected_ai_2d, 'AbsTol', 1e-12);
+    verifyGreaterThan(testCase, iface.a_i_2D, iface.specific_interfacial_area);
 end
 
 
