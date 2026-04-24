@@ -215,7 +215,17 @@ function results = main_DNAPL_pipeline(config)
             'FontSize', 13);
 
         h_line = imdistline;
-        wait(h_line);
+        try
+            wait(h_line);
+        catch
+            if ishandle(fig_cal), close(fig_cal); end
+            error('main:calibrationCancelled', ...
+                'Pixel calibration cancelled — figure was closed before confirmation.');
+        end
+        if ~ishandle(fig_cal)
+            error('main:calibrationCancelled', ...
+                'Pixel calibration cancelled — figure was closed before confirmation.');
+        end
         line_px = getDistance(h_line);
         close(fig_cal);
 
@@ -243,7 +253,17 @@ function results = main_DNAPL_pipeline(config)
             'FontSize', 13);
 
         roi = drawpolygon('Color', 'r', 'LineWidth', 2);
-        wait(roi);
+        try
+            wait(roi);
+        catch
+            if ishandle(fig_roi), close(fig_roi); end
+            error('main:roiCancelled', ...
+                'ROI selection cancelled — figure was closed before confirmation.');
+        end
+        if ~ishandle(fig_roi)
+            error('main:roiCancelled', ...
+                'ROI selection cancelled — figure was closed before confirmation.');
+        end
         vertices = roi.Position;  % Nx2 [x, y]
         close(fig_roi);
 
@@ -291,7 +311,17 @@ function results = main_DNAPL_pipeline(config)
                 'FontSize', 13);
 
             roi_c = drawpolygon('Color', 'g', 'LineWidth', 2);
-            wait(roi_c);
+            try
+                wait(roi_c);
+            catch
+                if ishandle(fig_clean), close(fig_clean); end
+                error('main:cleanRoiCancelled', ...
+                    'Clean reference ROI cancelled — figure was closed before confirmation.');
+            end
+            if ~ishandle(fig_clean)
+                error('main:cleanRoiCancelled', ...
+                    'Clean reference ROI cancelled — figure was closed before confirmation.');
+            end
             clean_verts = roi_c.Position;
             close(fig_clean);
 

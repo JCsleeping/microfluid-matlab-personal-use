@@ -96,13 +96,21 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         if ~isempty(cp_files)
             [~, idx] = sort({cp_files.name});
             cp_latest = fullfile(cp_dir, cp_files(idx(end)).name);
-            available_vars = who('-file', cp_latest);
-            requested_vars = {'sn_arr', 'nblobs_arr', 'mbs_arr', 'iface_arr', ...
-                              'last_frame', 'change_arr', 'first_mask', 'prev_mask', ...
-                              'last_mask', 'masks_arr', 'locked_threshold'};
-            load_vars = requested_vars(ismember(requested_vars, available_vars));
-            cp_data = load(cp_latest, load_vars{:});
-
+            try
+                available_vars = who('-file', cp_latest);
+                requested_vars = {'sn_arr', 'nblobs_arr', 'mbs_arr', 'iface_arr', ...
+                                  'last_frame', 'change_arr', 'first_mask', 'prev_mask', ...
+                                  'last_mask', 'masks_arr', 'locked_threshold'};
+                load_vars = requested_vars(ismember(requested_vars, available_vars));
+                cp_data = load(cp_latest, load_vars{:});
+            catch ME_cp
+                warning('characterize_solubilization_v2:corruptCheckpoint', ...
+                    'Checkpoint %s is corrupted or unreadable: %s\nStarting fresh.', ...
+                    cp_latest, ME_cp.message);
+                cp_files = [];  % fall through to fresh start
+            end
+        end
+        if ~isempty(cp_files)
             sn_arr     = cp_data.sn_arr;
             nblobs_arr = cp_data.nblobs_arr;
             mbs_arr    = cp_data.mbs_arr;
@@ -263,6 +271,23 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         end
     end
 
+    % Memory pressure check: warn if system RAM is low for this workload
+    try
+        mem_info = memory();
+        avail_gb = mem_info.MemAvailableAllArrays / (1024^3);
+        % Each frame needs ~3 RGB double buffers + 1 logical mask in flight
+        bytes_per_frame = prod(double(fd_size)) * 8 * 3 + prod(double(fd_size));
+        peak_gb = bytes_per_frame * 4 / (1024^3);  % concurrent buffers
+        if peak_gb > avail_gb * 0.5
+            warning('characterize_solubilization_v2:memoryPressure', ...
+                ['Per-frame working memory ~%.2f GB vs %.2f GB available. ' ...
+                 'Consider subsampling with config.pages to reduce memory pressure.'], ...
+                peak_gb, avail_gb);
+        end
+    catch
+        % memory() is Windows-only; skip on other platforms
+    end
+
     parallel_mask_limit_gb = 2.0;
     estimated_mask_gb = prod(double(fd_size)) * double(num_frames) / (1024 ^ 3);
     if use_parallel && estimated_mask_gb > parallel_mask_limit_gb
@@ -349,33 +374,54 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
         for t = start_frame:num_frames
             fprintf('\n  --- Frame %d / %d ---\n', t, num_frames);
-            rgb_t = load_frame(t, frame_index);
-            [rgb_rot_t, ~, ~] = rotate_and_crop(rgb_t, config_locked);
-            [rgb_corr_t, ~] = correct_illumination(rgb_rot_t, ...
-                config_locked.illumination.method, config_locked.illumination, config.parallel.use_gpu);
-            if size(rgb_corr_t,1) ~= size(flow_domain,1) || size(rgb_corr_t,2) ~= size(flow_domain,2)
-                rgb_corr_t = imresize(rgb_corr_t, size(flow_domain));
-            end
-            if do_registration
-                [rgb_corr_t, ~] = align_images(rgb_corr_t, ref_image, config);
-            end
+            try
+                rgb_t = load_frame(t, frame_index);
+                [rgb_rot_t, ~, ~] = rotate_and_crop(rgb_t, config_locked);
+                [rgb_corr_t, ~] = correct_illumination(rgb_rot_t, ...
+                    config_locked.illumination.method, config_locked.illumination, config.parallel.use_gpu);
+                if size(rgb_corr_t,1) ~= size(flow_domain,1) || size(rgb_corr_t,2) ~= size(flow_domain,2)
+                    rgb_corr_t = imresize(rgb_corr_t, size(flow_domain));
+                end
+                if do_registration
+                    [rgb_corr_t, ~] = align_images(rgb_corr_t, ref_image, config);
+                end
 
-            if endsWith(config.segmentation.method, '_v2')
-                [mask_t, ~, ~] = segment_DNAPL_v2(rgb_corr_t, flow_domain, config_locked);
-            else
-                [mask_t, ~, ~] = segment_DNAPL(rgb_corr_t, flow_domain, config_locked);
-            end
-            mask_t = normalize_mask_size(mask_t, fd_size);
-            last_mask = mask_t;
+                if endsWith(config.segmentation.method, '_v2')
+                    [mask_t, ~, ~] = segment_DNAPL_v2(rgb_corr_t, flow_domain, config_locked);
+                else
+                    [mask_t, ~, ~] = segment_DNAPL(rgb_corr_t, flow_domain, config_locked);
+                end
+                mask_t = normalize_mask_size(mask_t, fd_size);
+                last_mask = mask_t;
 
-            sat_t = calculate_saturation(mask_t, flow_domain, px);
-            sn_arr(t) = sat_t.Sn;
-            [nblobs_arr(t), mbs_arr(t)] = compute_timeseries_blob_metrics(mask_t);
-            iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
-            change_arr(t-1) = compute_change_metrics(prev_mask, mask_t);
-            prev_mask = mask_t;
+                sat_t = calculate_saturation(mask_t, flow_domain, px);
+                sn_arr(t) = sat_t.Sn;
+                [nblobs_arr(t), mbs_arr(t)] = compute_timeseries_blob_metrics(mask_t);
+                iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
+                change_arr(t-1) = compute_change_metrics(prev_mask, mask_t);
+                prev_mask = mask_t;
+            catch ME_frame
+                warning('characterize_solubilization_v2:frameError', ...
+                    'Frame %d failed: %s. Carrying forward previous values.', t, ME_frame.message);
+                % Carry forward previous frame values (sn_arr(t) stays 0 or
+                % copies from previous frame)
+                if t > 1
+                    sn_arr(t)     = sn_arr(t-1);
+                    nblobs_arr(t) = nblobs_arr(t-1);
+                    mbs_arr(t)    = mbs_arr(t-1);
+                    iface_arr(t)  = iface_arr(t-1);
+                end
+            end
             last_completed_frame = t;
             processed_this_session = processed_this_session + 1;
+
+            % Release per-frame intermediate memory immediately
+            clear rgb_t rgb_rot_t rgb_corr_t mask_t sat_t;
+
+            % Periodic GPU cache flush (every 50 frames)
+            if config.parallel.use_gpu && mod(t, 50) == 0
+                try gpu_dev = gpuDevice; wait(gpu_dev); catch; end %#ok<NASGU>
+            end
             heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
                 'status', 'running', ...
                 'step', 'STEP 4', ...
@@ -387,10 +433,16 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             if do_checkpoint && mod(t, save_interval) == 0
                 last_frame = t; %#ok<NASGU>
                 cp_file = fullfile(cp_dir, sprintf('checkpoint_%04d.mat', t));
-                save(cp_file, 'sn_arr', 'nblobs_arr', 'mbs_arr', ...
-                     'iface_arr', 'change_arr', 'first_mask', 'prev_mask', ...
-                     'last_mask', 'last_frame', 'locked_threshold', '-v7.3');
-                last_checkpoint_path = cp_file;
+                try
+                    save(cp_file, 'sn_arr', 'nblobs_arr', 'mbs_arr', ...
+                         'iface_arr', 'change_arr', 'first_mask', 'prev_mask', ...
+                         'last_mask', 'last_frame', 'locked_threshold', '-v7.3');
+                    last_checkpoint_path = cp_file;
+                catch ME_save
+                    warning('characterize_solubilization_v2:checkpointSaveFailed', ...
+                        'Failed to save checkpoint at frame %d: %s. Continuing without checkpoint.', ...
+                        t, ME_save.message);
+                end
                 heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
                     'status', 'running', ...
                     'step', 'STEP 4', ...

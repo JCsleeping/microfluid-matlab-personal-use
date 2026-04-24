@@ -47,9 +47,13 @@ function fig = visualize_interfaces(dnapl_mask, flow_domain, iface, config)
 
     imshow(base);
     title('Interface Map', 'FontSize', 12);
-    % Add legend as text
-    text(10, 20, 'Green = DNAPL-Water', 'Color', [0 1 0], 'FontSize', 10, 'FontWeight', 'bold');
-    text(10, 45, 'Yellow = DNAPL-Solid', 'Color', [1 1 0], 'FontSize', 10, 'FontWeight', 'bold');
+    % Add legend as text (normalized units, bottom-left corner)
+    text(0.02, 0.08, 'Green = DNAPL-Water', 'Units', 'normalized', ...
+        'Color', [0 1 0], 'FontSize', 10, 'FontWeight', 'bold', ...
+        'BackgroundColor', [0.1 0.1 0.1], 'Margin', 3);
+    text(0.02, 0.02, 'Yellow = DNAPL-Solid', 'Units', 'normalized', ...
+        'Color', [1 1 0], 'FontSize', 10, 'FontWeight', 'bold', ...
+        'BackgroundColor', [0.1 0.1 0.1], 'Margin', 3);
 
     %% Panel 2: DNAPL-water interface
     subplot(2,3,2);

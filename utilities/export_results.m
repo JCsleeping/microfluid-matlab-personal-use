@@ -26,12 +26,22 @@ function export_results(results, output_path, formats, config)
                             isfield(results.solubilization, 'masks')
                         results.solubilization = rmfield(results.solubilization, 'masks');
                     end
+                    % Save to temp file first (workaround for non-ASCII paths)
+                    tmp_mat = [tempname '.mat'];
                     if ~isempty(config)
-                        save(fname, 'results', 'config', '-v7.3');
+                        save(tmp_mat, 'results', 'config', '-v7.3');
                     else
-                        save(fname, 'results', '-v7.3');
+                        save(tmp_mat, 'results', '-v7.3');
                     end
-                    fprintf('  Saved: %s (masks excluded to reduce size)\n', fname);
+                    [ok, msg] = copyfile(tmp_mat, fname, 'f');
+                    if ~ok
+                        warning('export_results:copyFailed', ...
+                            'Saved temp MAT but copy failed: %s', msg);
+                        fprintf('  Temp MAT at: %s\n', tmp_mat);
+                    else
+                        delete(tmp_mat);
+                        fprintf('  Saved: %s (masks excluded to reduce size)\n', fname);
+                    end
                 catch ME
                     warning('export_results:saveFailed', ...
                         'Failed to save MAT file: %s', ME.message);

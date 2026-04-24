@@ -60,7 +60,9 @@ function [dnapl_mask, confidence_map, seg_info] = segment_DNAPL_v2(ref_image, fl
     if use_gpu
         try
             if gpuDeviceCount > 0
-                bg_eroded = gather(imerode(gpuArray(bg), se));
+                g = gpuArray(bg);
+                bg_eroded = gather(imerode(g, se));
+                clear g;  % release GPU memory immediately
             else
                 bg_eroded = imerode(bg, se);
             end

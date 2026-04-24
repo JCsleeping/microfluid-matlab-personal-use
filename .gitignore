@@ -30,3 +30,6 @@ Desktop.ini
 # Python cache (from helper scripts)
 __pycache__/
 *.pyc
+
+# Local git worktrees
+.worktrees/

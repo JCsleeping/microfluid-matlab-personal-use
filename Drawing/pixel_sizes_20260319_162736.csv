@@ -1,0 +1,11 @@
+RootDir,Group,Phase,OutputFolder,PixelSize_um,PixelSize_m,Source,MatFile
+G:\微流控\04 LANPL-5UL\02 Water Dispalcement\output_20260304_144506,,,output_20260304_144506,NaN,NaN,not_found,G:\微流控\04 LANPL-5UL\02 Water Dispalcement\output_20260304_144506\results_20260304_170028.mat
+G:\微流控\05 LNAPL-2.5ul\02 water displace\output_20260306_221233,,,output_20260306_221233,NaN,NaN,not_found,G:\微流控\05 LNAPL-2.5ul\02 water displace\output_20260306_221233\results_20260306_230950.mat
+G:\微流控\06 LNAPL-4UL\02 WATER DISPLACE\output_20260309_115339,,,output_20260309_115339,4.25100780497217,4.25100780497217e-06,config,G:\微流控\06 LNAPL-4UL\02 WATER DISPLACE\output_20260309_115339\results_20260309_124221.mat
+G:\微流控\07 1-BD 4UL\02 Water Displacement\output_20260310_231726,,,output_20260310_231726,4.28304059387284,4.28304059387284e-06,config,G:\微流控\07 1-BD 4UL\02 Water Displacement\output_20260310_231726\results_20260311_065711.mat
+G:\微流控\08 1-BD 2UL\02\output_20260312_181726,,,output_20260312_181726,4.01151739824146,4.01151739824146e-06,config,G:\微流控\08 1-BD 2UL\02\output_20260312_181726\results_20260312_193808.mat
+G:\微流控\09 1-BD 6UL\02 Water Displacement\output_20260313_151504,,,output_20260313_151504,4,4e-06,config,G:\微流控\09 1-BD 6UL\02 Water Displacement\output_20260313_151504\results_20260313_163944.mat
+G:\微流控\10 1-BO 2UL\02  Water Displacement\output_20260318_000749,,,output_20260318_000749,4.87659849094171,4.87659849094171e-06,config,G:\微流控\10 1-BO 2UL\02  Water Displacement\output_20260318_000749\results_20260318_004331.mat
+G:\微流控\11 1-BO 4 UL\02  Water Displacement,,,output_20260313_193027,4.16305447121813,4.16305447121813e-06,config,G:\微流控\11 1-BO 4 UL\02  Water Displacement\output_20260313_193027\results_20260313_201738.mat
+G:\微流控\12 1-BO 6 UL\1\02  Water Displacement\output_20260317_003659,,,output_20260317_003659,4.24667694835586,4.24667694835586e-06,config,G:\微流控\12 1-BO 6 UL\1\02  Water Displacement\output_20260317_003659\results_20260317_012632.mat
+D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\13 LNAPL-6UL\02 Water Displacement\output_20260318_224745,,,output_20260318_224745,4.25435629811517,4.25435629811517e-06,config,D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\13 LNAPL-6UL\02 Water Displacement\output_20260318_224745\results_20260318_232323.mat

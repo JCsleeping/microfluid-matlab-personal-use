@@ -6,8 +6,8 @@
 
 ## 当前状态
 
-- **版本**: v3.1
-- **最后更新**: 2026-03-11
+- **版本**: v3.2
+- **最后更新**: 2026-03-16
 - **总文件数**: 54 个 .m 文件 + 13 个 .md 文件
 - **输入模式**: 多页 TIF + 独立文件模式
 - **默认数据**: 02 Pretest 4 / 01 NAPL WATER (3 TIF, 145 页, 1s/帧)
@@ -250,6 +250,20 @@ results = main_DNAPL_pipeline(config);
 **柱子检测改进:**
 
 - `extract_flow_domain.m`: MIN_BLOB_AREA 15→2/20→3, imopen 半径 2→1
+
+### v3.2 (2026-03-16) - Stability: Anti-Freeze & Memory Management
+
+**稳定性修复 (防卡死/闪退):**
+
+- **FIX** `characterize_solubilization_v2.m`: Step 4 循环内每帧处理后 `clear` 中间变量 (`rgb_t`, `rgb_rot_t`, `rgb_corr_t`, `mask_t`, `sat_t`)，防止内存持续累积
+- **FIX** `characterize_solubilization_v2.m`: 每帧处理用 `try-catch` 包裹，单帧失败时沿用上一帧数值，不中断整个流水线
+- **FIX** `characterize_solubilization_v2.m`: Checkpoint 加载增加 `try-catch`，损坏的 checkpoint 文件不再导致崩溃，自动从头开始
+- **FIX** `characterize_solubilization_v2.m`: Checkpoint 保存增加 `try-catch`，保存失败时跳过而非崩溃
+- **FIX** `characterize_solubilization_v2.m`: 新增系统 RAM 可用量检查，内存紧张时打印 warning
+- **FIX** `correct_illumination.m`: GPU 分支显式 `clear gpuArray`，防止 VRAM 泄漏；内部函数 `use_gpu` 默认值改为 `false`
+- **FIX** `segment_DNAPL_v2.m`: GPU 分支显式 `clear gpuArray`
+- **FIX** `main_DNAPL_pipeline.m`: 三处交互 `wait()` 调用增加 `try-catch`，关闭窗口不再导致无限挂起
+- **FIX** `characterize_solubilization_v2.m`: GPU 启用时每 50 帧刷新 GPU 缓存
 
 ### v3.1 (2026-03-11) - Safe Output Logging + Progress Snapshots
 

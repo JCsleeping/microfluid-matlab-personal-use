@@ -15,7 +15,16 @@ function rgb = load_frame(idx, frame_index)
     tif_path = frame_index(idx).tif_path;
     page_num = frame_index(idx).page;
 
-    img = imread(tif_path, page_num);
+    try
+        img = imread(tif_path, page_num);
+    catch
+        % Chinese path workaround: copy to temp
+        [~, ~, ext] = fileparts(tif_path);
+        tmp_tif = [tempname ext];
+        copyfile(tif_path, tmp_tif, 'f');
+        img = imread(tmp_tif, page_num);
+        delete(tmp_tif);
+    end
 
     % Handle 16-bit -> 8-bit
     if isa(img, 'uint16')

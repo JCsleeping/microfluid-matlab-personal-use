@@ -1,0 +1,3 @@
+RootDir,Group,Phase,OutputFolder,PixelSize_um,PixelSize_m,Source,MatFile
+G:\微流控\05 LNAPL-2.5ul\02 water displace\output_20260306_221233,,,output_20260306_221233,NaN,NaN,not_found,G:\微流控\05 LNAPL-2.5ul\02 water displace\output_20260306_221233\results_20260306_230950.mat
+G:\微流控\06 LNAPL-4UL\02 WATER DISPLACE\output_20260309_115339,,,output_20260309_115339,4.25100780497217,4.25100780497217e-06,config,G:\微流控\06 LNAPL-4UL\02 WATER DISPLACE\output_20260309_115339\results_20260309_124221.mat

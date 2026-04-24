@@ -19,7 +19,7 @@ function config = config_pipeline(varargin)
     %  其余参数（算法参数）在下方"高级设置"区域，通常不需要改动。
 
     % --- 数据路径 ---
-    config.data_path = 'D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\11 1-BO 4 UL\02  Water Displacement';
+    config.data_path = 'G:\微流控\16 1-BO 4UL 5% TWEEM 80\02 WATER DISPLACEMENT';
     %   ↑ 实验数据所在目录。下面的 TIF 路径基于此目录。
 
     % --- 输入文件 (自动扫描目录中所有 .tif 文件) ---
@@ -75,7 +75,7 @@ function config = config_pipeline(varargin)
 
     % --- 流域参考 (DNAPL饱和图，用于检测柱子) ---
     config.flow_domain_frame = 1;  % 备用: 从实验帧中取（仅当 flow_domain_image 为空时生效）
-    config.flow_domain_image = 'D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\00 Saturation\1BD NAPL SATURATION1_2.tif';  % ← 填入DNAPL饱和图路径（粉色DNAPL + 白色柱子）
+    config.flow_domain_image = 'D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\00 Saturation\1BD NAPL SATURATION3_1.tif';  % ← 填入DNAPL饱和图路径（粉色DNAPL + 白色柱子）
     %   ↑ 推荐: 用DNAPL饱和帧，柱子(白)与DNAPL(粉)颜色对比度最高
     %   ↑ 不推荐: 水饱和图/干净图（柱子与孔隙灰度对比度太低，检测失败）
     %   ↑ '' = 使用实验帧 flow_domain_frame 指定的帧

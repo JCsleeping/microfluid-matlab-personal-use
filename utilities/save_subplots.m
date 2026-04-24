@@ -28,6 +28,8 @@ function save_subplots(fig, output_path, group_id, fig_format)
     subplot_axes = [];
     for i = 1:numel(all_axes)
         ax = all_axes(i);
+        % Skip invalid handles
+        if ~isvalid(ax), continue; end
         % Skip colorbar axes and legend axes
         if isa(ax, 'matlab.graphics.illustration.ColorBar') || ...
            isa(ax, 'matlab.graphics.illustration.Legend')
@@ -56,6 +58,12 @@ function save_subplots(fig, output_path, group_id, fig_format)
 
         % Create new figure with just this subplot
         new_fig = figure('Visible', 'off', 'Position', [100 100 800 600], 'Color', 'w');
+
+        % Skip invalid handles (e.g., deleted during earlier iteration)
+        if ~isvalid(ax)
+            close(new_fig);
+            continue;
+        end
 
         % Copy the axes
         new_ax = copyobj(ax, new_fig);

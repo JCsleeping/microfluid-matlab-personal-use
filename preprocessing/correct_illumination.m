@@ -50,7 +50,7 @@ function [corrected, illum] = correct_morphological(img, kernel_size, use_gpu)
 % Estimate background illumination via morphological opening on each
 % channel, then normalize. Supports optional GPU acceleration.
 
-    if nargin < 3, use_gpu = true; end
+    if nargin < 3, use_gpu = false; end
 
     se = strel('disk', kernel_size);
     corrected = zeros(size(img));
@@ -62,7 +62,9 @@ function [corrected, illum] = correct_morphological(img, kernel_size, use_gpu)
     if use_gpu
         try
             if gpuDeviceCount > 0
-                illum = im2double(gather(imopen(gpuArray(gray), se)));
+                g = gpuArray(gray);
+                illum = im2double(gather(imopen(g, se)));
+                clear g;  % release GPU memory immediately
             else
                 illum = im2double(imopen(gray, se));
             end

@@ -22,7 +22,11 @@ function generate_report(results, config)
     % Metadata
     R.data_path  = config.data_path;
     R.method     = config.segmentation.method;
-    R.num_frames = numel(results.time_vector);
+    if isfield(results, 'time_vector')
+        R.num_frames = numel(results.time_vector);
+    else
+        R.num_frames = 1;
+    end
     R.pixel_size = config.physical.pixel_size;
     R.timestamp  = datestr(now, 'yyyy-mm-dd HH:MM:SS');
 
@@ -128,7 +132,7 @@ function write_report(fid, R, has_sol, fmt)
     kv(fid, 'Segmentation',     R.method, is_md);
     kv(fid, 'Total Frames',     sprintf('%d', R.num_frames), is_md);
     if isnumeric(R.pixel_size)
-        kv(fid, 'Pixel Size', sprintf('%.4f mm/px', R.pixel_size), is_md);
+        kv(fid, 'Pixel Size', sprintf('%.2f μm/px  (%.2e m/px)', R.pixel_size * 1e6, R.pixel_size), is_md);
     else
         kv(fid, 'Pixel Size', R.pixel_size, is_md);
     end
