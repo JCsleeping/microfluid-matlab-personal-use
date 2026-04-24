@@ -49,6 +49,13 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
     do_checkpoint = isfield(config, 'output') && ...
                     isfield(config.output, 'checkpoint') && ...
                     config.output.checkpoint;
+    do_save_blob_detail = isfield(config, 'output') && ...
+                          isfield(config.output, 'save_blob_detail') && ...
+                          config.output.save_blob_detail;
+    blob_detail_csv_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
+    if do_save_blob_detail && ~isfolder(config.output_path)
+        mkdir(config.output_path);
+    end
     save_interval = [];
     if do_checkpoint
         save_interval = config.output.save_interval;
@@ -65,6 +72,18 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
     sn_arr     = zeros(num_frames, 1);
     nblobs_arr = zeros(num_frames, 1);
     mbs_arr    = zeros(num_frames, 1);
+    max_blob_frac_arr = zeros(num_frames, 1);
+    Req_median_arr = zeros(num_frames, 1);
+    Req_mean_arr = zeros(num_frames, 1);
+    Req_std_arr = zeros(num_frames, 1);
+    mean_circularity_arr = zeros(num_frames, 1);
+    a_i_2D_arr = zeros(num_frames, 1);
+    n_droplets_arr = zeros(num_frames, 1);
+    n_columns_arr = zeros(num_frames, 1);
+    n_clusters_arr = zeros(num_frames, 1);
+    frac_droplets_arr = zeros(num_frames, 1);
+    frac_columns_arr = zeros(num_frames, 1);
+    frac_clusters_arr = zeros(num_frames, 1);
     iface_arr  = zeros(num_frames, 1);
     masks_arr  = {};
     change_template = struct('dissolved_px', [], 'appeared_px', [], 'net_px', []);
@@ -98,7 +117,11 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             cp_latest = fullfile(cp_dir, cp_files(idx(end)).name);
             try
                 available_vars = who('-file', cp_latest);
-                requested_vars = {'sn_arr', 'nblobs_arr', 'mbs_arr', 'iface_arr', ...
+                requested_vars = {'sn_arr', 'nblobs_arr', 'mbs_arr', 'max_blob_frac_arr', ...
+                                  'Req_median_arr', 'Req_mean_arr', 'Req_std_arr', ...
+                                  'mean_circularity_arr', 'a_i_2D_arr', 'n_droplets_arr', ...
+                                  'n_columns_arr', 'n_clusters_arr', 'frac_droplets_arr', ...
+                                  'frac_columns_arr', 'frac_clusters_arr', 'iface_arr', ...
                                   'last_frame', 'change_arr', 'first_mask', 'prev_mask', ...
                                   'last_mask', 'masks_arr', 'locked_threshold'};
                 load_vars = requested_vars(ismember(requested_vars, available_vars));
@@ -114,6 +137,18 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             sn_arr     = cp_data.sn_arr;
             nblobs_arr = cp_data.nblobs_arr;
             mbs_arr    = cp_data.mbs_arr;
+            max_blob_frac_arr = checkpoint_series(cp_data, 'max_blob_frac_arr', num_frames);
+            Req_median_arr = checkpoint_series(cp_data, 'Req_median_arr', num_frames);
+            Req_mean_arr = checkpoint_series(cp_data, 'Req_mean_arr', num_frames);
+            Req_std_arr = checkpoint_series(cp_data, 'Req_std_arr', num_frames);
+            mean_circularity_arr = checkpoint_series(cp_data, 'mean_circularity_arr', num_frames);
+            a_i_2D_arr = checkpoint_series(cp_data, 'a_i_2D_arr', num_frames);
+            n_droplets_arr = checkpoint_series(cp_data, 'n_droplets_arr', num_frames);
+            n_columns_arr = checkpoint_series(cp_data, 'n_columns_arr', num_frames);
+            n_clusters_arr = checkpoint_series(cp_data, 'n_clusters_arr', num_frames);
+            frac_droplets_arr = checkpoint_series(cp_data, 'frac_droplets_arr', num_frames);
+            frac_columns_arr = checkpoint_series(cp_data, 'frac_columns_arr', num_frames);
+            frac_clusters_arr = checkpoint_series(cp_data, 'frac_clusters_arr', num_frames);
             iface_arr  = cp_data.iface_arr;
 
             if isfield(cp_data, 'change_arr')
@@ -183,6 +218,11 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         end
     end
 
+    if ~use_parallel && do_save_blob_detail && ~is_resumed_checkpoint && ...
+            exist(blob_detail_csv_path, 'file') == 2
+        delete(blob_detail_csv_path);
+    end
+
     %% Frame 1 establishes the locked threshold or rebuilds the registration reference.
     need_frame1_reference = do_registration || isempty(locked_threshold) || isempty(first_mask);
     if need_frame1_reference
@@ -216,8 +256,25 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
             sat = calculate_saturation(first_mask, flow_domain, px);
             sn_arr(1) = sat.Sn;
-            [nblobs_arr(1), mbs_arr(1)] = compute_timeseries_blob_metrics(first_mask);
             iface_arr(1) = compute_timeseries_interface_length(first_mask, solid_contact_zone);
+            [blob_metrics_1, blob_table_1] = compute_timeseries_blob_metrics(first_mask);
+            nblobs_arr(1) = blob_metrics_1.num_blobs;
+            mbs_arr(1) = blob_metrics_1.mean_blob_size;
+            max_blob_frac_arr(1) = blob_metrics_1.max_blob_frac;
+            Req_median_arr(1) = blob_metrics_1.Req_median;
+            Req_mean_arr(1) = blob_metrics_1.Req_mean;
+            Req_std_arr(1) = blob_metrics_1.Req_std;
+            mean_circularity_arr(1) = blob_metrics_1.mean_circularity;
+            a_i_2D_arr(1) = compute_ai_2d(first_mask, iface_arr(1));
+            n_droplets_arr(1) = blob_metrics_1.n_droplets;
+            n_columns_arr(1) = blob_metrics_1.n_columns;
+            n_clusters_arr(1) = blob_metrics_1.n_clusters;
+            frac_droplets_arr(1) = blob_metrics_1.frac_droplets;
+            frac_columns_arr(1) = blob_metrics_1.frac_columns;
+            frac_clusters_arr(1) = blob_metrics_1.frac_clusters;
+            if ~use_parallel && do_save_blob_detail && ~is_resumed_checkpoint
+                append_blob_detail_csv(blob_detail_csv_path, 1, time_vector(1), blob_table_1);
+            end
             last_completed_frame = max(last_completed_frame, 1);
 
             if ~is_resumed_checkpoint
@@ -355,8 +412,22 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
             sat_t = calculate_saturation(mask_t, flow_domain, px);
             sn_arr(t) = sat_t.Sn;
-            [nblobs_arr(t), mbs_arr(t)] = compute_timeseries_blob_metrics(mask_t);
             iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
+            blob_metrics_t = compute_timeseries_blob_metrics(mask_t);
+            nblobs_arr(t) = blob_metrics_t.num_blobs;
+            mbs_arr(t) = blob_metrics_t.mean_blob_size;
+            max_blob_frac_arr(t) = blob_metrics_t.max_blob_frac;
+            Req_median_arr(t) = blob_metrics_t.Req_median;
+            Req_mean_arr(t) = blob_metrics_t.Req_mean;
+            Req_std_arr(t) = blob_metrics_t.Req_std;
+            mean_circularity_arr(t) = blob_metrics_t.mean_circularity;
+            a_i_2D_arr(t) = compute_ai_2d(mask_t, iface_arr(t));
+            n_droplets_arr(t) = blob_metrics_t.n_droplets;
+            n_columns_arr(t) = blob_metrics_t.n_columns;
+            n_clusters_arr(t) = blob_metrics_t.n_clusters;
+            frac_droplets_arr(t) = blob_metrics_t.frac_droplets;
+            frac_columns_arr(t) = blob_metrics_t.frac_columns;
+            frac_clusters_arr(t) = blob_metrics_t.frac_clusters;
         end
         fprintf('  Parallel processing complete.\n');
         last_completed_frame = num_frames;
@@ -396,9 +467,26 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
                 sat_t = calculate_saturation(mask_t, flow_domain, px);
                 sn_arr(t) = sat_t.Sn;
-                [nblobs_arr(t), mbs_arr(t)] = compute_timeseries_blob_metrics(mask_t);
                 iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
+                [blob_metrics_t, blob_table_t] = compute_timeseries_blob_metrics(mask_t);
+                nblobs_arr(t) = blob_metrics_t.num_blobs;
+                mbs_arr(t) = blob_metrics_t.mean_blob_size;
+                max_blob_frac_arr(t) = blob_metrics_t.max_blob_frac;
+                Req_median_arr(t) = blob_metrics_t.Req_median;
+                Req_mean_arr(t) = blob_metrics_t.Req_mean;
+                Req_std_arr(t) = blob_metrics_t.Req_std;
+                mean_circularity_arr(t) = blob_metrics_t.mean_circularity;
+                a_i_2D_arr(t) = compute_ai_2d(mask_t, iface_arr(t));
+                n_droplets_arr(t) = blob_metrics_t.n_droplets;
+                n_columns_arr(t) = blob_metrics_t.n_columns;
+                n_clusters_arr(t) = blob_metrics_t.n_clusters;
+                frac_droplets_arr(t) = blob_metrics_t.frac_droplets;
+                frac_columns_arr(t) = blob_metrics_t.frac_columns;
+                frac_clusters_arr(t) = blob_metrics_t.frac_clusters;
                 change_arr(t-1) = compute_change_metrics(prev_mask, mask_t);
+                if do_save_blob_detail
+                    append_blob_detail_csv(blob_detail_csv_path, t, time_vector(t), blob_table_t);
+                end
                 prev_mask = mask_t;
             catch ME_frame
                 warning('characterize_solubilization_v2:frameError', ...
@@ -409,6 +497,18 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                     sn_arr(t)     = sn_arr(t-1);
                     nblobs_arr(t) = nblobs_arr(t-1);
                     mbs_arr(t)    = mbs_arr(t-1);
+                    max_blob_frac_arr(t) = max_blob_frac_arr(t-1);
+                    Req_median_arr(t) = Req_median_arr(t-1);
+                    Req_mean_arr(t) = Req_mean_arr(t-1);
+                    Req_std_arr(t) = Req_std_arr(t-1);
+                    mean_circularity_arr(t) = mean_circularity_arr(t-1);
+                    a_i_2D_arr(t) = a_i_2D_arr(t-1);
+                    n_droplets_arr(t) = n_droplets_arr(t-1);
+                    n_columns_arr(t) = n_columns_arr(t-1);
+                    n_clusters_arr(t) = n_clusters_arr(t-1);
+                    frac_droplets_arr(t) = frac_droplets_arr(t-1);
+                    frac_columns_arr(t) = frac_columns_arr(t-1);
+                    frac_clusters_arr(t) = frac_clusters_arr(t-1);
                     iface_arr(t)  = iface_arr(t-1);
                 end
             end
@@ -435,6 +535,10 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                 cp_file = fullfile(cp_dir, sprintf('checkpoint_%04d.mat', t));
                 try
                     save(cp_file, 'sn_arr', 'nblobs_arr', 'mbs_arr', ...
+                         'max_blob_frac_arr', 'Req_median_arr', 'Req_mean_arr', ...
+                         'Req_std_arr', 'mean_circularity_arr', 'a_i_2D_arr', ...
+                         'n_droplets_arr', 'n_columns_arr', 'n_clusters_arr', ...
+                         'frac_droplets_arr', 'frac_columns_arr', 'frac_clusters_arr', ...
                          'iface_arr', 'change_arr', 'first_mask', 'prev_mask', ...
                          'last_mask', 'last_frame', 'locked_threshold', '-v7.3');
                     last_checkpoint_path = cp_file;
@@ -459,7 +563,11 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                         t < num_frames
                     if do_save_progress && last_progress_frame_saved ~= t
                         export_progress_snapshot(config.output_path, time_vector, sn_arr, ...
-                            nblobs_arr, mbs_arr, iface_arr, t, locked_threshold);
+                            nblobs_arr, mbs_arr, max_blob_frac_arr, Req_median_arr, ...
+                            Req_mean_arr, Req_std_arr, mean_circularity_arr, ...
+                            a_i_2D_arr, n_droplets_arr, n_columns_arr, n_clusters_arr, ...
+                            frac_droplets_arr, frac_columns_arr, frac_clusters_arr, ...
+                            iface_arr, t, locked_threshold);
                         last_progress_frame_saved = t;
                     end
                     session_status = 'paused';
@@ -475,18 +583,27 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                         'force', true));
                     fprintf('  Safe pause reached at checkpoint frame %d. Re-run with the same output_path to resume.\n', t);
                     sol = finalize_solubilization( ...
-                        sn_arr, nblobs_arr, mbs_arr, iface_arr, change_arr, change_template, ...
+                        sn_arr, nblobs_arr, mbs_arr, max_blob_frac_arr, Req_median_arr, ...
+                        Req_mean_arr, Req_std_arr, mean_circularity_arr, a_i_2D_arr, ...
+                        n_droplets_arr, n_columns_arr, n_clusters_arr, ...
+                        frac_droplets_arr, frac_columns_arr, frac_clusters_arr, ...
+                        iface_arr, change_arr, change_template, ...
                         masks_arr, first_mask, last_mask, use_parallel, time_vector, ...
                         flow_domain, px, config.physical.depth, config.physical.dnapl_density, ...
                         last_completed_frame, session_status, ...
-                        resume_from_frame, last_checkpoint_path);
+                        resume_from_frame, last_checkpoint_path, ...
+                        do_save_blob_detail, blob_detail_csv_path);
                     return;
                 end
             end
 
             if do_save_progress && mod(t, progress_interval) == 0
                 export_progress_snapshot(config.output_path, time_vector, sn_arr, ...
-                    nblobs_arr, mbs_arr, iface_arr, t, locked_threshold);
+                    nblobs_arr, mbs_arr, max_blob_frac_arr, Req_median_arr, ...
+                    Req_mean_arr, Req_std_arr, mean_circularity_arr, ...
+                    a_i_2D_arr, n_droplets_arr, n_columns_arr, n_clusters_arr, ...
+                    frac_droplets_arr, frac_columns_arr, frac_clusters_arr, ...
+                    iface_arr, t, locked_threshold);
                 last_progress_frame_saved = t;
             end
         end
@@ -494,14 +611,23 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
     if do_save_progress && last_progress_frame_saved ~= last_completed_frame
         export_progress_snapshot(config.output_path, time_vector, sn_arr, ...
-            nblobs_arr, mbs_arr, iface_arr, last_completed_frame, locked_threshold);
+            nblobs_arr, mbs_arr, max_blob_frac_arr, Req_median_arr, ...
+            Req_mean_arr, Req_std_arr, mean_circularity_arr, ...
+            a_i_2D_arr, n_droplets_arr, n_columns_arr, n_clusters_arr, ...
+            frac_droplets_arr, frac_columns_arr, frac_clusters_arr, ...
+            iface_arr, last_completed_frame, locked_threshold);
     end
     sol = finalize_solubilization( ...
-        sn_arr, nblobs_arr, mbs_arr, iface_arr, change_arr, change_template, ...
+        sn_arr, nblobs_arr, mbs_arr, max_blob_frac_arr, Req_median_arr, ...
+        Req_mean_arr, Req_std_arr, mean_circularity_arr, a_i_2D_arr, ...
+        n_droplets_arr, n_columns_arr, n_clusters_arr, ...
+        frac_droplets_arr, frac_columns_arr, frac_clusters_arr, ...
+        iface_arr, change_arr, change_template, ...
         masks_arr, first_mask, last_mask, use_parallel, time_vector, ...
         flow_domain, px, config.physical.depth, config.physical.dnapl_density, ...
         last_completed_frame, session_status, ...
-        resume_from_frame, last_checkpoint_path);
+        resume_from_frame, last_checkpoint_path, ...
+        do_save_blob_detail, blob_detail_csv_path);
     heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
         'status', 'running', ...
         'step', 'STEP 4', ...
@@ -517,16 +643,32 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 end
 
 
-function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, iface_arr, ...
+function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, max_blob_frac_arr, ...
+        Req_median_arr, Req_mean_arr, Req_std_arr, mean_circularity_arr, ...
+        a_i_2D_arr, n_droplets_arr, n_columns_arr, n_clusters_arr, ...
+        frac_droplets_arr, frac_columns_arr, frac_clusters_arr, iface_arr, ...
         change_arr, change_template, masks_arr, first_mask, last_mask, ...
         use_parallel, time_vector, flow_domain, px, depth, rho, last_completed_frame, ...
-        session_status, resume_from_frame, last_checkpoint_path)
+        session_status, resume_from_frame, last_checkpoint_path, ...
+        do_save_blob_detail, blob_detail_csv_path)
 
     valid_frames = max(min(last_completed_frame, numel(sn_arr)), 1);
 
     sol.saturation_vs_time     = sn_arr(1:valid_frames);
     sol.num_blobs_vs_time      = nblobs_arr(1:valid_frames);
     sol.mean_blob_size_vs_time = mbs_arr(1:valid_frames);
+    sol.max_blob_frac_vs_time = max_blob_frac_arr(1:valid_frames);
+    sol.Req_median_vs_time = Req_median_arr(1:valid_frames);
+    sol.Req_mean_vs_time = Req_mean_arr(1:valid_frames);
+    sol.Req_std_vs_time = Req_std_arr(1:valid_frames);
+    sol.mean_circularity_vs_time = mean_circularity_arr(1:valid_frames);
+    sol.a_i_2D_vs_time = a_i_2D_arr(1:valid_frames);
+    sol.n_droplets_vs_time = n_droplets_arr(1:valid_frames);
+    sol.n_columns_vs_time = n_columns_arr(1:valid_frames);
+    sol.n_clusters_vs_time = n_clusters_arr(1:valid_frames);
+    sol.frac_droplets_vs_time = frac_droplets_arr(1:valid_frames);
+    sol.frac_columns_vs_time = frac_columns_arr(1:valid_frames);
+    sol.frac_clusters_vs_time = frac_clusters_arr(1:valid_frames);
     sol.interface_area_vs_time = iface_arr(1:valid_frames);
 
     dt = diff(time_vector(1:valid_frames).');
@@ -568,6 +710,33 @@ function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, iface_arr, .
     if strcmp(session_status, 'paused')
         sol.resume_from_frame = resume_from_frame;
     end
+    if do_save_blob_detail
+        sol.blob_detail_csv = blob_detail_csv_path;
+    end
+end
+
+
+function value = checkpoint_series(cp_data, field_name, num_frames)
+    value = zeros(num_frames, 1);
+    if ~isfield(cp_data, field_name) || isempty(cp_data.(field_name))
+        return;
+    end
+
+    src = cp_data.(field_name);
+    src = src(:);
+    n = min(num_frames, numel(src));
+    value(1:n) = src(1:n);
+end
+
+
+function a_i_2D = compute_ai_2d(mask, interface_length)
+    dnapl_area = sum(mask(:));
+    if dnapl_area <= 0
+        a_i_2D = 0;
+        return;
+    end
+
+    a_i_2D = interface_length / dnapl_area;
 end
 
 
