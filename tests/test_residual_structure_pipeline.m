@@ -1,11 +1,13 @@
 function tests = test_residual_structure_pipeline
 % TEST_RESIDUAL_STRUCTURE_PIPELINE  Focused tests for residual structure metrics.
 
+    setup_path();
     tests = functiontests(localfunctions);
 end
 
 
 function test_classify_residual_architecture_pool_like(testCase)
+    setup_path();
     arch = classify_residual_architecture( ...
         make_blob_struct(0.72, 4, 18.5), ...
         make_iface_struct(2.1e4, 1.3e-3), ...
@@ -23,6 +25,7 @@ end
 
 
 function test_classify_residual_architecture_ganglia_rich(testCase)
+    setup_path();
     arch = classify_residual_architecture( ...
         make_blob_struct(0.18, 41, 6.0), ...
         make_iface_struct(8.4e4, 2.8e-3), ...
@@ -39,6 +42,7 @@ end
 
 
 function test_classify_residual_architecture_safe_defaults(testCase)
+    setup_path();
     arch = classify_residual_architecture( ...
         make_blob_struct(0.65, 6, 12.0), ...
         make_iface_struct(2.5e4, 1.1e-3), ...
@@ -47,6 +51,21 @@ function test_classify_residual_architecture_safe_defaults(testCase)
     verifyEqual(testCase, arch.type, 'pool-like');
     verifyEqual(testCase, arch.thresholds.pool_like.max_blob_fraction_min, 0.50);
     verifyEqual(testCase, arch.thresholds.ganglia_rich.a_i_2D_min, 6.0e4);
+end
+
+
+function test_classify_residual_architecture_nonfinite_ai2d_pool_like(testCase)
+    setup_path();
+    arch = classify_residual_architecture( ...
+        make_blob_struct(0.68, 5, 14.0), ...
+        make_iface_struct(NaN, 9.5e-4), ...
+        make_sat_struct(0.22), ...
+        make_architecture_config());
+
+    verifyEqual(testCase, arch.type, 'pool-like');
+    verifyEqual(testCase, arch.scores.pool_like, 2);
+    verifyEqual(testCase, arch.scores.ganglia_rich, 0);
+    verifyTrue(testCase, isnan(arch.indicators.a_i_2D));
 end
 
 
@@ -88,4 +107,10 @@ function config = make_architecture_config()
             'max_blob_fraction_max', 0.30, ...
             'num_blobs_min', 25, ...
             'a_i_2D_min', 6.0e4));
+end
+
+
+function setup_path()
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
 end
