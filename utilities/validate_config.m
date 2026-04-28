@@ -62,11 +62,19 @@ function config = validate_config(config)
     assert_logical_scalar(config.output.save_log, 'output.save_log');
     assert_logical_scalar(config.output.save_progress, 'output.save_progress');
     assert_logical_scalar(config.output.save_heartbeat, 'output.save_heartbeat');
+    assert_logical_scalar(config.output.save_blob_detail, 'output.save_blob_detail');
     assert_pos_integer(config.output.save_interval, 'output.save_interval');
     assert_pos_integer(config.output.progress_interval, 'output.progress_interval');
     assert_pos_integer(config.output.heartbeat_frame_interval, 'output.heartbeat_frame_interval');
     assert_pos_integer(config.output.heartbeat_time_interval_sec, 'output.heartbeat_time_interval_sec');
     assert_pos_integer_or_inf(config.output.max_frames_per_session, 'output.max_frames_per_session');
+
+    if isfield(config, 'parallel') && isfield(config.parallel, 'enabled') && ...
+            config.parallel.enabled && config.output.save_blob_detail
+        error('validate_config:badParam', ...
+            ['output.save_blob_detail=true is not supported when parallel.enabled=true. ' ...
+             'Set output.save_blob_detail=false or disable parallel processing.']);
+    end
 
     if isfinite(config.output.max_frames_per_session)
         if ~config.output.checkpoint
