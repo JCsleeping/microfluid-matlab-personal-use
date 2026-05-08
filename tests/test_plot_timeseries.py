@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import numpy as np
@@ -121,6 +123,73 @@ class PlotTimeseriesTests(unittest.TestCase):
             self.assertTrue(any(tick.gridline.get_visible() for tick in ax.xaxis.get_minor_ticks()))
         finally:
             plot_timeseries.plt.close(fig)
+
+    def test_nature_style_rcparams_match_plan(self):
+        plot_timeseries.configure_nature_style()
+
+        self.assertEqual(plot_timeseries.plt.rcParams["font.sans-serif"][:3], ["Arial", "Helvetica", "DejaVu Sans"])
+        self.assertEqual(plot_timeseries.plt.rcParams["font.size"], 8.5)
+        self.assertEqual(plot_timeseries.plt.rcParams["axes.labelsize"], 9.5)
+        self.assertEqual(plot_timeseries.plt.rcParams["xtick.labelsize"], 8.5)
+        self.assertEqual(plot_timeseries.plt.rcParams["ytick.labelsize"], 8.5)
+        self.assertEqual(plot_timeseries.plt.rcParams["legend.fontsize"], 8.0)
+        self.assertEqual(plot_timeseries.plt.rcParams["lines.solid_capstyle"], "round")
+        self.assertEqual(plot_timeseries.plt.rcParams["figure.dpi"], 150)
+        self.assertEqual(plot_timeseries.plt.rcParams["savefig.dpi"], 600)
+        self.assertEqual(plot_timeseries.plt.rcParams["pdf.fonttype"], 42)
+        self.assertEqual(plot_timeseries.plt.rcParams["ps.fonttype"], 42)
+        self.assertEqual(plot_timeseries.plt.rcParams["svg.fonttype"], "none")
+
+    def test_axis_line_and_interface_styles_match_plan(self):
+        df = pd.DataFrame({"Time_min": [0.0, 1.0, 2.0], "InterfaceArea": [10.0, 11.0, 12.0]})
+        fig, ax = plot_timeseries.plt.subplots()
+        try:
+            plot_timeseries.plot_interface_area(ax, df)
+            fig.canvas.draw()
+
+            self.assertEqual(ax.spines["bottom"].get_linewidth(), 0.9)
+            self.assertEqual(ax.spines["left"].get_linewidth(), 0.9)
+            self.assertEqual(ax.spines["bottom"].get_edgecolor(), (0.16862745098039217, 0.16862745098039217, 0.16862745098039217, 1.0))
+            self.assertEqual(ax.xaxis.get_tick_params(which="major")["length"], 4.0)
+            self.assertEqual(ax.xaxis.get_tick_params(which="major")["width"], 0.9)
+            self.assertEqual(ax.xaxis.get_tick_params(which="minor")["length"], 2.2)
+            self.assertEqual(ax.xaxis.get_tick_params(which="minor")["width"], 0.6)
+            self.assertEqual(ax.lines[0].get_markeredgewidth(), 1.0)
+            self.assertEqual(ax.lines[0].get_color(), "#E69F00")
+            self.assertEqual(ax.xaxis.get_major_ticks()[0].gridline.get_color(), "#E4E4E4")
+            self.assertEqual(ax.xaxis.get_major_ticks()[0].gridline.get_linewidth(), 0.55)
+        finally:
+            plot_timeseries.plt.close(fig)
+
+    def test_cli_prints_smoke_test_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            figures_dir = output_dir / "custom_figures"
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = plot_timeseries.main(
+                    [
+                        str(output_dir),
+                        "--csv",
+                        str(csv_path),
+                        "--figures-dir",
+                        str(figures_dir),
+                        "--dpi",
+                        "80",
+                        "--smooth-window",
+                        "0",
+                    ]
+                )
+
+            lines = stdout.getvalue().splitlines()
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(lines[0], f"Read: {csv_path}")
+            self.assertEqual(lines[1], "Rows: 7")
+            self.assertEqual(lines[2], f"Figures directory: {figures_dir}")
+            self.assertTrue(all(line.startswith("Saved: ") for line in lines[3:]))
+            self.assertEqual(len(lines), 31)
 
     def test_create_all_figures_writes_linear_and_log_png_and_svg(self):
         with tempfile.TemporaryDirectory() as tmp:

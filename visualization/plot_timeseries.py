@@ -129,13 +129,14 @@ def configure_nature_style():
             "font.family": "sans-serif",
             "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
             "font.size": 8.5,
-            "axes.labelsize": 8.5,
+            "axes.labelsize": 9.5,
             "axes.titlesize": 8.5,
-            "xtick.labelsize": 7.5,
-            "ytick.labelsize": 7.5,
-            "legend.fontsize": 7.5,
+            "xtick.labelsize": 8.5,
+            "ytick.labelsize": 8.5,
+            "legend.fontsize": 8.0,
             "axes.linewidth": 0.8,
             "axes.edgecolor": "#333333",
+            "lines.solid_capstyle": "round",
             "xtick.direction": "out",
             "ytick.direction": "out",
             "xtick.major.size": 3.0,
@@ -163,11 +164,26 @@ def style_axes(ax):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     for side in ("bottom", "left"):
-        ax.spines[side].set_linewidth(0.8)
-        ax.spines[side].set_color("#333333")
-    ax.tick_params(axis="both", which="both", direction="out", colors="#333333")
+        ax.spines[side].set_linewidth(0.9)
+        ax.spines[side].set_color("#2B2B2B")
+    ax.tick_params(
+        axis="both",
+        which="major",
+        direction="out",
+        colors="#2B2B2B",
+        length=4.0,
+        width=0.9,
+    )
+    ax.tick_params(
+        axis="both",
+        which="minor",
+        direction="out",
+        colors="#2B2B2B",
+        length=2.2,
+        width=0.6,
+    )
     ax.minorticks_on()
-    ax.grid(True, which="major", color="#D9D9D9", linewidth=0.45, alpha=0.7)
+    ax.grid(True, which="major", color="#E4E4E4", linewidth=0.55, alpha=0.7)
     ax.set_axisbelow(True)
     return ax
 
@@ -202,7 +218,7 @@ def _plot_line(ax, df, column, label, color, log_scale=False):
         markersize=MARKER_SIZE,
         markerfacecolor="white",
         markeredgecolor=color,
-        markeredgewidth=0.8,
+        markeredgewidth=1.0,
         markevery=_markevery(df),
         label=label,
     )
@@ -215,7 +231,7 @@ def _finalize_time_axis(ax, ylabel, log_scale=False):
         ax.set_xscale("log")
     style_axes(ax)
     if log_scale:
-        ax.grid(True, which="both", color="#D9D9D9", linewidth=0.45, alpha=0.7)
+        ax.grid(True, which="both", color="#E4E4E4", linewidth=0.55, alpha=0.7)
 
 
 def plot_sn(ax, df, log_scale=False):
@@ -270,7 +286,7 @@ def plot_interface_area(ax, df, log_scale=False):
         df,
         "InterfaceArea",
         "Interface area",
-        WONG_COLORS["yellow"],
+        WONG_COLORS["orange"],
         log_scale,
     )
     _finalize_time_axis(ax, "Interface area", log_scale)
@@ -389,8 +405,11 @@ def main(argv=None):
         smooth_window=args.smooth_window,
         smooth_polyorder=args.smooth_polyorder,
     )
+    print(f"Read: {csv_path}")
+    print(f"Rows: {len(df)}")
+    print(f"Figures directory: {figures_dir}")
     for path in written:
-        print(path)
+        print(f"Saved: {path}")
     return 0
 
 
