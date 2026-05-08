@@ -73,6 +73,26 @@ class PlotTimeseriesTests(unittest.TestCase):
         np.testing.assert_allclose(rate.to_numpy(), np.full(6, 0.01), atol=1e-12)
         self.assertEqual(rate.name, "DissolutionRate_per_min")
 
+    def test_log_synthetic_start_uses_adjacent_interval_from_zero(self):
+        df = pd.DataFrame({"Time_min": [0.0, 10.0, 100.0], "Sn": [1.0, 0.9, 0.5]})
+
+        x, y = plot_timeseries._x_and_y(df, "Sn", log_scale=True)
+
+        self.assertEqual(x[0], 0.5)
+        self.assertEqual(y[0], 1.0)
+
+    def test_log_axis_enables_major_and_minor_gridlines(self):
+        df = pd.DataFrame({"Time_min": [0.0, 1.0, 10.0, 100.0], "Sn": [1.0, 0.9, 0.7, 0.4]})
+        fig, ax = plot_timeseries.plt.subplots()
+        try:
+            plot_timeseries.plot_sn(ax, df, log_scale=True)
+            fig.canvas.draw()
+
+            self.assertTrue(any(tick.gridline.get_visible() for tick in ax.xaxis.get_major_ticks()))
+            self.assertTrue(any(tick.gridline.get_visible() for tick in ax.xaxis.get_minor_ticks()))
+        finally:
+            plot_timeseries.plt.close(fig)
+
     def test_create_all_figures_writes_linear_and_log_png_and_svg(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)

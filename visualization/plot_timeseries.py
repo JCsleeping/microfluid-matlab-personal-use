@@ -173,13 +173,10 @@ def _x_and_y(df, column, log_scale=False):
     x = df["Time_min"].to_numpy(dtype=float)
     y = df[column].to_numpy(dtype=float)
     if log_scale and len(x) and np.any(x <= 0):
-        positive = np.sort(np.unique(x[x > 0]))
-        if len(positive) >= 2:
-            interval = np.min(np.diff(positive))
-        elif len(positive) == 1:
-            interval = positive[0]
-        else:
-            interval = 1.0
+        finite_x = np.sort(np.unique(x[np.isfinite(x)]))
+        adjacent_intervals = np.diff(finite_x)
+        positive_intervals = adjacent_intervals[adjacent_intervals > 0]
+        interval = np.min(positive_intervals) if len(positive_intervals) else 1.0
         synthetic_start = max(0.05 * interval, np.finfo(float).tiny)
         keep = x > 0
         x = np.concatenate(([synthetic_start], x[keep]))
@@ -210,6 +207,8 @@ def _finalize_time_axis(ax, ylabel, log_scale=False):
     if log_scale:
         ax.set_xscale("log")
     style_axes(ax)
+    if log_scale:
+        ax.grid(True, which="both", color="#D9D9D9", linewidth=0.45, alpha=0.7)
 
 
 def plot_sn(ax, df, log_scale=False):
