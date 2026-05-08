@@ -81,6 +81,13 @@ def load_timeseries(csv_path):
     if invalid:
         raise ValueError(f"Non-numeric or missing values in column(s): {', '.join(invalid)}")
 
+    nonfinite = [column for column in REQUIRED_COLUMNS if not np.isfinite(df[column]).all()]
+    if nonfinite:
+        raise ValueError(f"Required numeric column(s) must be finite: {', '.join(nonfinite)}")
+
+    if len(df) < 2 or df["RealTime_s"].count() < 2:
+        raise ValueError("Time-series CSV must contain at least two finite time points")
+
     df = df.sort_values("RealTime_s", kind="mergesort").reset_index(drop=True)
     if df["RealTime_s"].duplicated().any():
         duplicates = df.loc[df["RealTime_s"].duplicated(), "RealTime_s"].tolist()

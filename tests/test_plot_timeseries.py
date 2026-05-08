@@ -53,6 +53,35 @@ class PlotTimeseriesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "InterfaceArea"):
                 plot_timeseries.load_timeseries(broken_path)
 
+    def test_load_timeseries_rejects_nonfinite_required_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            bad_df = pd.read_csv(csv_path)
+            bad_df.loc[1, "Sn"] = np.inf
+            bad_df["InterfaceArea"] = bad_df["InterfaceArea"].astype(float)
+            bad_df.loc[2, "InterfaceArea"] = -np.inf
+            bad_path = output_dir / "timeseries_realtime_nonfinite.csv"
+            bad_df.to_csv(bad_path, index=False)
+
+            with self.assertRaisesRegex(ValueError, "finite.*Sn.*InterfaceArea"):
+                plot_timeseries.load_timeseries(bad_path)
+
+    def test_load_timeseries_requires_at_least_two_finite_time_points(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            header_only_path = output_dir / "timeseries_realtime_empty.csv"
+            pd.DataFrame(columns=plot_timeseries.REQUIRED_COLUMNS).to_csv(header_only_path, index=False)
+
+            with self.assertRaisesRegex(ValueError, "at least two finite time points"):
+                plot_timeseries.load_timeseries(header_only_path)
+
+            single_row_path = output_dir / "timeseries_realtime_single.csv"
+            pd.read_csv(write_sample_csv(output_dir)).iloc[:1].to_csv(single_row_path, index=False)
+
+            with self.assertRaisesRegex(ValueError, "at least two finite time points"):
+                plot_timeseries.load_timeseries(single_row_path)
+
     def test_compute_dissolution_rate_respects_irregular_realtime(self):
         df = pd.DataFrame(
             {
