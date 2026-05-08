@@ -55,8 +55,6 @@ def find_timeseries_csv(output_dir, csv_path=None):
     output_dir = Path(output_dir)
     candidates = sorted(output_dir.glob("timeseries_realtime*.csv"))
     if not candidates:
-        candidates = sorted(output_dir.glob("*timeseries*.csv"))
-    if not candidates:
         raise FileNotFoundError(f"No time-series CSV found in {output_dir}")
     if len(candidates) > 1:
         names = ", ".join(path.name for path in candidates)
@@ -93,7 +91,6 @@ def load_timeseries(csv_path):
         duplicates = df.loc[df["RealTime_s"].duplicated(), "RealTime_s"].tolist()
         raise ValueError(f"Duplicate RealTime_s values are not allowed: {duplicates}")
 
-    df["RealTime_s"] = df["RealTime_s"] - df["RealTime_s"].iloc[0]
     df["Time_min"] = df["RealTime_s"] / 60.0
     return df
 

@@ -37,6 +37,14 @@ def write_sample_csv(output_dir: Path, filename: str = "timeseries_realtime_samp
 
 
 class PlotTimeseriesTests(unittest.TestCase):
+    def test_find_timeseries_csv_requires_corrected_realtime_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            write_sample_csv(output_dir, filename="some_timeseries.csv")
+
+            with self.assertRaises(FileNotFoundError):
+                plot_timeseries.find_timeseries_csv(output_dir)
+
     def test_load_timeseries_adds_minutes_and_checks_required_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
@@ -54,6 +62,20 @@ class PlotTimeseriesTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "InterfaceArea"):
                 plot_timeseries.load_timeseries(broken_path)
+
+    def test_load_timeseries_preserves_corrected_realtime_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            df = pd.read_csv(csv_path)
+            df["RealTime_s"] = df["RealTime_s"] + 120
+            df.to_csv(csv_path, index=False)
+
+            loaded = plot_timeseries.load_timeseries(csv_path)
+
+            self.assertEqual(loaded.loc[0, "RealTime_s"], 120)
+            self.assertEqual(loaded.loc[0, "Time_min"], 2)
+            self.assertEqual(loaded.loc[2, "Time_min"], 5)
 
     def test_load_timeseries_rejects_nonfinite_required_values(self):
         with tempfile.TemporaryDirectory() as tmp:
