@@ -1,10 +1,12 @@
 import importlib.util
+import inspect
 import io
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -44,6 +46,18 @@ class PlotTimeseriesTests(unittest.TestCase):
 
             with self.assertRaises(FileNotFoundError):
                 plot_timeseries.find_timeseries_csv(output_dir)
+
+    def test_find_timeseries_csv_selects_newest_corrected_realtime_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            older = write_sample_csv(output_dir, filename="timeseries_realtime_20260508_105232.csv")
+            newer = write_sample_csv(output_dir, filename="timeseries_realtime_20260508_110000.csv")
+            older.touch()
+            newer.touch()
+
+            selected = plot_timeseries.find_timeseries_csv(output_dir)
+
+            self.assertEqual(selected, newer)
 
     def test_load_timeseries_adds_minutes_and_checks_required_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,6 +148,30 @@ class PlotTimeseriesTests(unittest.TestCase):
         self.assertEqual(x[0], 0.5)
         self.assertEqual(y[0], 1.0)
 
+    def test_log_synthetic_start_uses_earliest_time_value_even_if_unsorted(self):
+        df = pd.DataFrame({"Time_min": [10.0, 0.0, 100.0], "Sn": [0.9, 1.0, 0.5]})
+
+        x, y = plot_timeseries._x_and_y(df, "Sn", log_scale=True)
+
+        self.assertEqual(x[0], 0.5)
+        self.assertEqual(y[0], 1.0)
+
+    def test_log_dissolution_rate_uses_first_positive_rate_for_synthetic_start(self):
+        df = pd.DataFrame(
+            {
+                "Time_min": [0.0, 1.0, 2.0],
+                "DissolutionRate_per_min": [99.0, 0.2, 0.3],
+            }
+        )
+        fig, ax = plot_timeseries.plt.subplots()
+        try:
+            plot_timeseries.plot_dissolution_rate(ax, df, log_scale=True)
+
+            ydata = ax.lines[0].get_ydata()
+            self.assertEqual(ydata[0], 0.2)
+        finally:
+            plot_timeseries.plt.close(fig)
+
     def test_log_axis_enables_major_and_minor_gridlines(self):
         df = pd.DataFrame({"Time_min": [0.0, 1.0, 10.0, 100.0], "Sn": [1.0, 0.9, 0.7, 0.4]})
         fig, ax = plot_timeseries.plt.subplots()
@@ -182,6 +220,50 @@ class PlotTimeseriesTests(unittest.TestCase):
             self.assertEqual(ax.xaxis.get_major_ticks()[0].gridline.get_linewidth(), 0.55)
         finally:
             plot_timeseries.plt.close(fig)
+
+    def test_req_stats_uses_plan_colors_and_legend_position(self):
+        df = pd.DataFrame(
+            {
+                "Time_min": [0.0, 1.0, 2.0],
+                "ReqMedian": [1.0, 2.0, 3.0],
+                "ReqMean": [1.5, 2.5, 3.5],
+                "ReqStd": [0.2, 0.3, 0.4],
+            }
+        )
+        fig, ax = plot_timeseries.plt.subplots()
+        try:
+            plot_timeseries.plot_req_stats(ax, df)
+
+            self.assertEqual([line.get_color() for line in ax.lines], ["#0072B2", "#D55E00", "#009E73"])
+            legend = ax.get_legend()
+            self.assertIsNotNone(legend)
+            self.assertFalse(legend.get_frame().get_visible())
+            self.assertEqual(legend._loc, 9)
+            self.assertAlmostEqual(legend.get_bbox_to_anchor()._bbox.x0, 0.5)
+            self.assertAlmostEqual(legend.get_bbox_to_anchor()._bbox.y0, 1.02)
+        finally:
+            plot_timeseries.plt.close(fig)
+
+    def test_save_figure_uses_white_facecolor_for_png_and_svg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fig = plot_timeseries.plt.figure()
+            try:
+                with mock.patch.object(fig, "savefig") as savefig:
+                    written = plot_timeseries._save_figure(fig, "example", Path(tmp), dpi=300)
+
+                self.assertEqual([path.name for path in written], ["example.png", "example.svg"])
+                self.assertEqual(savefig.call_count, 2)
+                for call in savefig.call_args_list:
+                    self.assertEqual(call.kwargs["facecolor"], "white")
+            finally:
+                plot_timeseries.plt.close(fig)
+
+    def test_default_png_dpi_is_300(self):
+        create_params = inspect.signature(plot_timeseries.create_all_figures).parameters
+        self.assertEqual(create_params["dpi"].default, 300)
+
+        args = plot_timeseries.build_arg_parser().parse_args(["output_dir"])
+        self.assertEqual(args.dpi, 300)
 
     def test_cli_prints_smoke_test_summary(self):
         with tempfile.TemporaryDirectory() as tmp:

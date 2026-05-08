@@ -56,10 +56,7 @@ def find_timeseries_csv(output_dir, csv_path=None):
     candidates = sorted(output_dir.glob("timeseries_realtime*.csv"))
     if not candidates:
         raise FileNotFoundError(f"No time-series CSV found in {output_dir}")
-    if len(candidates) > 1:
-        names = ", ".join(path.name for path in candidates)
-        raise ValueError(f"Multiple time-series CSV files found; pass --csv explicitly: {names}")
-    return candidates[0]
+    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name))
 
 
 def load_timeseries(csv_path):
@@ -189,23 +186,30 @@ def _markevery(df):
     return max(1, len(df) // 20)
 
 
-def _x_and_y(df, column, log_scale=False):
+def _x_and_y(df, column, log_scale=False, synthetic_y="earliest"):
     x = df["Time_min"].to_numpy(dtype=float)
     y = df[column].to_numpy(dtype=float)
     if log_scale and len(x) and np.any(x <= 0):
-        finite_x = np.sort(np.unique(x[np.isfinite(x)]))
+        finite_mask = np.isfinite(x)
+        finite_x = np.sort(np.unique(x[finite_mask]))
         adjacent_intervals = np.diff(finite_x)
         positive_intervals = adjacent_intervals[adjacent_intervals > 0]
         interval = np.min(positive_intervals) if len(positive_intervals) else 1.0
         synthetic_start = max(0.05 * interval, np.finfo(float).tiny)
         keep = x > 0
+        if synthetic_y == "first_positive" and np.any(keep):
+            positive_indices = np.flatnonzero(keep)
+            synthetic_value = y[positive_indices[np.argmin(x[positive_indices])]]
+        else:
+            finite_indices = np.flatnonzero(finite_mask)
+            synthetic_value = y[finite_indices[np.argmin(x[finite_indices])]]
         x = np.concatenate(([synthetic_start], x[keep]))
-        y = np.concatenate(([y[0]], y[keep]))
+        y = np.concatenate(([synthetic_value], y[keep]))
     return x, y
 
 
-def _plot_line(ax, df, column, label, color, log_scale=False):
-    x, y = _x_and_y(df, column, log_scale=log_scale)
+def _plot_line(ax, df, column, label, color, log_scale=False, synthetic_y="earliest"):
+    x, y = _x_and_y(df, column, log_scale=log_scale, synthetic_y=synthetic_y)
     ax.plot(
         x,
         y,
@@ -244,6 +248,7 @@ def plot_dissolution_rate(ax, df, log_scale=False):
         "Dissolution rate",
         WONG_COLORS["vermillion"],
         log_scale,
+        synthetic_y="first_positive",
     )
     _finalize_time_axis(ax, "Dissolution rate (min$^{-1}$)", log_scale)
 
@@ -267,14 +272,14 @@ def plot_max_blob_frac(ax, df, log_scale=False):
 
 def plot_req_stats(ax, df, log_scale=False):
     series = [
-        ("ReqMedian", "Median", WONG_COLORS["black"]),
-        ("ReqMean", "Mean", WONG_COLORS["orange"]),
-        ("ReqStd", "Std", WONG_COLORS["sky_blue"]),
+        ("ReqMedian", "Median", WONG_COLORS["blue"]),
+        ("ReqMean", "Mean", WONG_COLORS["vermillion"]),
+        ("ReqStd", "Std", WONG_COLORS["bluish_green"]),
     ]
     for column, label, color in series:
         _plot_line(ax, df, column, label, color, log_scale)
     _finalize_time_axis(ax, "Equivalent radius", log_scale)
-    ax.legend(loc="best")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.02), ncol=3, frameon=False)
 
 
 def plot_interface_area(ax, df, log_scale=False):
@@ -305,8 +310,8 @@ def _save_figure(fig, stem, figures_dir, dpi):
     figures_dir.mkdir(parents=True, exist_ok=True)
     png_path = figures_dir / f"{stem}.png"
     svg_path = figures_dir / f"{stem}.svg"
-    fig.savefig(png_path, dpi=dpi)
-    fig.savefig(svg_path)
+    fig.savefig(png_path, dpi=dpi, facecolor="white")
+    fig.savefig(svg_path, facecolor="white")
     return [png_path, svg_path]
 
 
@@ -339,7 +344,7 @@ def _create_individual_figure(df, plotter, log_scale=False):
 def create_all_figures(
     df,
     figures_dir,
-    dpi=600,
+    dpi=300,
     smooth_window=101,
     smooth_polyorder=3,
 ):
@@ -372,7 +377,7 @@ def build_arg_parser():
         "--figures-dir",
         help="Directory for generated figures. Defaults to <output_dir>/figures.",
     )
-    parser.add_argument("--dpi", type=int, default=600, help="PNG output DPI.")
+    parser.add_argument("--dpi", type=int, default=300, help="PNG output DPI.")
     parser.add_argument(
         "--smooth-window",
         type=int,
