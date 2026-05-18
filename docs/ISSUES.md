@@ -13,6 +13,18 @@
 - **默认数据**: 02 Pretest 4 / 01 NAPL WATER (3 TIF, 145 页, 1s/帧)
 - **新增功能**: 多次分割叠加 v2, 流式帧加载, 子图独立保存, 安全日志输出, 轻量进度快照
 
+## 2026-05-08 Implementation Notes
+
+- Added `visualization/plot_timeseries.py` for Python-based DNAPL time-series plotting from `timeseries_realtime*.csv`.
+- Nature journal style: Arial font, 8.5pt body, outward ticks, light grid, colorblind-safe Wong palette, PDF with embedded TrueType fonts (fonttype 42).
+- Dual x-axis scale: every metric plotted with both linear and log-scale time axis.
+- Output: 28 files per run (7 metrics x 2 scales x 2 formats PNG+SVG) under `<output>/figures/`.
+- The script uses corrected `RealTime_s`, derives `Time_min`, computes smoothed `-dSn/dt`.
+- Added `tests/test_plot_timeseries.py` with synthetic CSV coverage for required-column validation, irregular-time derivative computation, and output file generation.
+- `blob_detail_all_frames.csv` remains unused for this plotting workflow.
+
+---
+
 ## 2026-03-14 Implementation Notes
 
 - Sequential Step 4 checkpoints now persist `locked_threshold`, making new checkpoints self-contained resume points.

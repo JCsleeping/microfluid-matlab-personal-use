@@ -35,7 +35,7 @@ function results = main_DNAPL_pipeline(config)
 
     % Add all sub-folders to MATLAB path
     pipeline_root = fileparts(mfilename('fullpath'));
-    addpath(genpath(pipeline_root));
+    add_project_paths(pipeline_root);
 
     % Ensure output directory exists
     if ~isfolder(config.output_path)
@@ -694,5 +694,51 @@ function message = format_exception_message(ME)
         message = ME.message;
     else
         message = sprintf('%s: %s', ME.identifier, ME.message);
+    end
+end
+
+
+function add_project_paths(project_root)
+    remove_worktree_paths(project_root);
+
+    parts = strsplit(genpath(project_root), pathsep);
+    worktree_root = normalize_path(fullfile(project_root, '.worktrees'));
+    keep = {};
+    for i = 1:numel(parts)
+        p = parts{i};
+        if isempty(p)
+            continue;
+        end
+        if startsWith(normalize_path(p), worktree_root)
+            continue;
+        end
+        keep{end+1} = p; %#ok<AGROW>
+    end
+
+    if ~isempty(keep)
+        addpath(strjoin(keep, pathsep));
+    end
+end
+
+
+function remove_worktree_paths(project_root)
+    worktree_root = normalize_path(fullfile(project_root, '.worktrees'));
+    parts = strsplit(path, pathsep);
+    for i = 1:numel(parts)
+        p = parts{i};
+        if isempty(p)
+            continue;
+        end
+        if startsWith(normalize_path(p), worktree_root)
+            rmpath(p);
+        end
+    end
+end
+
+
+function p_norm = normalize_path(p)
+    p_norm = lower(strrep(char(p), '/', filesep));
+    while ~isempty(p_norm) && p_norm(end) == filesep
+        p_norm = p_norm(1:end-1);
     end
 end

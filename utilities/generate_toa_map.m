@@ -83,9 +83,14 @@ function generate_toa_map(mat_path, pixel_size_um, label, output_dir, pages, tif
     %  Build frame index
     %  ====================================================================
     fprintf('  Building frame index    ...\n');
-    if ~isempty(tif_path) && ~strcmp(tif_path, '')
+    tif_path_empty = isempty(tif_path) || (ischar(tif_path) && strcmp(tif_path, ''));
+    if ~tif_path_empty
         tif_paths = tif_path;
-        fprintf('  Using user-specified TIF: %s\n', tif_path);
+        if ischar(tif_path)
+            fprintf('  Using user-specified TIF: %s\n', tif_path);
+        else
+            fprintf('  Using user-specified TIF cell array (%d files)\n', numel(tif_path));
+        end
     else
         tif_paths = config.multipage_tif_path;
     end
@@ -207,14 +212,8 @@ function generate_toa_map(mat_path, pixel_size_um, label, output_dir, pages, tif
     prev_mask = [];
     timer_start = tic;
 
-    % Setup snapshot capture at key time points
-    if num_frames <= 20
-        % Small frame count: capture every frame
-        snapshot_frames = 1:num_frames;
-    else
-        snapshot_fracs = [0.01, 0.25, 0.50, 0.75, 1.00];
-        snapshot_frames = unique(max(1, round(snapshot_fracs * num_frames)));
-    end
+    % Capture every frame
+    snapshot_frames = 1:num_frames;
     snapshot_masks = cell(numel(snapshot_frames), 1);
     snapshot_labels_t = zeros(numel(snapshot_frames), 1);
 

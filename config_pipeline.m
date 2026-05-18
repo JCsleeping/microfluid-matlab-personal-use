@@ -1,5 +1,5 @@
 function config = config_pipeline(varargin)
-% CONFIG_PIPELINE  Returns default configuration for the DNAPL analysis pipeline.
+% CONFIG_PIPELINE  Return default configuration for the DNAPL analysis pipeline.
 %
 %   config = config_pipeline()
 %   config = config_pipeline('param1', value1, 'param2', value2, ...)
@@ -7,107 +7,77 @@ function config = config_pipeline(varargin)
 %   Override defaults by passing name-value pairs. Nested fields use dot
 %   notation strings, e.g. config_pipeline('physical.pixel_size', 5e-6).
 
-    %% Ensure all subdirectories are on the MATLAB path
+    %% Ensure project code is on the MATLAB path
     this_dir = fileparts(mfilename('fullpath'));
-    addpath(genpath(this_dir));
+    add_project_paths(this_dir);
 
-    %% ====================================================================
-    %  USER SETTINGS — 只需修改这一个区域
-    %  ====================================================================
-    %
-    %  以下是你每次实验需要核对/修改的参数。
-    %  其余参数（算法参数）在下方"高级设置"区域，通常不需要改动。
+    %% User settings
 
-    % --- 数据路径 ---
+    % --- Data path ---
     config.data_path = 'G:\微流控\20 1-BO 4UL 5% TWEEN 80 4UL WATER DISPLACEMENT\02 NAPL';
-    %   ↑ 实验数据所在目录。下面的 TIF 路径基于此目录。
 
-    % --- 输入文件 (自动扫描目录中所有 .tif 文件) ---
+    % --- Input files ---
+    % Leave empty here. After user overrides are applied, the final
+    % data_path is scanned unless multipage_tif_path was explicitly supplied.
     config.multipage_tif_path = {};
-    %   ↑ 自动读取 data_path 下所有 .tif，按文件日期从早到晚排序
-    %   ↑ 如需手动指定，改为 config.multipage_tif_path = {'path1.tif'; 'path2.tif'};
 
-    % --- 分析页面 ---
-    config.pages = [];   % [] = 全部页; [1,10,72] = 指定页（合并后的全局页号）
-    %   ↑ 多TIF时，页号为合并后的连续编号（第1个TIF的页+第2个TIF的页+...）
-    %   ↑ 内存不足时用子采样: config.pages = 1:10:1500  → 每10帧取1帧
-    %   ↑ 每帧约 14 MB (2048×2448×3)，500帧 ≈ 7 GB，建议不超过 300 帧
+    % --- Pages ---
+    % [] = all pages; otherwise use global page indices after all TIF files
+    % are concatenated in chronological file order.
+    config.pages = [];
 
-    % --- 物理参数 (必填) ---
-    config.physical.pixel_size       = 'calibrate';   % [m/pixel] 每像素物理尺寸
-    %   ↑ 填数字: 直接使用该值
-    %   ↑ 填 'calibrate': 首次弹窗让你画线量通道宽度，自动计算 pixel_size
-    config.physical.channel_width_um = 400;     % [μm] 进出口通道物理宽度（来自CAD: 0.4 mm）
-    %   ↑ 配合 pixel_size='calibrate' 使用
-    config.physical.diffusion_coeff  = 0.43e-9;   % [m^2/s]   分子扩散系数
-    config.physical.solubility       = 4;      % [mg/L]    水溶解度
-    config.physical.dnapl_density    = 1038;   % [kg/m^3]  DNAPL密度
-    config.physical.depth            = 20e-6;  % [m]       通道深度
-    %   ↑ 示例: TCE → pixel_size=5e-6, diffusion=8.5e-10, solubility=1100,
-    %           density=1460, depth=50e-6
+    % --- Physical parameters ---
+    config.physical.pixel_size       = 'calibrate';
+    config.physical.channel_width_um = 400;
+    config.physical.diffusion_coeff  = 0.43e-9;
+    config.physical.solubility       = 4;
+    config.physical.dnapl_density    = 1038;
+    config.physical.depth            = 20e-6;
 
-    % --- 时间 ---
-    config.time_interval = 1;   % [s] 帧间固定时间间隔; [] = 用time_vector
-    %   ↑ 设置后自动生成 time_vector = [0, dt, 2*dt, ...]
-    %   ↑ 示例: 每3秒一帧 → config.time_interval = 3;
-    config.time_vector = [];  % [] = 自动生成 [0,1,2,...]; 或手动 [0,60,120,...]
-    %   ↑ time_interval 优先; 若都为空则自动 [0,1,2,...]
+    % --- Time ---
+    config.time_interval = 1;
+    config.time_vector = [];
 
-    % --- 旋转与裁剪 ---
-    config.preprocess.rotation_angle = 0;   % 0 = 不旋转; [] = 自动检测; -45 = 手动
-    %   ↑ 芯片本身就是45°设计，默认不旋转。如需旋转校正再改
+    % --- Rotation and crop ---
+    config.preprocess.rotation_angle = 0;
     config.preprocess.manual_crop_rect = 'interactive';
-    %   ↑ 'interactive' = 弹窗画多边形选择芯片区域（推荐首次使用）
-    %   ↑ [] = 自动检测芯片区域
-    %   ↑ [x,y,w,h] = 直接指定裁剪区域（像素坐标）
-    %   ↑ 确定区域后可把坐标写死，避免每次重新选择
 
-    % --- 流域参考 (DNAPL饱和图，用于检测柱子) ---
-    config.flow_domain_frame = 1;  % 备用: 从实验帧中取（仅当 flow_domain_image 为空时生效）
-    config.flow_domain_image = 'D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\00 Saturation\1BD NAPL SATURATION3_1.tif';  % ← 填入DNAPL饱和图路径（粉色DNAPL + 白色柱子）
-    %   ↑ 推荐: 用DNAPL饱和帧，柱子(白)与DNAPL(粉)颜色对比度最高
-    %   ↑ 不推荐: 水饱和图/干净图（柱子与孔隙灰度对比度太低，检测失败）
-    %   ↑ '' = 使用实验帧 flow_domain_frame 指定的帧
-    config.flow_domain_image_page = 1;  % 多页TIF取哪一页
-    config.flow_domain_crop_rect = [];  % [] = 弹窗画多边形; [x,y,w,h] = 指定裁剪
+    % --- Flow-domain reference ---
+    config.flow_domain_frame = 1;
+    config.flow_domain_image = 'D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\01 databased\00 Saturation\1BD NAPL SATURATION3_1.tif';
+    config.flow_domain_image_page = 1;
+    config.flow_domain_crop_rect = [];
 
-    %% ====================================================================
-    %  ADVANCED SETTINGS — 高级设置（通常不需要修改）
-    %  ====================================================================
+    %% Advanced settings
 
-    % --- 输入模式 (一般不改) ---
-    config.input_mode = 'multipage_tif';  % 'multipage_tif' | 'separate_files'
-    config.image_dir = '';                % separate_files模式: 图像目录
-    config.image_files = {};              % separate_files模式: 文件路径列表
+    % --- Input mode ---
+    config.input_mode = 'multipage_tif';
+    config.image_dir = '';
+    config.image_files = {};
 
-    % --- 输出路径 ---
-    %   每次运行自动创建带时间戳的新文件夹，放在图片同目录下，不会覆盖旧结果
+    % --- Output path ---
     default_output_name = ['output_' datestr(now, 'yyyymmdd_HHMMSS')];
     config.output_path = '';
 
-    % --- 预处理 ---
-    config.preprocess.auto_rotate       = false;
-    config.illumination.method      = 'morphological'; % 'morphological' | 'polynomial'
-    config.illumination.kernel_size = 'interactive';   % 'interactive' = 弹窗对比10种; 50 = 直接用
-    %   ↑ 'interactive': 显示 kernel 10~100 的对比图，选最好的
-    %   ↑ 数字 (如50): 直接使用该kernel大小，不弹窗
-    config.registration.method    = 'none';             % 'none' = skip (default); 'intensity' = intensity-based alignment
-    config.registration.transform = 'similarity';      % 'translation' | 'similarity' | 'affine'
+    % --- Preprocessing ---
+    config.preprocess.auto_rotate = false;
+    config.illumination.method = 'morphological';
+    config.illumination.kernel_size = 'interactive';
+    config.registration.method = 'none';
+    config.registration.transform = 'similarity';
 
-    % --- 分割 ---
-    config.segmentation.color_space    = 'Lab';    % 'Lab' | 'HSV'
-    config.segmentation.target_channel = 'a';      % 'a' (Lab) | 'H' (HSV)
-    config.segmentation.method         = 'gmm_v2';    % 'gmm' | 'otsu' | 'adaptive' | 'gmm_v2' | 'otsu_v2'
-    %   ↑ 'gmm_v2' / 'otsu_v2' = 多次分割叠加法（自动回收DNAPL内部黑点）
-    config.segmentation.num_components = 2;         % GMM 组分数
-    config.segmentation.min_blob_area  = 10;        % 最小液滴面积 [像素]
-    config.segmentation.morph_radius   = 2;         % 形态学运算半径
-    config.segmentation.hole_fill_radius = 3;       % v2: 暗点最大直径 [像素]（形态学重建腐蚀半径）
+    % --- Segmentation ---
+    config.segmentation.color_space = 'Lab';
+    config.segmentation.target_channel = 'a';
+    config.segmentation.method = 'gmm_v2';
+    config.segmentation.num_components = 2;
+    config.segmentation.min_blob_area = 10;
+    config.segmentation.morph_radius = 2;
+    config.segmentation.hole_fill_radius = 3;
 
-    % --- 界面分析 ---
-    config.interface.solid_dilation = 1;  % 固体膨胀像素数
+    % --- Interface analysis ---
+    config.interface.solid_dilation = 1;
 
-    % --- 传质模型 ---
     % --- Residual structure metrics ---
     config.architecture.pool_like.max_blob_fraction_min = 0.50;
     config.architecture.pool_like.num_blobs_max = 10;
@@ -116,47 +86,45 @@ function config = config_pipeline(varargin)
     config.architecture.ganglia_rich.num_blobs_min = 25;
     config.architecture.ganglia_rich.a_i_2D_min = 6.0e4;
 
-    config.physical.sherwood_correlation = 'powers'; % 'powers' | 'wilson' | 'interfacial'
+    % --- Mass transfer model ---
+    config.physical.sherwood_correlation = 'powers';
 
-    % --- 可视化 ---
-    config.visualization.show_figures  = true;
-    config.visualization.save_figures  = true;
-    config.visualization.figure_format = 'png';    % 'png' | 'svg' | 'fig'
+    % --- Visualization ---
+    config.visualization.show_figures = true;
+    config.visualization.save_figures = true;
+    config.visualization.figure_format = 'png';
     config.visualization.colormap_blobs = 'jet';
 
-    % --- Parallel processing (requires Parallel Computing Toolbox) ---
-    config.parallel.enabled     = false;    % true: 使用 parfor（默认关闭，避免 GPU 冲突）
-    config.parallel.num_workers = 2;        % 并行工作进程数
-    config.parallel.use_gpu     = false;     % true: GPU 加速（主线程安全，parfor 内自动禁用）
-    %   ⚠ parfor + GPU 并发会导致堆损坏(0xc0000374)，代码已做防护
+    % --- Parallel processing ---
+    config.parallel.enabled = false;
+    config.parallel.num_workers = 2;
+    config.parallel.use_gpu = false;
 
-    % --- Checkpoint / resume (大数据集断点续传) ---
-    config.output.checkpoint    = true;    % true: 定期保存 checkpoint，支持中断恢复
-    config.output.save_interval = 72;       % 每 N 帧保存一次 checkpoint
+    % --- Checkpoint / resume / safe output controls ---
+    config.output.checkpoint = true;
+    config.output.save_interval = 72;
+    config.output.save_log = true;
+    config.output.save_progress = false;
+    config.output.progress_interval = 50;
+    config.output.save_heartbeat = true;
+    config.output.heartbeat_frame_interval = 10;
+    config.output.heartbeat_time_interval_sec = 30;
+    config.output.save_blob_detail = false;
+    config.output.blob_detail_chunk_size = 100;
+    config.output.blob_detail_save_format = 'v7';
+    config.output.blob_detail_allow_format_fallback = true;
+    config.output.blob_detail_chunk_max_bytes = 512 * 1024^2;
+    config.output.max_frames_per_session = inf;
 
-    config.output.save_log      = true;     % true: save command-window output to logs/
-    config.output.save_progress = false;    % true: save lightweight Step-4 progress snapshots
-    config.output.progress_interval = 50;   % save progress every N frames in sequential mode
-    config.output.save_heartbeat = true;    % true: save structured status heartbeat to status/
-    config.output.heartbeat_frame_interval = 10;      % flush heartbeat at least every N frames
-    config.output.heartbeat_time_interval_sec = 30;   % flush heartbeat at least every N seconds
-    config.output.save_blob_detail = false; % true: save per-blob residual-structure detail tables
-    config.output.blob_detail_chunk_size = 100;        % frames per MAT chunk when saving blob detail
-    % Use v7 by default: v7.3 is HDF5-based and can fail on Windows paths
-    % containing non-ASCII characters (e.g., Chinese folders on external drives).
-    config.output.blob_detail_save_format = 'v7'; % 'v7' | 'v7.3' | 'v7.3-nocompression'
-    config.output.blob_detail_allow_format_fallback = true; % true: fallback to v7 if requested format fails probe
-    config.output.blob_detail_chunk_max_bytes = 512 * 1024^2; % warn threshold for v7 chunk size
-    config.output.max_frames_per_session = inf;       % inf: no auto-pause; finite values pause only on checkpoint boundaries
-
-    %% ---- Apply user overrides (do not modify below) -----------------------
+    %% Apply user overrides
     output_path_overridden = has_override(varargin, 'output_path');
     for k = 1:2:numel(varargin)
         field_path = varargin{k};
-        value      = varargin{k+1};
-        config     = setfield_nested(config, field_path, value);
+        value = varargin{k+1};
+        config = setfield_nested(config, field_path, value);
     end
 
+    %% Resolve paths after overrides
     if isempty(config.multipage_tif_path)
         config.multipage_tif_path = discover_tif_paths(config.data_path);
     end
@@ -192,7 +160,8 @@ function tif_paths = discover_tif_paths(data_path)
              'Example: config.data_path = ''...\\01 databased\\01 Pretest 5\\03 Water Dis'';'], ...
             data_path);
     end
-    [~, date_order] = sort([tif_list.datenum]);  % 按文件修改日期排序（从早到晚）
+
+    [~, date_order] = sort([tif_list.datenum]);
     tif_list = tif_list(date_order);
     tif_paths = arrayfun(@(f) fullfile(f.folder, f.name), ...
         tif_list, 'UniformOutput', false);
@@ -207,5 +176,51 @@ function s = setfield_nested(s, field_path, value)
         sub = s.(tokens{1});
         sub = setfield_nested(sub, strjoin(tokens(2:end), '.'), value);
         s.(tokens{1}) = sub;
+    end
+end
+
+% -------------------------------------------------------------------------
+function add_project_paths(project_root)
+    remove_worktree_paths(project_root);
+
+    parts = strsplit(genpath(project_root), pathsep);
+    worktree_root = normalize_path(fullfile(project_root, '.worktrees'));
+    keep = {};
+    for i = 1:numel(parts)
+        p = parts{i};
+        if isempty(p)
+            continue;
+        end
+        if startsWith(normalize_path(p), worktree_root)
+            continue;
+        end
+        keep{end+1} = p; %#ok<AGROW>
+    end
+
+    if ~isempty(keep)
+        addpath(strjoin(keep, pathsep));
+    end
+end
+
+% -------------------------------------------------------------------------
+function remove_worktree_paths(project_root)
+    worktree_root = normalize_path(fullfile(project_root, '.worktrees'));
+    parts = strsplit(path, pathsep);
+    for i = 1:numel(parts)
+        p = parts{i};
+        if isempty(p)
+            continue;
+        end
+        if startsWith(normalize_path(p), worktree_root)
+            rmpath(p);
+        end
+    end
+end
+
+% -------------------------------------------------------------------------
+function p_norm = normalize_path(p)
+    p_norm = lower(strrep(char(p), '/', filesep));
+    while ~isempty(p_norm) && p_norm(end) == filesep
+        p_norm = p_norm(1:end-1);
     end
 end
