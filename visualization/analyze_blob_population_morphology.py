@@ -115,6 +115,22 @@ def load_timeseries(timeseries_csv):
     return timeseries
 
 
+def assert_grouped_by_frame(blob_detail):
+    frames = pd.to_numeric(blob_detail["FrameIndex"], errors="coerce")
+    seen = set()
+    current = object()
+    for value in frames:
+        if pd.isna(value):
+            continue
+        frame = int(value)
+        if frame == current:
+            continue
+        if frame in seen:
+            raise ValueError("blob_detail rows are not grouped by FrameIndex")
+        seen.add(frame)
+        current = frame
+
+
 def _percentile(values, q):
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]
@@ -214,11 +230,19 @@ def compute_frame_morphology(
         )
         shape_group = group.loc[shape_base].copy()
         for column in SHAPE_COLUMNS:
+            out_column = "Circularity2D" if column == "Circularity" else column
             values = pd.to_numeric(shape_group[column], errors="coerce") if column in shape_group.columns else pd.Series(dtype=float)
             values = values[np.isfinite(values)]
-            row[f"{column}_median"] = float(values.median()) if len(values) else np.nan
-            row[f"{column}_mean"] = float(values.mean()) if len(values) else np.nan
-            row[f"{column}_area_weighted_mean"] = _area_weighted_mean(shape_group, column)
+            median_value = float(values.median()) if len(values) else np.nan
+            mean_value = float(values.mean()) if len(values) else np.nan
+            weighted_value = _area_weighted_mean(shape_group, column)
+            row[f"{out_column}_median"] = median_value
+            row[f"{out_column}_mean"] = mean_value
+            row[f"{out_column}_area_weighted_mean"] = weighted_value
+            if out_column != column:
+                row[f"{column}_median"] = median_value
+                row[f"{column}_mean"] = mean_value
+                row[f"{column}_area_weighted_mean"] = weighted_value
 
         euler = pd.to_numeric(group.get("EulerNumber"), errors="coerce") if "EulerNumber" in group.columns else pd.Series(dtype=float)
         euler_valid = euler[np.isfinite(euler)]
@@ -286,11 +310,14 @@ def compute_size_distribution_slopes(blob_detail, q_low=0.10, q_high=0.90, min_s
             "FitN": 0,
             "FitReqMin": np.nan,
             "FitReqMax": np.nan,
+            "FractalProxyOnly": True,
         }
         if req.size >= int(min_slope_points):
             low = float(np.quantile(req, float(q_low)))
             high = float(np.quantile(req, float(q_high)))
             fit_req = req[(req >= low) & (req <= high)]
+            if fit_req.size < int(min_slope_points):
+                fit_req = req
             if fit_req.size >= int(min_slope_points) and np.unique(fit_req).size >= 2:
                 unique_req = np.unique(fit_req)
                 survival = np.array([(req >= value).sum() for value in unique_req], dtype=float)
@@ -473,7 +500,7 @@ def create_figures(frame_summary, topology, slopes, figures_dir, dpi=300):
 
     fig, ax = plt.subplots(figsize=INDIVIDUAL_SIZE)
     for column, label, color in [
-        ("Circularity_area_weighted_mean", "Circularity", WONG_COLORS["blue"]),
+        ("Circularity2D_area_weighted_mean", "Circularity2D", WONG_COLORS["blue"]),
         ("AspectRatio_area_weighted_mean", "Aspect ratio", WONG_COLORS["orange"]),
         ("Solidity_area_weighted_mean", "Solidity", WONG_COLORS["bluish_green"]),
     ]:
@@ -554,6 +581,106 @@ def create_summary(frame_summary, topology, slopes, pixel_size_um):
         "slope_name": "2D population size-distribution slope",
         "n_slope_frames": int(slopes["Slope_logN_gt_Req_vs_logReq"].notna().sum()) if not slopes.empty else 0,
         "topology_columns": [column for column in topology.columns if column.startswith(("areaFrac", "countFrac"))],
+    }
+
+
+def analyze_blob_population(
+    blob_csv,
+    timeseries_csv=None,
+    chunksize=200000,
+    pixel_size_um=None,
+    min_shape_area_px=9.0,
+    min_shape_perimeter_px=8.0,
+    slope_q_low=0.10,
+    slope_q_high=0.90,
+    min_slope_points=20,
+):
+    """Return Level A blob-population tables for library callers.
+
+    ``chunksize`` is accepted for driver compatibility. The current
+    implementation keeps the existing all-at-once loader so output semantics
+    match the CLI path.
+    """
+    _ = chunksize
+    blobs = load_blob_detail(blob_csv)
+    assert_grouped_by_frame(blobs)
+    timeseries = load_timeseries(timeseries_csv)
+
+    frame_summary = compute_frame_morphology(
+        blobs,
+        pixel_size_um=pixel_size_um,
+        min_shape_area_px=min_shape_area_px,
+        min_shape_perimeter_px=min_shape_perimeter_px,
+    )
+    frame_summary = align_timeseries(frame_summary, timeseries)
+    topology = compute_topology_population(blobs)
+    topology = align_timeseries(topology, timeseries)
+    slopes = compute_size_distribution_slopes(
+        blobs,
+        q_low=slope_q_low,
+        q_high=slope_q_high,
+        min_slope_points=min_slope_points,
+    )
+    slopes = align_timeseries(slopes, timeseries)
+    return frame_summary, topology, slopes
+
+
+def write_blob_population_outputs(
+    blob_csv,
+    output_dir,
+    timeseries_csv=None,
+    chunksize=200000,
+    dpi=300,
+    no_figures=False,
+    min_slope_points=20,
+    pixel_size_um=None,
+):
+    """Run blob-population analysis as a library call for the postprocess driver."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_summary, topology, slopes = analyze_blob_population(
+        blob_csv,
+        timeseries_csv=timeseries_csv,
+        chunksize=chunksize,
+        pixel_size_um=pixel_size_um,
+        min_slope_points=min_slope_points,
+    )
+
+    morphology_csv = output_dir / "blob_population_morphology_by_frame.csv"
+    slopes_csv = output_dir / "size_distribution_slope_vs_time.csv"
+    topology_csv = output_dir / "topology_population_by_frame.csv"
+    summary_json = output_dir / "blob_population_morphology_summary.json"
+
+    frame_summary.to_csv(morphology_csv, index=False)
+    slopes.to_csv(slopes_csv, index=False)
+    topology.to_csv(topology_csv, index=False)
+    summary = create_summary(frame_summary, topology, slopes, pixel_size_um)
+    with open(summary_json, "w", encoding="utf-8") as fp:
+        json.dump(summary, fp, indent=2, ensure_ascii=False, default=_json_default)
+
+    figure_paths = []
+    if not no_figures:
+        figure_paths = create_figures(
+            frame_summary,
+            topology,
+            slopes,
+            output_dir / "figures_blob_population",
+            dpi=dpi,
+        )
+
+    return {
+        "frame_summary": frame_summary,
+        "topology": topology,
+        "slopes": slopes,
+        "summary": summary,
+        "outputs": {
+            "morphology_csv": morphology_csv,
+            "slopes_csv": slopes_csv,
+            "topology_csv": topology_csv,
+            "summary_json": summary_json,
+            "figures": figure_paths,
+        },
     }
 
 

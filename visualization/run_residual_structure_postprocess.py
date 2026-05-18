@@ -185,6 +185,7 @@ def run_postprocess(args):
     blob_result = blob_population.write_blob_population_outputs(
         blob_csv,
         postprocess_dir,
+        timeseries_csv=timeseries_csv,
         chunksize=args.chunksize,
         dpi=args.dpi,
         no_figures=args.no_figures,

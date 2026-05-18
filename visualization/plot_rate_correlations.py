@@ -1603,6 +1603,166 @@ def create_all_rate_figures(
     return written, binned_rows_all
 
 
+def compute_dissolution_rates(
+    df,
+    rate_window_min=DEFAULT_RATE_WINDOW_MIN,
+    rate_min_points=DEFAULT_RATE_MIN_POINTS,
+    min_sn_norm_valid=0.05,
+    min_blobs_valid=20,
+    sn_smooth_window_frames=1,
+    monotone_sn_for_rate=True,
+):
+    """Compatibility helper returning a DataFrame with derived rate columns."""
+    out = df.copy()
+    if "Time_min" not in out.columns:
+        if "RealTime_s" not in out.columns:
+            raise KeyError("DataFrame must contain RealTime_s or Time_min")
+        out["Time_min"] = pd.to_numeric(out["RealTime_s"], errors="coerce") / 60.0
+    attach_stage_and_masks(
+        out,
+        min_sn_norm_valid=min_sn_norm_valid,
+        min_blobs_valid=min_blobs_valid,
+    )
+    attach_all_rates(
+        out,
+        rate_window_min=rate_window_min,
+        rate_min_points=rate_min_points,
+        sn_smooth_window_frames=sn_smooth_window_frames,
+        monotone_sn_for_rate=monotone_sn_for_rate,
+    )
+    out["SnMonotone"] = out["Sn_rate_input"]
+    out["DissolutionRate_Sn_per_min"] = out["DissolutionRate_Sn_time_lr"]
+    out["RemovalFraction"] = 1.0 - out["SnNorm"]
+    return out
+
+
+def _default_unit_args():
+    return argparse.Namespace(
+        ai2d_unit="auto",
+        interface_unit="auto",
+        req_unit="auto",
+        fraction_kind="area",
+    )
+
+
+def _default_rate_columns(df):
+    rate_columns = [
+        "RealTime_s", "Time_min", "Sn", "Sn_rate_input",
+        "SnNorm", "Stage", "ValidStructure", "NearDepleted",
+        "DissolutionRate_Sn_time_lr",
+        "DissolutionRate_Sn_movmed",
+        "DissolutionRate_Sn_lr",
+        "NormalizedDissolutionRate_Sn_time_lr",
+        "NormalizedDissolutionRate_Sn_movmed",
+        "NormalizedDissolutionRate_Sn_lr",
+        "MassTransferProxy_time_lr_per_pixel",
+        "MassTransferProxy_movmed_per_pixel",
+        "MassTransferProxy_lr_per_pixel",
+    ]
+    for optional in (
+        "DissolutionRate_mass_kg_per_s",
+        "DissolutionRate_per_projected_interface_length_kg_per_s_per_m",
+    ):
+        if optional in df.columns:
+            rate_columns.append(optional)
+    return [c for c in rate_columns if c in df.columns]
+
+
+def write_rate_outputs(
+    timeseries_csv,
+    output_dir,
+    dpi=300,
+    no_figures=False,
+    rate_window_min=DEFAULT_RATE_WINDOW_MIN,
+    rate_min_points=DEFAULT_RATE_MIN_POINTS,
+    pixel_size_um=None,
+):
+    """Run rate/metric association outputs as a library call for the driver."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    df = load_rate_timeseries(timeseries_csv)
+    attach_stage_and_masks(df)
+    unit_args = _default_unit_args()
+    unit_info = infer_metric_units(df, unit_args, pixel_size_um)
+    attach_all_rates(
+        df,
+        rate_window_min=rate_window_min,
+        rate_min_points=rate_min_points,
+        pixel_size_um=pixel_size_um,
+        unit_info=unit_info,
+    )
+
+    all_specs = list(X_AXIS_SPECS) + list(FRACTION_SPECS)
+    all_metric_keys = [s["key"] for s in all_specs]
+    rate_method = "time-lr"
+    rate_col = RATE_METHOD_TO_COLUMN[rate_method]
+    fraction_kind = _resolve_fraction_kind(unit_args, df)
+
+    figure_paths = []
+    binned_rows = []
+    if not no_figures:
+        figure_paths, binned_rows = create_all_rate_figures(
+            df,
+            figures_dir=output_dir / "figures_rate",
+            rate_method=rate_method,
+            dpi=dpi,
+            pixel_size_um=pixel_size_um,
+            log_x_metrics={"auto"},
+            fraction_kind=fraction_kind,
+            unit_info=unit_info,
+        )
+    else:
+        valid_mask = valid_interpretation_mask(df)
+        for spec in all_specs:
+            key = spec["key"]
+            if key not in df.columns:
+                continue
+            values = pd.to_numeric(df[key], errors="coerce")
+            log_x = _should_log_metric(key, {"auto"}, values, valid_mask)
+            binned_rows.extend(
+                compute_binned_summary_rows(
+                    df,
+                    key,
+                    rate_col,
+                    unit_info,
+                    pixel_size_um,
+                    stages=("active_removal",),
+                    n_bins=8,
+                    log_x=log_x,
+                    min_bin_count=20,
+                )
+            )
+
+    rates_csv = output_dir / "dissolution_rates.csv"
+    associations_csv = output_dir / "rate_metric_associations.csv"
+    binned_csv = output_dir / "rate_metric_binned_summary.csv"
+    unit_json = output_dir / "rate_plot_unit_inference.json"
+
+    df.loc[:, _default_rate_columns(df)].to_csv(rates_csv, index=False)
+    pd.DataFrame(compute_associations(df, all_metric_keys, rate_col, unit_info, pixel_size_um)).to_csv(
+        associations_csv,
+        index=False,
+    )
+    pd.DataFrame(binned_rows).to_csv(binned_csv, index=False)
+    with open(unit_json, "w", encoding="utf-8") as fp:
+        json.dump(unit_info, fp, indent=2, ensure_ascii=False, default=_json_default)
+
+    return {
+        "rates": df,
+        "associations": associations_csv,
+        "binned_summary": binned_csv,
+        "unit_info": unit_info,
+        "outputs": {
+            "rates_csv": rates_csv,
+            "associations_csv": associations_csv,
+            "binned_csv": binned_csv,
+            "unit_json": unit_json,
+            "figures": figure_paths,
+        },
+    }
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #

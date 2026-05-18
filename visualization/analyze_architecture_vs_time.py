@@ -187,7 +187,8 @@ def _score_bool(value):
     return bool(pd.notna(value) and np.isfinite(float(value)))
 
 
-def classify_architecture_row(row, thresholds):
+def classify_architecture_row(row, thresholds=None):
+    thresholds = thresholds or ArchitectureThresholds()
     max_blob = row.get("MaxBlobFrac", np.nan)
     num_blobs = row.get("NumBlobs", np.nan)
     ai2d = row.get("a_i_2D", np.nan)
@@ -794,6 +795,78 @@ def create_all_figures(df, transitions, figures_dir, dpi=300):
     written.extend(plot_rate_by_architecture(df, figures_dir, dpi))
     written.extend(plot_rate_vs_ai2d_by_architecture(df, figures_dir, dpi))
     return written
+
+
+def analyze_architecture(
+    timeseries_csv,
+    output_dir,
+    dpi=300,
+    no_figures=False,
+    rate_window_min=20.0,
+    rate_min_points=25,
+    thresholds=None,
+    min_sn_norm_valid=0.05,
+    min_blobs_valid=20,
+    transition_min_run_frames=5,
+):
+    """Run architecture analysis as a library call for the postprocess driver."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    thresholds = thresholds or ArchitectureThresholds()
+
+    df = load_timeseries(timeseries_csv)
+    architecture_df = prepare_architecture_dataframe(
+        df,
+        output_dir=output_dir,
+        rates_csv_path=find_rates_csv(output_dir),
+        thresholds=thresholds,
+        min_sn_norm_valid=min_sn_norm_valid,
+        min_blobs_valid=min_blobs_valid,
+    )
+    transitions = detect_transitions(
+        architecture_df,
+        min_run_frames=transition_min_run_frames,
+        window_min=rate_window_min,
+    )
+    rate_summary = create_rate_summary(architecture_df)
+    summary = create_summary(architecture_df, transitions)
+    summary["thresholds"] = asdict(thresholds)
+    summary["rate_window_min"] = float(rate_window_min)
+    summary["rate_min_points"] = int(rate_min_points)
+
+    arch_csv = output_dir / "architecture_vs_time.csv"
+    transitions_csv = output_dir / "architecture_transitions.csv"
+    rate_summary_csv = output_dir / "architecture_rate_summary.csv"
+    summary_json = output_dir / "architecture_summary.json"
+
+    architecture_df.loc[:, OUTPUT_COLUMNS].to_csv(arch_csv, index=False)
+    transitions.to_csv(transitions_csv, index=False)
+    rate_summary.to_csv(rate_summary_csv, index=False)
+    with open(summary_json, "w", encoding="utf-8") as fp:
+        json.dump(summary, fp, indent=2, ensure_ascii=False, default=_json_default)
+
+    figure_paths = []
+    if not no_figures:
+        figure_paths = create_all_figures(
+            architecture_df,
+            transitions,
+            output_dir / "figures_architecture_time",
+            dpi=dpi,
+        )
+
+    return {
+        "architecture": architecture_df,
+        "transitions": transitions,
+        "rate_summary": rate_summary,
+        "summary": summary,
+        "outputs": {
+            "architecture_csv": arch_csv,
+            "transitions_csv": transitions_csv,
+            "rate_summary_csv": rate_summary_csv,
+            "summary_json": summary_json,
+            "figures": figure_paths,
+        },
+    }
 
 
 def build_arg_parser():
