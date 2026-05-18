@@ -263,6 +263,31 @@ function test_frame_indices_and_qc_stride_control_processed_frames(testCase)
 end
 
 
+function test_sidecar_accepts_explicit_frame_timeline_csv(testCase)
+    fixture = make_fixture();
+    cleanup = onCleanup(@() cleanup_fixture(fixture)); %#ok<NASGU>
+
+    write_mock_raw_sidecar_context(fixture, 3);
+    write_ready_v2_gate(fixture.v2_dir);
+    recovery_dir = fullfile(fixture.postprocess_dir, 'frame_timeline_recovery_mock');
+    mkdir(recovery_dir);
+    explicit_timeline = fullfile(recovery_dir, 'frame_timeline_recovered.csv');
+    movefile(fullfile(fixture.output_root, 'frame_timeline_mock.csv'), explicit_timeline);
+
+    result = run_geometry_sidecar_extraction(fixture.output_root, fixture.postprocess_dir, ...
+        'ValidationV2Dir', fixture.v2_dir, 'SegmentationContextAuditDir', fixture.audit_dir, ...
+        'MetadataJson', fixture.metadata_json, 'RawImageDir', fixture.raw_dir, ...
+        'FrameTimelineCsv', explicit_timeline, 'OutputDir', fixture.sidecar_dir, ...
+        'ConfirmFullRun', true, 'MaxFrames', 3, 'WriteMasks', false, ...
+        'WriteQCImages', false);
+
+    verifyEqual(testCase, result.ProcessedFrameCount, 3);
+    verifyFalse(testCase, isfile(fullfile(fixture.output_root, 'frame_timeline_mock.csv')));
+    provenance_text = fileread(fullfile(fixture.sidecar_dir, 'geometry_provenance.json'));
+    verifyTrue(testCase, contains(provenance_text, 'frame_timeline_recovered.csv'));
+end
+
+
 function test_all_empty_part_preserves_blob_schema(testCase)
     fixture = make_fixture();
     cleanup = onCleanup(@() cleanup_fixture(fixture)); %#ok<NASGU>

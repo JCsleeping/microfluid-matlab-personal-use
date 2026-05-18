@@ -30,12 +30,44 @@ def write_sample_csv(output_dir: Path, filename: str = "timeseries_realtime_samp
             "ReqMean": [25.0, 24.1, 23.4, 22.9, 21.8, 20.6, 19.9],
             "ReqStd": [4.3, 4.1, 3.9, 3.8, 3.5, 3.4, 3.2],
             "InterfaceArea": [820, 835, 850, 842, 810, 770, 730],
+            "MeanCircularity": [0.62, 0.61, 0.59, 0.57, 0.55, 0.54, 0.52],
+            "a_i_2D": [40000, 39000, 37500, 36000, 34200, 32500, 31000],
+            "fracDroplets": [0.14, 0.15, 0.17, 0.19, 0.21, 0.22, 0.24],
+            "fracColumns": [0.28, 0.27, 0.26, 0.25, 0.23, 0.22, 0.20],
+            "fracClusters": [0.58, 0.58, 0.57, 0.56, 0.56, 0.56, 0.56],
             "Interval_s": [0, 60, 120, 180, 240, 300, 360],
         }
     )
     csv_path = output_dir / filename
     df.to_csv(csv_path, index=False)
     return csv_path
+
+
+def write_blob_detail_csv(output_dir: Path) -> Path:
+    df = pd.DataFrame(
+        {
+            "FrameIndex": [1, 1, 3, 3, 5, 5, 7, 7],
+            "FrameTime": [0, 0, 180, 180, 600, 600, 1260, 1260],
+            "BlobID": [1, 2, 1, 2, 1, 2, 1, 2],
+            "Area": [100.0, 10.0, 80.0, 30.0, 70.0, 50.0, 40.0, 25.0],
+            "Perimeter": [40.0, 10.0, 0.0, 20.0, 15.0, 28.0, 22.0, 18.0],
+            "Circularity": [0.78, 0.95, 0.8, 1.2, 1.1, 0.7, 0.9, 0.6],
+            "EquivRadius": [5.6, 1.8, 5.0, 3.1, 4.7, 4.0, 3.6, 2.8],
+            "TopologyType": [
+                "droplet",
+                "droplet",
+                "column",
+                "cluster",
+                "cluster",
+                "cluster",
+                "column",
+                "droplet",
+            ],
+        }
+    )
+    path = output_dir / "blob_detail_all_frames.csv"
+    df.to_csv(path, index=False)
+    return path
 
 
 class PlotTimeseriesTests(unittest.TestCase):
@@ -76,6 +108,14 @@ class PlotTimeseriesTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "InterfaceArea"):
                 plot_timeseries.load_timeseries(broken_path)
+
+            missing_microstructure_path = output_dir / "timeseries_realtime_missing_microstructure.csv"
+            pd.read_csv(csv_path).drop(columns=["a_i_2D", "MeanCircularity"]).to_csv(
+                missing_microstructure_path, index=False
+            )
+
+            with self.assertRaisesRegex(ValueError, "a_i_2D.*MeanCircularity|MeanCircularity.*a_i_2D"):
+                plot_timeseries.load_timeseries(missing_microstructure_path)
 
     def test_load_timeseries_preserves_corrected_realtime_origin(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,6 +180,30 @@ class PlotTimeseriesTests(unittest.TestCase):
         np.testing.assert_allclose(rate.to_numpy(), np.full(6, 0.01), atol=1e-12)
         self.assertEqual(rate.name, "DissolutionRate_per_min")
 
+    def test_publication_rate_is_monotone_nonnegative_and_uses_linear_time(self):
+        time_min = np.array([0.0, 1.0, 2.0, 4.0, 7.0, 11.0, 16.0])
+        sn = np.array([1.0, 0.94, 0.955, 0.88, 0.81, 0.75, 0.68])
+        df = pd.DataFrame({"Time_min": time_min, "Sn": sn})
+
+        raw = plot_timeseries.compute_raw_dissolution_rate(df)
+        rate = plot_timeseries.compute_dissolution_rate(df, smooth_window=1, rate_lr_window=3)
+
+        self.assertLess(raw.iloc[1], 0)
+        self.assertTrue((rate >= -1e-12).all())
+
+        linear_df = pd.DataFrame(
+            {
+                "Time_min": [1.0, 10.0, 100.0, 1000.0],
+                "Sn": [1.0, 0.91, 0.01, 0.0],
+            }
+        )
+        linear_rate = plot_timeseries.compute_dissolution_rate(
+            linear_df,
+            smooth_window=1,
+            rate_lr_window=3,
+        )
+        self.assertAlmostEqual(linear_rate.iloc[1], 0.01, places=6)
+
     def test_log_synthetic_start_uses_adjacent_interval_from_zero(self):
         df = pd.DataFrame({"Time_min": [0.0, 10.0, 100.0], "Sn": [1.0, 0.9, 0.5]})
 
@@ -171,6 +235,177 @@ class PlotTimeseriesTests(unittest.TestCase):
             self.assertEqual(ydata[0], 0.2)
         finally:
             plot_timeseries.plt.close(fig)
+
+    def test_prepare_plot_df_adds_largest_blob_flow_fraction(self):
+        df = pd.DataFrame(
+            {
+                "Time_min": [0.0, 1.0, 2.0],
+                "Sn": [0.30, 0.20, 0.10],
+                "MaxBlobFrac": [0.10, 0.50, 0.25],
+            }
+        )
+
+        plot_df = plot_timeseries._prepare_plot_df(df, smooth_window=0, smooth_polyorder=2)
+
+        self.assertIn("MaxBlobFlowFrac", plot_df.columns)
+        np.testing.assert_allclose(plot_df["MaxBlobFlowFrac"], [0.03, 0.10, 0.025])
+
+    def test_prepare_plot_df_adds_sn_norm_valid_structure_and_stage(self):
+        df = pd.DataFrame(
+            {
+                "Time_min": [0.0, 1.0, 2.0, 3.0],
+                "Sn": [1.0, 0.80, 0.40, 0.03],
+                "NumBlobs": [25, 19, 30, 30],
+                "MaxBlobFrac": [0.1, 0.2, 0.3, 0.4],
+                "a_i_2D": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+
+        plot_df = plot_timeseries._prepare_plot_df(
+            df,
+            smooth_window=1,
+            smooth_polyorder=2,
+            rate_lr_window=3,
+        )
+
+        np.testing.assert_allclose(plot_df["SnNorm"], [1.0, 0.80, 0.40, 0.03])
+        self.assertEqual(plot_df["ValidStructure"].tolist(), [True, False, True, False])
+        self.assertEqual(
+            plot_df["DissolutionStage"].tolist(),
+            ["early", "early", "middle", "near-depleted"],
+        )
+        self.assertIn("DissolutionRate_raw_per_min", plot_df.columns)
+        self.assertIn("Sn_mono_rate", plot_df.columns)
+
+    def test_plot_largest_blob_flow_fraction_uses_derived_column(self):
+        df = pd.DataFrame({"Time_min": [0.0, 1.0, 2.0], "MaxBlobFlowFrac": [0.03, 0.10, 0.025]})
+        fig, ax = plot_timeseries.plt.subplots()
+        try:
+            plot_timeseries.plot_max_blob_flow_frac(ax, df)
+
+            np.testing.assert_allclose(ax.lines[0].get_ydata(), [0.03, 0.10, 0.025])
+            self.assertEqual(ax.get_ylabel(), "Amax / Aflow")
+        finally:
+            plot_timeseries.plt.close(fig)
+
+    def test_new_microstructure_time_plotters_use_requested_columns(self):
+        df = pd.DataFrame(
+            {
+                "Time_min": [0.0, 1.0, 2.0],
+                "a_i_2D": [10.0, 9.0, 8.0],
+                "MeanCircularity": [0.8, 0.7, 0.6],
+                "fracDroplets": [0.1, 0.2, 0.3],
+                "fracColumns": [0.4, 0.3, 0.2],
+                "fracClusters": [0.5, 0.5, 0.5],
+            }
+        )
+        plotter_specs = [
+            (plot_timeseries.plot_ai_2d, "a_i_2D", [10.0, 9.0, 8.0], "Specific interfacial area"),
+            (plot_timeseries.plot_mean_circularity, "MeanCircularity", [0.8, 0.7, 0.6], "Mean circularity"),
+            (plot_timeseries.plot_frac_droplets, "fracDroplets", [0.1, 0.2, 0.3], "Droplet fraction"),
+            (plot_timeseries.plot_frac_columns, "fracColumns", [0.4, 0.3, 0.2], "Column fraction"),
+            (plot_timeseries.plot_frac_clusters, "fracClusters", [0.5, 0.5, 0.5], "Cluster fraction"),
+        ]
+
+        for plotter, _column, expected_y, ylabel in plotter_specs:
+            fig, ax = plot_timeseries.plt.subplots()
+            try:
+                plotter(ax, df)
+                np.testing.assert_allclose(ax.lines[0].get_ydata(), expected_y)
+                self.assertIn(ylabel, ax.get_ylabel())
+            finally:
+                plot_timeseries.plt.close(fig)
+
+    def test_stage_rate_plot_colours_near_depleted_grey(self):
+        df = pd.DataFrame(
+            {
+                "Time_min": [0.0, 1.0, 2.0, 3.0],
+                "a_i_2D": [10.0, 20.0, 30.0, 40.0],
+                "DissolutionRate_per_min": [0.1, 0.2, 0.05, 0.01],
+                "DissolutionStage": ["early", "middle", "late", "near-depleted"],
+            }
+        )
+        fig, ax = plot_timeseries.plt.subplots()
+        try:
+            plot_timeseries.plot_rate_vs_ai_2d_stage(ax, df)
+
+            labels = {collection.get_label() for collection in ax.collections}
+            self.assertTrue({"early", "middle", "late", "near-depleted"}.issubset(labels))
+            near_collection = [
+                collection for collection in ax.collections if collection.get_label() == "near-depleted"
+            ][0]
+            np.testing.assert_allclose(near_collection.get_facecolor()[0, :3], [0.6, 0.6, 0.6], atol=0.05)
+        finally:
+            plot_timeseries.plt.close(fig)
+
+    def test_blob_detail_qc_filters_circularity_and_recomputes_topology_fractions(self):
+        timeseries = pd.DataFrame(
+            {
+                "FrameIndex": [1, 3, 5],
+                "Time_min": [0.0, 3.0, 10.0],
+                "SnNorm": [1.0, 0.4, 0.03],
+                "NumBlobs": [25, 30, 30],
+                "fracDroplets": [0.5, 0.1, 0.2],
+                "fracColumns": [0.2, 0.4, 0.3],
+                "fracClusters": [0.3, 0.5, 0.5],
+            }
+        )
+        blob_detail = pd.DataFrame(
+            {
+                "FrameIndex": [1, 1, 3, 3, 5],
+                "Area": [100.0, 10.0, 80.0, 30.0, 70.0],
+                "Perimeter": [40.0, 10.0, 0.0, 20.0, 15.0],
+                "Circularity": [0.8, 0.9, 0.8, 1.2, 0.7],
+                "EquivRadius": [5.0, 2.0, 4.0, 3.0, 4.5],
+                "TopologyType": ["droplet", "droplet", "column", "cluster", "cluster"],
+            }
+        )
+
+        enriched, qc = plot_timeseries.apply_blob_detail_qc(
+            timeseries,
+            blob_detail,
+            min_blob_area_px=20,
+        )
+
+        self.assertAlmostEqual(enriched.loc[enriched["FrameIndex"] == 1, "MeanCircularity_valid"].iloc[0], 0.8)
+        self.assertTrue(np.isnan(enriched.loc[enriched["FrameIndex"] == 3, "MeanCircularity_valid"].iloc[0]))
+        self.assertIn("gt1_blobs", qc["circularity"])
+        self.assertEqual(len(qc["circularity"]["gt1_blobs"]), 1)
+        topology = qc["topology"]["by_frame"]
+        row1 = topology.loc[topology["FrameIndex"] == 1].iloc[0]
+        self.assertAlmostEqual(row1["areaFracDroplets"], 1.0)
+        self.assertAlmostEqual(row1["countFracDroplets"], 1.0)
+        row3 = topology.loc[topology["FrameIndex"] == 3].iloc[0]
+        self.assertAlmostEqual(row3["areaFracColumns"], 80.0 / 110.0)
+        self.assertEqual(qc["topology"]["classification"], "ambiguous")
+
+    def test_selected_frame_blob_detail_uses_nearest_times(self):
+        timeseries = pd.DataFrame(
+            {
+                "FrameIndex": [1, 2, 3],
+                "Time_min": [0.0, 29.0, 71.0],
+                "SnNorm": [1.0, 0.8, 0.6],
+            }
+        )
+        blob_detail = pd.DataFrame(
+            {
+                "FrameIndex": [2, 3],
+                "Area": [100.0, 120.0],
+                "Perimeter": [30.0, 40.0],
+                "Circularity": [0.8, 0.7],
+                "EquivRadius": [5.0, 6.0],
+            }
+        )
+
+        selected = plot_timeseries.selected_req_distribution_data(
+            timeseries,
+            blob_detail,
+            target_times=(30, 70),
+            min_blob_area_px=20,
+        )
+
+        self.assertEqual(selected["FrameIndex"].tolist(), [2, 3])
+        self.assertEqual(selected["TargetTime_min"].tolist(), [30, 70])
 
     def test_log_axis_enables_major_and_minor_gridlines(self):
         df = pd.DataFrame({"Time_min": [0.0, 1.0, 10.0, 100.0], "Sn": [1.0, 0.9, 0.7, 0.4]})
@@ -238,9 +473,9 @@ class PlotTimeseriesTests(unittest.TestCase):
             legend = ax.get_legend()
             self.assertIsNotNone(legend)
             self.assertFalse(legend.get_frame().get_visible())
-            self.assertEqual(legend._loc, 9)
+            self.assertEqual(legend._loc, 8)
             self.assertAlmostEqual(legend.get_bbox_to_anchor()._bbox.x0, 0.5)
-            self.assertAlmostEqual(legend.get_bbox_to_anchor()._bbox.y0, 1.02)
+            self.assertAlmostEqual(legend.get_bbox_to_anchor()._bbox.y0, 1.04)
         finally:
             plot_timeseries.plt.close(fig)
 
@@ -291,9 +526,268 @@ class PlotTimeseriesTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(lines[0], f"Read: {csv_path}")
             self.assertEqual(lines[1], "Rows: 7")
-            self.assertEqual(lines[2], f"Figures directory: {figures_dir}")
-            self.assertTrue(all(line.startswith("Saved: ") for line in lines[3:]))
-            self.assertEqual(len(lines), 31)
+            self.assertIn(f"Figures directory: {figures_dir}", lines)
+            saved_lines = [line for line in lines if line.startswith("Saved: ")]
+            self.assertEqual(len(saved_lines), 79)
+            self.assertEqual(len(lines), 83)
+
+    def test_skip_frames_removes_initial_rows_via_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            figures_dir = output_dir / "figures_skip"
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = plot_timeseries.main(
+                    [
+                        str(output_dir),
+                        "--csv", str(csv_path),
+                        "--figures-dir", str(figures_dir),
+                        "--dpi", "80",
+                        "--smooth-window", "0",
+                        "--skip-frames", "2",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            lines = stdout.getvalue().splitlines()
+            self.assertEqual(lines[1], "Rows: 5")
+
+    def test_min_time_min_filters_rows_after_skip_frames_via_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            figures_dir = output_dir / "figures_min_time"
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = plot_timeseries.main(
+                    [
+                        str(output_dir),
+                        "--csv", str(csv_path),
+                        "--figures-dir", str(figures_dir),
+                        "--dpi", "80",
+                        "--smooth-window", "0",
+                        "--skip-frames", "1",
+                        "--min-time-min", "3",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            lines = stdout.getvalue().splitlines()
+            self.assertEqual(lines[1], "Rows: 5")
+
+    def test_min_time_min_rejects_when_too_few_rows_remain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+
+            with self.assertRaisesRegex(ValueError, "--min-time-min.*fewer than 2 rows"):
+                plot_timeseries.main(
+                    [
+                        str(output_dir),
+                        "--csv", str(csv_path),
+                        "--dpi", "80",
+                        "--min-time-min", "21",
+                    ]
+                )
+
+    def test_find_pixel_size_um_parses_analysis_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "analysis_report.txt").write_text(
+                "Header line\n"
+                "  Pixel Size:                              4.17 μm/px  (4.17e-06 m/px)\n"
+                "Some other line\n",
+                encoding="utf-8",
+            )
+            self.assertAlmostEqual(plot_timeseries.find_pixel_size_um(output_dir), 4.17)
+
+    def test_find_pixel_size_um_returns_none_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(plot_timeseries.find_pixel_size_um(Path(tmp)))
+
+    def test_apply_pixel_size_to_req_converts_columns_and_tags_unit(self):
+        df = pd.DataFrame(
+            {"ReqMedian": [2.0, 3.0], "ReqMean": [4.0, 5.0], "ReqStd": [0.5, 0.6]}
+        )
+        out = plot_timeseries.apply_pixel_size_to_req(df, 4.17)
+        np.testing.assert_allclose(out["ReqMedian"].values, [2.0 * 4.17, 3.0 * 4.17])
+        np.testing.assert_allclose(out["ReqMean"].values, [4.0 * 4.17, 5.0 * 4.17])
+        np.testing.assert_allclose(out["ReqStd"].values, [0.5 * 4.17, 0.6 * 4.17])
+        self.assertEqual(out.attrs["req_unit"], "μm")
+
+    def test_apply_pixel_size_to_req_keeps_pixels_when_unset(self):
+        df = pd.DataFrame({"ReqMedian": [2.0], "ReqMean": [3.0], "ReqStd": [0.1]})
+        out = plot_timeseries.apply_pixel_size_to_req(df, None)
+        np.testing.assert_allclose(out["ReqMedian"].values, [2.0])
+        self.assertEqual(out.attrs["req_unit"], "px")
+
+    def test_plot_req_stats_uses_unit_from_df_attrs_in_ylabel(self):
+        df = pd.DataFrame(
+            {
+                "Time_min": [0.0, 1.0, 2.0],
+                "ReqMedian": [1.0, 2.0, 3.0],
+                "ReqMean": [1.5, 2.5, 3.5],
+                "ReqStd": [0.2, 0.3, 0.4],
+            }
+        )
+        df.attrs["req_unit"] = "μm"
+        fig, ax = plot_timeseries.plt.subplots()
+        try:
+            plot_timeseries.plot_req_stats(ax, df)
+            self.assertEqual(ax.get_ylabel(), "Equivalent radius (μm)")
+        finally:
+            plot_timeseries.plt.close(fig)
+
+    def test_main_auto_reads_pixel_size_from_analysis_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            (output_dir / "analysis_report.txt").write_text(
+                "Pixel Size: 4.17 μm/px\n", encoding="utf-8"
+            )
+            figures_dir = output_dir / "figures_pixel"
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = plot_timeseries.main(
+                    [
+                        str(output_dir),
+                        "--csv", str(csv_path),
+                        "--figures-dir", str(figures_dir),
+                        "--dpi", "80",
+                        "--smooth-window", "0",
+                    ]
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Pixel size: 4.17 μm/px", stdout.getvalue())
+
+    def test_skip_frames_rejects_removing_all_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+
+            with self.assertRaisesRegex(ValueError, "fewer than 2 rows"):
+                plot_timeseries.main(
+                    [
+                        str(output_dir),
+                        "--csv", str(csv_path),
+                        "--dpi", "80",
+                        "--skip-frames", "6",
+                    ]
+                )
+
+    def test_create_all_figures_writes_plot_data_workbooks_once_per_linear_plot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            df = plot_timeseries.load_timeseries(csv_path)
+            figures_dir = output_dir / "figures"
+
+            written = plot_timeseries.create_all_figures(
+                df,
+                figures_dir=figures_dir,
+                dpi=80,
+                smooth_window=0,
+                smooth_polyorder=2,
+            )
+
+            data_names = {path.name for path in written if path.suffix == ".xlsx"}
+            self.assertEqual(
+                data_names,
+                {
+                    "timeseries_6panel_data.xlsx",
+                    "01_saturation_decay_data.xlsx",
+                    "02_dissolution_rate_data.xlsx",
+                    "03_blob_count_data.xlsx",
+                    "04_largest_blob_fraction_data.xlsx",
+                    "05_equivalent_radius_stats_data.xlsx",
+                    "06_interface_area_data.xlsx",
+                    "07_largest_blob_flow_fraction_data.xlsx",
+                    "08_a_i_2D_data.xlsx",
+                    "09_mean_circularity_data.xlsx",
+                    "10_fraction_droplets_data.xlsx",
+                    "11_fraction_columns_data.xlsx",
+                    "12_fraction_clusters_data.xlsx",
+                    "13_sn_norm_ai_2D_overlay_data.xlsx",
+                    "14_rate_vs_ai_2D_stage_data.xlsx",
+                    "structure_validity_qc.xlsx",
+                    "circularity_gt1_audit.xlsx",
+                    "topology_fraction_audit.xlsx",
+                    "summary_metrics.xlsx",
+                },
+            )
+            self.assertFalse(any("_log_data" in name for name in data_names))
+
+            flow_data = pd.read_excel(figures_dir / "07_largest_blob_flow_fraction_data.xlsx")
+            self.assertEqual(
+                list(flow_data.columns),
+                ["RealTime_s", "Time_min", "Sn", "MaxBlobFrac", "MaxBlobFlowFrac"],
+            )
+            np.testing.assert_allclose(
+                flow_data["MaxBlobFlowFrac"],
+                flow_data["Sn"] * flow_data["MaxBlobFrac"],
+            )
+
+            rate_data = pd.read_excel(figures_dir / "02_dissolution_rate_data.xlsx")
+            self.assertEqual(
+                list(rate_data.columns),
+                ["RealTime_s", "Time_min", "DissolutionRate_per_min"],
+            )
+
+            ai_data = pd.read_excel(figures_dir / "08_a_i_2D_data.xlsx")
+            self.assertEqual(list(ai_data.columns), ["RealTime_s", "Time_min", "a_i_2D"])
+
+            circularity_data = pd.read_excel(figures_dir / "09_mean_circularity_data.xlsx")
+            self.assertEqual(
+                list(circularity_data.columns),
+                ["RealTime_s", "Time_min", "MeanCircularity", "MeanCircularity_raw", "MeanCircularity_valid"],
+            )
+
+            droplets_data = pd.read_excel(figures_dir / "10_fraction_droplets_data.xlsx")
+            self.assertEqual(
+                list(droplets_data.columns),
+                ["RealTime_s", "Time_min", "fracDroplets"],
+            )
+
+            saturation_data = pd.read_excel(figures_dir / "01_saturation_decay_data.xlsx")
+            self.assertIn("SnNorm", saturation_data.columns)
+
+            rate_data = pd.read_excel(figures_dir / "14_rate_vs_ai_2D_stage_data.xlsx")
+            self.assertEqual(
+                list(rate_data.columns),
+                ["RealTime_s", "Time_min", "a_i_2D", "DissolutionRate_per_min", "DissolutionStage", "ValidStructure"],
+            )
+
+    def test_create_all_figures_uses_blob_detail_for_req_distribution_and_audits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_sample_csv(output_dir)
+            write_blob_detail_csv(output_dir)
+            df = plot_timeseries.load_timeseries(csv_path)
+            figures_dir = output_dir / "figures"
+
+            written = plot_timeseries.create_all_figures(
+                df,
+                figures_dir=figures_dir,
+                dpi=80,
+                smooth_window=1,
+                smooth_polyorder=2,
+                rate_lr_window=3,
+                output_dir=output_dir,
+                min_blob_area_px=20,
+            )
+
+            names = {path.name for path in written}
+            self.assertIn("15_req_distribution.png", names)
+            self.assertIn("15_req_distribution.svg", names)
+            circularity = pd.read_excel(figures_dir / "circularity_gt1_audit.xlsx", sheet_name="gt1_blobs")
+            self.assertIn("Circularity", circularity.columns)
+            topology = pd.read_excel(figures_dir / "topology_fraction_audit.xlsx", sheet_name="by_frame")
+            self.assertIn("areaFracDroplets", topology.columns)
+            summary = pd.read_excel(figures_dir / "summary_metrics.xlsx")
+            self.assertIn("ReliablePeak_a_i_2D", summary["Metric"].tolist())
 
     def test_create_all_figures_writes_linear_and_log_png_and_svg(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -318,6 +812,14 @@ class PlotTimeseriesTests(unittest.TestCase):
                 "04_largest_blob_fraction",
                 "05_equivalent_radius_stats",
                 "06_interface_area",
+                "07_largest_blob_flow_fraction",
+                "08_a_i_2D",
+                "09_mean_circularity",
+                "10_fraction_droplets",
+                "11_fraction_columns",
+                "12_fraction_clusters",
+                "13_sn_norm_ai_2D_overlay",
+                "14_rate_vs_ai_2D_stage",
             ]
             expected_names = set()
             for base in linear_basenames:
@@ -325,6 +827,15 @@ class PlotTimeseriesTests(unittest.TestCase):
                 expected_names.add(f"{base}.svg")
                 expected_names.add(f"{base}_log.png")
                 expected_names.add(f"{base}_log.svg")
+                expected_names.add(f"{base}_data.xlsx")
+            expected_names.update(
+                {
+                    "structure_validity_qc.xlsx",
+                    "circularity_gt1_audit.xlsx",
+                    "topology_fraction_audit.xlsx",
+                    "summary_metrics.xlsx",
+                }
+            )
 
             self.assertEqual({path.name for path in written}, expected_names)
             for path in written:

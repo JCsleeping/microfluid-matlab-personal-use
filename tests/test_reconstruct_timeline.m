@@ -6,7 +6,7 @@ end
 
 function test_timestamp_sort_preserves_nominal_time(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
-    addpath(genpath(root_dir));
+    add_project_paths(root_dir);
 
     base_dir = fullfile(tempdir, ['reconstruct_timeline_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
     output_dir = fullfile(base_dir, 'output_20260416_000000');
@@ -51,7 +51,7 @@ end
 
 function test_infers_missing_interval_from_timestamp_delta(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
-    addpath(genpath(root_dir));
+    add_project_paths(root_dir);
 
     base_dir = fullfile(tempdir, ['reconstruct_timeline_infer_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
     output_dir = fullfile(base_dir, 'output_20260416_000001');
@@ -84,7 +84,7 @@ end
 
 function test_name_fallback_for_tied_timestamps(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
-    addpath(genpath(root_dir));
+    add_project_paths(root_dir);
 
     base_dir = fullfile(tempdir, ['reconstruct_timeline_tie_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
     output_dir = fullfile(base_dir, 'output_20260416_000002');
@@ -114,12 +114,48 @@ function test_name_fallback_for_tied_timestamps(testCase)
 end
 
 
+function test_parses_uppercase_seconds_intervals(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    add_project_paths(root_dir);
+
+    base_dir = fullfile(tempdir, ['reconstruct_timeline_upper_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    output_dir = fullfile(base_dir, 'output_20260506_163504');
+    cleanup = onCleanup(@() cleanup_tempdir(base_dir)); %#ok<NASGU>
+    mkdir(base_dir);
+    mkdir(output_dir);
+
+    create_test_tif(fullfile(base_dir, '03 TWEEN 80 3 SECONDS.tif'), 2, 11);
+    create_test_tif(fullfile(base_dir, '04 TWEEN 80 9 SECONDS.tif'), 2, 21);
+
+    t0 = datetime(2026, 5, 6, 0, 0, 0);
+    set_file_time(fullfile(base_dir, '03 TWEEN 80 3 SECONDS.tif'), t0 + seconds(6));
+    set_file_time(fullfile(base_dir, '04 TWEEN 80 9 SECONDS.tif'), t0 + seconds(24));
+
+    writetable(table((0:3).', (1:4).', 'VariableNames', {'Time', 'Sn'}), ...
+        fullfile(output_dir, 'timeseries_20260506_225123.csv'));
+
+    config = struct('pages', []);
+    save(fullfile(output_dir, 'results_20260506_225123.mat'), 'config');
+
+    T = reconstruct_timeline(fullfile(output_dir, 'results_20260506_225123.mat'), output_dir);
+
+    verifyEqual(testCase, T.Interval_s, [3; 3; 9; 9], 'AbsTol', 1e-9);
+    verifyEqual(testCase, T.RealTime_s, [0; 3; 6; 15], 'AbsTol', 1e-9);
+end
+
+
 function create_test_tif(path, n_pages, seed_value)
     img = uint8(seed_value * ones(4, 4));
     imwrite(img, path, 'Compression', 'none');
     for k = 2:n_pages
         imwrite(img + uint8(k - 1), path, 'WriteMode', 'append', 'Compression', 'none');
     end
+end
+
+
+function add_project_paths(root_dir)
+    addpath(root_dir);
+    addpath(fullfile(root_dir, 'utilities'));
 end
 
 

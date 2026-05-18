@@ -11,6 +11,7 @@ function audit = run_segmentation_context_audit(output_root, varargin)
     parser.addParameter('PostprocessDir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('MetadataRecoveryDir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('RawImageDir', '', @(x) ischar(x) || isstring(x));
+    parser.addParameter('FrameTimelineCsv', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('WriteReport', true, @(x) islogical(x) || isnumeric(x));
     parser.addParameter('StrictMode', false, @(x) islogical(x) || isnumeric(x));
     parser.parse(output_root, varargin{:});
@@ -20,6 +21,7 @@ function audit = run_segmentation_context_audit(output_root, varargin)
     postprocess_dir = char(opts.PostprocessDir);
     metadata_recovery_dir = char(opts.MetadataRecoveryDir);
     raw_image_dir = char(opts.RawImageDir);
+    frame_timeline_csv = char(opts.FrameTimelineCsv);
     write_report_flag = logical(opts.WriteReport);
     strict_mode = logical(opts.StrictMode);
 
@@ -41,6 +43,7 @@ function audit = run_segmentation_context_audit(output_root, varargin)
     audit.PostprocessDir = postprocess_dir;
     audit.MetadataRecoveryDir = metadata_recovery_dir;
     audit.RawImageDir = raw_image_dir;
+    audit.FrameTimelineCsv = frame_timeline_csv;
     audit.AuditDir = audit_dir;
     audit.Timestamp = datestr(now, 30);
     audit.WriteReport = write_report_flag;
@@ -54,7 +57,7 @@ function audit = run_segmentation_context_audit(output_root, varargin)
     mat_inventory = inspect_results_mat_files(results_files, output_root);
     context = assess_segmentation_context(mat_inventory, results_files);
     existing = assess_existing_masks_and_labels(postprocess_dir);
-    frame_mapping = assess_frame_mapping(output_root, raw_image_dir);
+    frame_mapping = assess_frame_mapping(output_root, raw_image_dir, frame_timeline_csv);
 
     availability = build_availability_table(context, existing, frame_mapping, mat_inventory);
     readiness = build_readiness(context, existing, frame_mapping, mat_inventory);
@@ -409,9 +412,16 @@ function files = discover_semantic_files(root_dir, tokens, extensions)
 end
 
 
-function frame_mapping = assess_frame_mapping(output_root, raw_image_dir)
-    timeline_files = discover_named_files(output_root, '^frame_timeline_.*\.csv$');
-    timeline_files = exclude_audit_paths(timeline_files);
+function frame_mapping = assess_frame_mapping(output_root, raw_image_dir, frame_timeline_csv)
+    frame_timeline_csv = char(frame_timeline_csv);
+    if ~isempty(frame_timeline_csv)
+        timeline_files = {frame_timeline_csv};
+        explicit_timeline = true;
+    else
+        timeline_files = discover_named_files(output_root, '^frame_timeline_.*\.csv$');
+        timeline_files = exclude_audit_paths(timeline_files);
+        explicit_timeline = false;
+    end
     raw_tifs = discover_raw_tifs(raw_image_dir);
 
     HasFrameTimeline = false;
@@ -422,13 +432,24 @@ function frame_mapping = assess_frame_mapping(output_root, raw_image_dir)
     ExistingRawTifCount = 0;
     MissingRawTifCount = 0;
     MappingReady = false;
-    Notes = {'frame_timeline_not_found'};
+    if explicit_timeline
+        Notes = {'explicit_frame_timeline_not_found'};
+    else
+        Notes = {'frame_timeline_not_found'};
+    end
 
     if ~isempty(timeline_files)
-        timeline_path = latest_file(timeline_files);
+        if explicit_timeline
+            timeline_path = timeline_files{1};
+        else
+            timeline_path = latest_file(timeline_files);
+        end
         HasFrameTimeline = true;
         TimelinePath = {timeline_path};
-        try
+        if ~isfile(timeline_path)
+            Notes = {'explicit_frame_timeline_missing_file'};
+        else
+            try
             timeline = readtable(timeline_path, 'VariableNamingRule', 'preserve');
             TimelineRows = height(timeline);
             tif_col = first_existing_column(timeline, {'TifFile', 'RawTifFile', 'RawImageFile', 'ImageFile'});
@@ -453,8 +474,9 @@ function frame_mapping = assess_frame_mapping(output_root, raw_image_dir)
             else
                 Notes = {'frame_timeline_has_no_tif_column'};
             end
-        catch ME
-            Notes = {['frame_timeline_unreadable: ' ME.message]};
+            catch ME
+                Notes = {['frame_timeline_unreadable: ' ME.message]};
+            end
         end
     end
 

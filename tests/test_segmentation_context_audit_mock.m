@@ -166,6 +166,42 @@ function test_required_outputs_written_and_no_writes_outside_audit_dir(testCase)
 end
 
 
+function test_explicit_timeline_csv_enables_mapping(testCase)
+    fixture = make_fixture();
+    cleanup = onCleanup(@() cleanup_fixture(fixture)); %#ok<NASGU>
+
+    write_raw_tifs(fixture.raw_dir, 2);
+    timeline_dir = fullfile(fixture.postprocess_dir, 'frame_timeline_recovery_mock');
+    mkdir(timeline_dir);
+    write_frame_timeline(timeline_dir, 2);
+    timeline_csv = fullfile(timeline_dir, 'frame_timeline_mock.csv');
+
+    config = struct();
+    config.segmentation = struct('method', 'fixed', 'threshold', 0.51);
+    config.preprocessing = struct('crop_rect', [1 1 8 9], 'resize_factor', 1);
+    flow_domain = true(8, 9); %#ok<NASGU>
+    solid_mask = false(8, 9); %#ok<NASGU>
+    save(fullfile(fixture.output_root, 'results_full_context.mat'), ...
+        'config', 'flow_domain', 'solid_mask');
+
+    audit = run_segmentation_context_audit(fixture.output_root, ...
+        'PostprocessDir', fixture.postprocess_dir, ...
+        'MetadataRecoveryDir', fixture.metadata_dir, ...
+        'RawImageDir', fixture.raw_dir, ...
+        'FrameTimelineCsv', timeline_csv, ...
+        'WriteReport', true);
+
+    verifyTrue(testCase, audit.SafeForValidationExtraction);
+    verifyEqual(testCase, audit.Decision, 'READY_FOR_VALIDATION_GEOMETRY');
+
+    frame_mapping = readtable(fullfile(audit.AuditDir, 'frame_mapping_readiness.csv'), ...
+        'VariableNamingRule', 'preserve');
+    verifyTrue(testCase, logical(frame_mapping.MappingReady(1)));
+    verifyEqual(testCase, frame_mapping.TimelinePath{1}, timeline_csv);
+    verifyFalse(testCase, isfile(fullfile(fixture.output_root, 'frame_timeline_mock.csv')));
+end
+
+
 function test_nested_results_segmentation_context_is_detected(testCase)
     fixture = make_fixture();
     cleanup = onCleanup(@() cleanup_fixture(fixture)); %#ok<NASGU>

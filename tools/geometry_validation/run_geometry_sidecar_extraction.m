@@ -11,6 +11,7 @@ function result = run_geometry_sidecar_extraction(output_root, postprocess_dir, 
     parser.addParameter('SegmentationContextAuditDir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('MetadataJson', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('RawImageDir', '', @(x) ischar(x) || isstring(x));
+    parser.addParameter('FrameTimelineCsv', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('ValidationV2Dir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('MaxFrames', inf, @(x) isnumeric(x) && isscalar(x));
     parser.addParameter('FrameIndices', [], @(x) isnumeric(x));
@@ -58,6 +59,7 @@ function result = run_geometry_sidecar_extraction(output_root, postprocess_dir, 
     provenance.segmentation_context_audit_dir = char(opts.SegmentationContextAuditDir);
     provenance.metadata_json = char(opts.MetadataJson);
     provenance.raw_image_dir = char(opts.RawImageDir);
+    provenance.frame_timeline_csv = char(opts.FrameTimelineCsv);
     provenance.max_frames = opts.MaxFrames;
     provenance.frame_indices = opts.FrameIndices;
     provenance.write_masks = logical(opts.WriteMasks);
@@ -120,7 +122,7 @@ end
 
 
 function result = run_streaming_extraction(output_root, postprocess_dir, output_dir, opts, provenance, gate)
-    timeline = load_frame_timeline(output_root, char(opts.RawImageDir));
+    timeline = load_frame_timeline(output_root, char(opts.RawImageDir), char(opts.FrameTimelineCsv));
     timeline = select_timeline_rows(timeline, opts);
     context = load_raw_segmentation_context(output_root);
 
@@ -337,11 +339,20 @@ function timeline = select_timeline_rows(timeline, opts)
 end
 
 
-function timeline = load_frame_timeline(output_root, raw_image_dir)
-    timeline_path = latest_file(output_root, 'frame_timeline_*.csv');
+function timeline = load_frame_timeline(output_root, raw_image_dir, frame_timeline_csv)
+    frame_timeline_csv = char(frame_timeline_csv);
+    if ~isempty(frame_timeline_csv)
+        timeline_path = frame_timeline_csv;
+    else
+        timeline_path = latest_file(output_root, 'frame_timeline_*.csv');
+    end
     if isempty(timeline_path)
         error('run_geometry_sidecar_extraction:missingFrameTimeline', ...
             'No frame_timeline_*.csv found under %s.', output_root);
+    end
+    if ~isfile(timeline_path)
+        error('run_geometry_sidecar_extraction:missingFrameTimeline', ...
+            'FrameTimelineCsv does not exist: %s', timeline_path);
     end
     T = readtable(timeline_path, 'VariableNamingRule', 'preserve');
     required = {'GlobalFrame', 'TifFile', 'PageInTif'};

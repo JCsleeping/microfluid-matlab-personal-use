@@ -13,6 +13,7 @@ function validation = run_geometry_sample_validation(output_root, postprocess_di
     parser.addParameter('RawImageDir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('MaskDir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('SegmentationContextAuditDir', '', @(x) ischar(x) || isstring(x));
+    parser.addParameter('FrameTimelineCsv', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('MaxFrames', 40, @(x) isnumeric(x) && isscalar(x) && isfinite(x));
     parser.addParameter('Overwrite', false, @(x) islogical(x) || isnumeric(x));
     parser.parse(output_root, postprocess_dir, metadata_json, varargin{:});
@@ -48,7 +49,7 @@ function validation = run_geometry_sample_validation(output_root, postprocess_di
         context_audit_dir = latest_segmentation_context_audit_dir(postprocess_dir);
     end
 
-    selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames);
+    selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames, char(opts.FrameTimelineCsv));
     writetable(selected, fullfile(output_dir, 'selected_frames.csv'));
 
     metadata_exists = is_valid_metadata_json(metadata_json);
@@ -205,7 +206,7 @@ function ok = segmentation_context_ready(context_audit_dir)
 end
 
 
-function selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames)
+function selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames, frame_timeline_csv)
     rates_path = fullfile(postprocess_dir, 'dissolution_rates.csv');
     if ~isfile(rates_path)
         error('run_geometry_sample_validation:missingDissolutionRates', ...
@@ -233,7 +234,12 @@ function selected = select_and_map_frames(output_root, postprocess_dir, raw_imag
     end
 
     selected = table(frame_ids(:), 'VariableNames', {'FrameIndex'});
-    timeline_path = latest_file(output_root, 'frame_timeline_*.csv');
+    frame_timeline_csv = char(frame_timeline_csv);
+    if ~isempty(frame_timeline_csv)
+        timeline_path = frame_timeline_csv;
+    else
+        timeline_path = latest_file(output_root, 'frame_timeline_*.csv');
+    end
     if ~isempty(timeline_path)
         timeline = readtable(timeline_path, 'VariableNamingRule', 'preserve');
         if ismember('GlobalFrame', timeline.Properties.VariableNames)

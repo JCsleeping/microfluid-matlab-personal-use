@@ -6,7 +6,7 @@ function T = reconstruct_timeline(mat_path, output_dir)
 %
 %   Reads the TIF directory referenced by a results_*.mat, orders files by
 %   acquisition timestamp, parses capture intervals from filenames (for
-%   example "1 second", "3 seconds", "3s", "10S"), and reconstructs a
+%   example "2 second", "5 seconds", "3 SECONDS", "7S"), and reconstructs a
 %   real elapsed-time vector across frames.
 %
 %   Outputs (new files, never modifies originals):
@@ -292,7 +292,7 @@ function [dt_value, source] = parse_interval_from_name(bname)
         '(?:(?<=^)|(?<=\s)|(?<=_))(\d+)\s*[sS](?=[_\s.]|$)'};
 
     for i = 1:numel(patterns)
-        tok = regexp(bname, patterns{i}, 'tokens', 'once');
+        tok = regexpi(bname, patterns{i}, 'tokens', 'once');
         if ~isempty(tok)
             dt_value = str2double(tok{1});
             if isfinite(dt_value) && dt_value > 0
