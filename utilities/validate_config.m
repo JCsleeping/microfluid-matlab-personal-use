@@ -58,6 +58,19 @@ function config = validate_config(config)
     end
 
     %% Output controls
+    if ~isfield(config.output, 'blob_detail_chunk_size') || isempty(config.output.blob_detail_chunk_size)
+        config.output.blob_detail_chunk_size = 100;
+    end
+    if ~isfield(config.output, 'blob_detail_save_format') || isempty(config.output.blob_detail_save_format)
+        config.output.blob_detail_save_format = 'v7';
+    end
+    if ~isfield(config.output, 'blob_detail_allow_format_fallback') || isempty(config.output.blob_detail_allow_format_fallback)
+        config.output.blob_detail_allow_format_fallback = true;
+    end
+    if ~isfield(config.output, 'blob_detail_chunk_max_bytes') || isempty(config.output.blob_detail_chunk_max_bytes)
+        config.output.blob_detail_chunk_max_bytes = 512 * 1024^2;
+    end
+
     assert_logical_scalar(config.output.checkpoint, 'output.checkpoint');
     assert_logical_scalar(config.output.save_log, 'output.save_log');
     assert_logical_scalar(config.output.save_progress, 'output.save_progress');
@@ -67,6 +80,19 @@ function config = validate_config(config)
     assert_pos_integer(config.output.progress_interval, 'output.progress_interval');
     assert_pos_integer(config.output.heartbeat_frame_interval, 'output.heartbeat_frame_interval');
     assert_pos_integer(config.output.heartbeat_time_interval_sec, 'output.heartbeat_time_interval_sec');
+    assert_integer_in_range(config.output.blob_detail_chunk_size, ...
+        'output.blob_detail_chunk_size', 10, 5000);
+    valid_blob_detail_formats = {'v7', 'v7.3', 'v7.3-nocompression'};
+    if ~(ischar(config.output.blob_detail_save_format) || isstring(config.output.blob_detail_save_format)) || ...
+            ~ismember(char(string(config.output.blob_detail_save_format)), valid_blob_detail_formats)
+        error('validate_config:badParam', ...
+            'output.blob_detail_save_format must be one of: %s. Got "%s".', ...
+            strjoin(valid_blob_detail_formats, ', '), char(string(config.output.blob_detail_save_format)));
+    end
+    assert_logical_scalar(config.output.blob_detail_allow_format_fallback, ...
+        'output.blob_detail_allow_format_fallback');
+    assert_min_finite_positive_scalar(config.output.blob_detail_chunk_max_bytes, ...
+        'output.blob_detail_chunk_max_bytes', 10 * 1024^2);
     assert_pos_integer_or_inf(config.output.max_frames_per_session, 'output.max_frames_per_session');
 
     if isfield(config, 'parallel') && isfield(config.parallel, 'enabled') && ...
@@ -173,6 +199,23 @@ function assert_pos_integer_or_inf(val, name)
     if val < 1 || mod(val, 1) ~= 0
         error('validate_config:badParam', ...
             '%s must be Inf or a positive integer, got %s.', name, mat2str(val));
+    end
+end
+
+function assert_integer_in_range(val, name, min_val, max_val)
+    if isempty(val) || ~isnumeric(val) || ~isscalar(val) || ~isfinite(val) || ...
+            val < min_val || val > max_val || mod(val, 1) ~= 0
+        error('validate_config:badParam', ...
+            '%s must be an integer in [%d, %d], got %s.', ...
+            name, min_val, max_val, mat2str(val));
+    end
+end
+
+function assert_min_finite_positive_scalar(val, name, min_val)
+    if isempty(val) || ~isnumeric(val) || ~isscalar(val) || ~isfinite(val) || val < min_val
+        error('validate_config:badParam', ...
+            '%s must be a finite numeric scalar >= %g, got %s.', ...
+            name, min_val, mat2str(val));
     end
 end
 

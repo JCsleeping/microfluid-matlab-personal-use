@@ -53,6 +53,30 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                           isfield(config.output, 'save_blob_detail') && ...
                           config.output.save_blob_detail;
     blob_detail_csv_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
+    blob_detail_chunks_dir = fullfile(config.output_path, 'blob_detail_chunks');
+    blob_detail_schema = get_blob_detail_legacy_schema();
+    blob_detail_writer = [];
+    blob_detail_csv_exported = false;
+    blob_detail_timing = struct('buffer_push_time_sec', 0, ...
+        'chunk_flush_time_sec', 0, 'csv_merge_time_sec', 0);
+    blob_detail_chunk_size = 100;
+    if isfield(config.output, 'blob_detail_chunk_size') && ~isempty(config.output.blob_detail_chunk_size)
+        blob_detail_chunk_size = config.output.blob_detail_chunk_size;
+    end
+    blob_detail_save_format = 'v7';
+    if isfield(config.output, 'blob_detail_save_format') && ~isempty(config.output.blob_detail_save_format)
+        blob_detail_save_format = config.output.blob_detail_save_format;
+    end
+    blob_detail_allow_format_fallback = true;
+    if isfield(config.output, 'blob_detail_allow_format_fallback') && ...
+            ~isempty(config.output.blob_detail_allow_format_fallback)
+        blob_detail_allow_format_fallback = config.output.blob_detail_allow_format_fallback;
+    end
+    blob_detail_chunk_max_bytes = 512 * 1024^2;
+    if isfield(config.output, 'blob_detail_chunk_max_bytes') && ...
+            ~isempty(config.output.blob_detail_chunk_max_bytes)
+        blob_detail_chunk_max_bytes = config.output.blob_detail_chunk_max_bytes;
+    end
     save_interval = [];
     if do_checkpoint
         save_interval = config.output.save_interval;
@@ -124,7 +148,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         mkdir(config.output_path);
     end
     if do_write_blob_detail
-        fprintf('  Per-blob detail CSV: %s\n', blob_detail_csv_path);
+        fprintf('  Per-blob detail chunks: %s\n', blob_detail_chunks_dir);
+        fprintf('  Per-blob detail CSV: %s (exported on normal completion)\n', blob_detail_csv_path);
     elseif do_save_blob_detail && use_parallel
         fprintf('  Per-blob detail CSV: disabled in parallel mode\n');
     else
@@ -279,10 +304,19 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
     if do_write_blob_detail
         if is_resumed_checkpoint
-            reconcile_blob_detail_csv(blob_detail_csv_path, nblobs_arr, last_completed_frame);
-        elseif exist(blob_detail_csv_path, 'file') == 2
-            delete(blob_detail_csv_path);
+            reconcile_status = reconcile_blob_detail_chunks(blob_detail_chunks_dir, ...
+                nblobs_arr, last_completed_frame, blob_detail_csv_path, 'resume');
+            blob_detail_writer = init_blob_detail_chunk_writer(config.output_path, ...
+                blob_detail_chunk_size, blob_detail_save_format, 'resume', ...
+                blob_detail_schema, reconcile_status.last_verified_frame, ...
+                blob_detail_allow_format_fallback, blob_detail_chunk_max_bytes);
+        else
+            blob_detail_writer = init_blob_detail_chunk_writer(config.output_path, ...
+                blob_detail_chunk_size, blob_detail_save_format, 'fresh', ...
+                blob_detail_schema, 0, blob_detail_allow_format_fallback, ...
+                blob_detail_chunk_max_bytes);
         end
+        print_blob_detail_writer_diagnostics(blob_detail_writer);
     end
 
     %% Frame 1 establishes the locked threshold or rebuilds the registration reference.
@@ -335,7 +369,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             frac_columns_arr(1) = blob_metrics_1.frac_columns;
             frac_clusters_arr(1) = blob_metrics_1.frac_clusters;
             if do_write_blob_detail && ~is_resumed_checkpoint
-                append_blob_detail_csv(blob_detail_csv_path, 1, time_vector(1), blob_table_1);
+                blob_detail_writer = append_blob_detail_chunk(blob_detail_writer, ...
+                    1, time_vector(1), blob_table_1, "ok", "");
             end
             last_completed_frame = max(last_completed_frame, 1);
 
@@ -530,7 +565,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                 frac_clusters_arr(t) = blob_metrics_t.frac_clusters;
                 change_arr(t-1) = compute_change_metrics(prev_mask, mask_t);
                 if do_write_blob_detail
-                    append_blob_detail_csv(blob_detail_csv_path, t, time_vector(t), blob_table_t);
+                    blob_detail_writer = append_blob_detail_chunk(blob_detail_writer, ...
+                        t, time_vector(t), blob_table_t, "ok", "");
                 end
                 prev_mask = mask_t;
             catch ME_frame
@@ -556,9 +592,19 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                     frac_clusters_arr(t) = frac_clusters_arr(t-1);
                     iface_arr(t)  = iface_arr(t-1);
                 end
+                if do_write_blob_detail
+                    blob_detail_writer = append_blob_detail_chunk(blob_detail_writer, ...
+                        t, time_vector(t), table(), "failed", ME_frame.message);
+                end
             end
             last_completed_frame = t;
             processed_this_session = processed_this_session + 1;
+
+            if do_write_blob_detail && blob_detail_writer.buffer_frame_count >= blob_detail_writer.chunk_size
+                [blob_detail_writer, heartbeat] = flush_blob_detail_writer_with_heartbeat( ...
+                    blob_detail_writer, heartbeat, t, num_frames);
+                blob_detail_timing = writer_timing_struct(blob_detail_writer);
+            end
 
             % Release per-frame intermediate memory immediately
             clear rgb_t rgb_rot_t rgb_corr_t mask_t sat_t;
@@ -576,6 +622,11 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                 'message', sprintf('Processed frame %d of %d', t, num_frames)));
 
             if do_checkpoint && mod(t, save_interval) == 0
+                if do_write_blob_detail
+                    [blob_detail_writer, heartbeat] = flush_blob_detail_writer_with_heartbeat( ...
+                        blob_detail_writer, heartbeat, t, num_frames);
+                    blob_detail_timing = writer_timing_struct(blob_detail_writer);
+                end
                 last_frame = t; %#ok<NASGU>
                 a_i_2D_units = ai_2d_units_for_pixel_size(px); %#ok<NASGU>
                 a_i_2D_pixel_size = ai_2d_checkpoint_pixel_size(px); %#ok<NASGU>
@@ -640,7 +691,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                         flow_domain, px, config.physical.depth, config.physical.dnapl_density, ...
                         last_completed_frame, session_status, ...
                         resume_from_frame, last_checkpoint_path, ...
-                        do_write_blob_detail, blob_detail_csv_path);
+                        do_write_blob_detail, blob_detail_chunks_dir, blob_detail_csv_path, ...
+                        false, blob_detail_timing);
                     return;
                 end
             end
@@ -665,6 +717,21 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             frac_droplets_arr, frac_columns_arr, frac_clusters_arr, ...
             iface_arr, last_completed_frame, locked_threshold);
     end
+
+    if do_write_blob_detail
+        [blob_detail_writer, heartbeat] = flush_blob_detail_writer_with_heartbeat( ...
+            blob_detail_writer, heartbeat, last_completed_frame, num_frames);
+        tic_csv_merge = tic;
+        export_blob_detail_chunks_csv(blob_detail_chunks_dir, blob_detail_csv_path, blob_detail_schema);
+        blob_detail_writer.csv_merge_time_sec = blob_detail_writer.csv_merge_time_sec + toc(tic_csv_merge);
+        blob_detail_csv_exported = true;
+        blob_detail_timing = writer_timing_struct(blob_detail_writer);
+        fprintf('  Blob detail timing: buffer %.3fs, chunk flush %.3fs, final CSV merge %.3fs\n', ...
+            blob_detail_timing.buffer_push_time_sec, ...
+            blob_detail_timing.chunk_flush_time_sec, ...
+            blob_detail_timing.csv_merge_time_sec);
+    end
+
     sol = finalize_solubilization( ...
         sn_arr, nblobs_arr, mbs_arr, max_blob_frac_arr, Req_median_arr, ...
         Req_mean_arr, Req_std_arr, mean_circularity_arr, a_i_2D_arr, ...
@@ -675,7 +742,8 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         flow_domain, px, config.physical.depth, config.physical.dnapl_density, ...
         last_completed_frame, session_status, ...
         resume_from_frame, last_checkpoint_path, ...
-        do_write_blob_detail, blob_detail_csv_path);
+        do_write_blob_detail, blob_detail_chunks_dir, blob_detail_csv_path, ...
+        blob_detail_csv_exported, blob_detail_timing);
     heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
         'status', 'running', ...
         'step', 'STEP 4', ...
@@ -698,7 +766,8 @@ function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, max_blob_fra
         change_arr, change_template, masks_arr, first_mask, last_mask, ...
         use_parallel, time_vector, flow_domain, px, depth, rho, last_completed_frame, ...
         session_status, resume_from_frame, last_checkpoint_path, ...
-        do_write_blob_detail, blob_detail_csv_path)
+        do_write_blob_detail, blob_detail_chunks_dir, blob_detail_csv_path, ...
+        blob_detail_csv_exported, blob_detail_timing)
 
     valid_frames = max(min(last_completed_frame, numel(sn_arr)), 1);
 
@@ -758,8 +827,83 @@ function sol = finalize_solubilization(sn_arr, nblobs_arr, mbs_arr, max_blob_fra
     if strcmp(session_status, 'paused')
         sol.resume_from_frame = resume_from_frame;
     end
+    sol.blob_detail_chunks_dir = '';
+    sol.blob_detail_csv_path = '';
+    sol.blob_detail_csv = '';
+    sol.blob_detail_csv_exported = false;
+    sol.blob_detail_timing = struct('buffer_push_time_sec', 0, ...
+        'chunk_flush_time_sec', 0, 'csv_merge_time_sec', 0);
     if do_write_blob_detail
-        sol.blob_detail_csv = blob_detail_csv_path;
+        sol.blob_detail_chunks_dir = blob_detail_chunks_dir;
+        sol.blob_detail_csv_path = blob_detail_csv_path;
+        sol.blob_detail_csv_exported = logical(blob_detail_csv_exported);
+        sol.blob_detail_timing = blob_detail_timing;
+        if sol.blob_detail_csv_exported
+            sol.blob_detail_csv = blob_detail_csv_path;
+        end
+    end
+end
+
+
+function [writer, heartbeat] = flush_blob_detail_writer_with_heartbeat(writer, heartbeat, current_frame, total_frames)
+    if isempty(writer) || ~isfield(writer, 'buffer_frame_count') || ...
+            writer.buffer_frame_count == 0
+        return;
+    end
+
+    frame_start = writer.buffer_frame_start;
+    frame_end = writer.buffer_frame_end;
+    heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
+        'status', 'running', ...
+        'step', 'STEP 4', ...
+        'step_label', sprintf('Solubilization Dynamics (flush %d..%d)', frame_start, frame_end), ...
+        'current_frame', current_frame, ...
+        'total_frames', total_frames, ...
+        'message', sprintf('Flushing blob detail chunk %d..%d', frame_start, frame_end), ...
+        'force', true));
+
+    [writer, flushed_paths] = flush_blob_detail_chunks(writer);
+    if ~isempty(flushed_paths)
+        heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
+            'status', 'running', ...
+            'step', 'STEP 4', ...
+            'step_label', sprintf('Solubilization Dynamics (flushed %d..%d)', frame_start, frame_end), ...
+            'current_frame', current_frame, ...
+            'total_frames', total_frames, ...
+            'message', sprintf('Flushed blob detail chunk %d..%d', frame_start, frame_end), ...
+            'force', true));
+    end
+end
+
+
+function timing = writer_timing_struct(writer)
+    timing = struct('buffer_push_time_sec', 0, ...
+        'chunk_flush_time_sec', 0, 'csv_merge_time_sec', 0);
+    if isempty(writer)
+        return;
+    end
+    if isfield(writer, 'buffer_push_time_sec')
+        timing.buffer_push_time_sec = writer.buffer_push_time_sec;
+    end
+    if isfield(writer, 'chunk_flush_time_sec')
+        timing.chunk_flush_time_sec = writer.chunk_flush_time_sec;
+    end
+    if isfield(writer, 'csv_merge_time_sec')
+        timing.csv_merge_time_sec = writer.csv_merge_time_sec;
+    end
+end
+
+
+function print_blob_detail_writer_diagnostics(writer)
+    fprintf('  Blob detail MAT format: requested=%s, selected=%s\n', ...
+        writer.requested_save_format, writer.save_format);
+    fprintf('  Blob detail chunks dir: %s\n', writer.chunks_dir);
+    fprintf('  Blob detail chunks path has non-ASCII: %d\n', writer.chunks_dir_has_non_ascii);
+    fprintf('  MATLAB version: %s\n', writer.matlab_version);
+    fprintf('  HDF5 version: %s\n', writer.hdf5_version);
+    if isfield(writer, 'format_probe') && isfield(writer.format_probe, 'message') && ...
+            ~isempty(writer.format_probe.message)
+        fprintf('  Blob detail format probe: %s\n', writer.format_probe.message);
     end
 end
 

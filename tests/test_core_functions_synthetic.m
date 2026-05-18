@@ -27,6 +27,8 @@ function test_validate_config_accepts_residual_metric_defaults(testCase)
     config = make_valid_test_config(fixture_dir, tif_path);
 
     verifyFalse(testCase, config.output.save_blob_detail);
+    verifyEqual(testCase, config.output.blob_detail_chunk_size, 100);
+    verifyEqual(testCase, config.output.blob_detail_save_format, 'v7');
     verifyEqual(testCase, config.architecture.pool_like.max_blob_fraction_min, 0.50);
     verifyEqual(testCase, config.architecture.pool_like.num_blobs_max, 10);
     verifyEqual(testCase, config.architecture.pool_like.a_i_2D_max, 3.0e4);

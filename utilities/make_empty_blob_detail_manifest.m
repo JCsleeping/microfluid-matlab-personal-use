@@ -1,0 +1,9 @@
+function manifest = make_empty_blob_detail_manifest()
+% MAKE_EMPTY_BLOB_DETAIL_MANIFEST  Build zero-row chunk manifest table.
+
+    manifest = table(zeros(0, 1), zeros(0, 1), strings(0, 1), ...
+        zeros(0, 1), strings(0, 1), ...
+        'VariableNames', {'FrameIndex', 'FrameTime', 'FrameStatus', ...
+        'DetailRowCount', 'ErrorMessage'});
+end
+

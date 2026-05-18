@@ -19,7 +19,7 @@ function config = config_pipeline(varargin)
     %  其余参数（算法参数）在下方"高级设置"区域，通常不需要改动。
 
     % --- 数据路径 ---
-    config.data_path = 'G:\微流控\16 1-BO 4UL 5% TWEEM 80\02 WATER DISPLACEMENT';
+    config.data_path = 'G:\微流控\20 1-BO 4UL 5% TWEEN 80 4UL WATER DISPLACEMENT\02 NAPL';
     %   ↑ 实验数据所在目录。下面的 TIF 路径基于此目录。
 
     % --- 输入文件 (自动扫描目录中所有 .tif 文件) ---
@@ -141,6 +141,12 @@ function config = config_pipeline(varargin)
     config.output.heartbeat_frame_interval = 10;      % flush heartbeat at least every N frames
     config.output.heartbeat_time_interval_sec = 30;   % flush heartbeat at least every N seconds
     config.output.save_blob_detail = false; % true: save per-blob residual-structure detail tables
+    config.output.blob_detail_chunk_size = 100;        % frames per MAT chunk when saving blob detail
+    % Use v7 by default: v7.3 is HDF5-based and can fail on Windows paths
+    % containing non-ASCII characters (e.g., Chinese folders on external drives).
+    config.output.blob_detail_save_format = 'v7'; % 'v7' | 'v7.3' | 'v7.3-nocompression'
+    config.output.blob_detail_allow_format_fallback = true; % true: fallback to v7 if requested format fails probe
+    config.output.blob_detail_chunk_max_bytes = 512 * 1024^2; % warn threshold for v7 chunk size
     config.output.max_frames_per_session = inf;       % inf: no auto-pause; finite values pause only on checkpoint boundaries
 
     %% ---- Apply user overrides (do not modify below) -----------------------

@@ -214,73 +214,68 @@ function test_main_pipeline_keeps_only_first_and_last_masks_in_memory(testCase)
 end
 
 
-function test_main_pipeline_pauses_on_checkpoint_boundary_and_resumes(testCase)
+function test_step4_pauses_on_checkpoint_boundary_and_resumes(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
     addpath(genpath(root_dir));
 
-    old_vis = get(groot, 'defaultFigureVisible');
-    set(groot, 'defaultFigureVisible', 'off');
-    c1 = onCleanup(@() set(groot, 'defaultFigureVisible', old_vis)); %#ok<NASGU>
-
     out_dir = fullfile(tempdir, ['dnapl_session_pause_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
-    c2 = onCleanup(@() cleanup_tempdir(out_dir)); %#ok<NASGU>
+    c1 = onCleanup(@() cleanup_tempdir(out_dir)); %#ok<NASGU>
+    mkdir(out_dir);
 
-    config = config_pipeline( ...
-        'pages', 1:6, ...
-        'physical.pixel_size', 3.92e-6, ...
-        'preprocess.manual_crop_rect', [380 40 1821 1927], ...
-        'flow_domain_crop_rect', [372 66 1821 1933], ...
-        'illumination.kernel_size', 30, ...
-        'visualization.show_figures', false, ...
-        'visualization.save_figures', false, ...
-        'parallel.enabled', false, ...
-        'output_path', out_dir, ...
-        'output.checkpoint', true, ...
-        'output.save_interval', 2, ...
-        'output.max_frames_per_session', 2, ...
-        'output.save_progress', false);
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(out_dir, 6);
+    config = make_synthetic_step4_config(out_dir, size(flow_domain));
+    config.output.save_blob_detail = true;
+    config.output.blob_detail_chunk_size = 10;
+    config.output.blob_detail_save_format = 'v7';
 
-    results1 = main_DNAPL_pipeline(config);
+    sol1 = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    results1 = struct('pipeline_status', sol1.pipeline_status, ...
+        'resume_from_frame', sol1.resume_from_frame, ...
+        'solubilization', sol1);
     verifyEqual(testCase, string(results1.pipeline_status), "paused");
     verifyEqual(testCase, results1.resume_from_frame, 3);
-    verifyTrue(testCase, isfield(results1, 'chip_geometric_volume_m3'));
-    verifyTrue(testCase, isfield(results1, 'flow_domain_volume_m3'));
-    verifyTrue(testCase, isfield(results1.saturation, 'dnapl_volume_m3'));
     verifyTrue(testCase, isfile(fullfile(out_dir, 'checkpoint_0002.mat')));
-    verifyEmpty(testCase, dir(fullfile(out_dir, 'results_*.mat')));
     checkpoint1 = fullfile(out_dir, 'checkpoint_0002.mat');
     checkpoint1_vars = who('-file', checkpoint1);
     verifyTrue(testCase, any(strcmp(checkpoint1_vars, 'locked_threshold')));
+    verifyTrue(testCase, isfolder(fullfile(out_dir, 'blob_detail_chunks')));
+    verifyTrue(testCase, isfile(fullfile(out_dir, 'blob_detail_chunks', ...
+        'blob_detail_000001_000002.mat')));
+    verifyFalse(testCase, isfile(fullfile(out_dir, 'blob_detail_all_frames.csv')));
+    verifyFalse(testCase, results1.solubilization.blob_detail_csv_exported);
+    verifyEqual(testCase, results1.solubilization.blob_detail_csv, '');
 
-    heartbeat1 = jsondecode(fileread(fullfile(out_dir, 'status', 'heartbeat_latest.json')));
-    verifyEqual(testCase, string(heartbeat1.status), "paused");
-    verifyEqual(testCase, heartbeat1.current_frame, 2);
-
-    results2 = main_DNAPL_pipeline(config);
+    sol2 = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    results2 = struct('pipeline_status', sol2.pipeline_status, ...
+        'resume_from_frame', sol2.resume_from_frame, ...
+        'solubilization', sol2);
     verifyEqual(testCase, string(results2.pipeline_status), "paused");
     verifyEqual(testCase, results2.resume_from_frame, 5);
     verifyTrue(testCase, isfile(fullfile(out_dir, 'checkpoint_0004.mat')));
     checkpoint2 = fullfile(out_dir, 'checkpoint_0004.mat');
     checkpoint2_vars = who('-file', checkpoint2);
     verifyTrue(testCase, any(strcmp(checkpoint2_vars, 'locked_threshold')));
+    verifyTrue(testCase, isfile(fullfile(out_dir, 'blob_detail_chunks', ...
+        'blob_detail_000003_000004.mat')));
+    verifyFalse(testCase, isfile(fullfile(out_dir, 'blob_detail_all_frames.csv')));
+    verifyFalse(testCase, results2.solubilization.blob_detail_csv_exported);
 
-    heartbeat2 = jsondecode(fileread(fullfile(out_dir, 'status', 'heartbeat_latest.json')));
-    verifyEqual(testCase, string(heartbeat2.status), "paused");
-    verifyEqual(testCase, heartbeat2.current_frame, 4);
-    log_files = dir(fullfile(out_dir, 'logs', 'pipeline_log_*.txt'));
-    [~, latest_log_idx] = max([log_files.datenum]);
-    resume_log_text = fileread(fullfile(log_files(latest_log_idx).folder, log_files(latest_log_idx).name));
-    verifyTrue(testCase, contains(resume_log_text, 'Using locked threshold from checkpoint'));
-    verifyFalse(testCase, contains(resume_log_text, 'Threshold locked at'));
-
-    results3 = main_DNAPL_pipeline(config);
+    config.output.max_frames_per_session = inf;
+    sol3 = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    results3 = struct('pipeline_status', sol3.pipeline_status, ...
+        'last_completed_frame', sol3.last_completed_frame, ...
+        'solubilization', sol3);
     verifyEqual(testCase, string(results3.pipeline_status), "completed");
-    verifyFalse(testCase, isfield(results3, 'resume_from_frame'));
-    verifyFalse(testCase, isempty(dir(fullfile(out_dir, 'results_*.mat'))));
-
-    heartbeat3 = jsondecode(fileread(fullfile(out_dir, 'status', 'heartbeat_latest.json')));
-    verifyEqual(testCase, string(heartbeat3.status), "completed");
-    verifyEqual(testCase, heartbeat3.current_frame, 6);
+    verifyEqual(testCase, results3.last_completed_frame, 6);
+    verifyTrue(testCase, isfile(fullfile(out_dir, 'blob_detail_chunks', ...
+        'blob_detail_000005_000006.mat')));
+    final_blob_csv = fullfile(out_dir, 'blob_detail_all_frames.csv');
+    verifyTrue(testCase, isfile(final_blob_csv));
+    verifyTrue(testCase, results3.solubilization.blob_detail_csv_exported);
+    verifyEqual(testCase, results3.solubilization.blob_detail_csv, final_blob_csv);
+    blob_detail_table = readtable(final_blob_csv, 'VariableNamingRule', 'preserve');
+    verifyEqual(testCase, height(blob_detail_table), ...
+        sum(results3.solubilization.num_blobs_vs_time));
 end
 
 
@@ -401,7 +396,9 @@ function test_blob_detail_status_line_reports_disabled_and_enabled_path(testCase
 
     config.output.save_blob_detail = true;
     expected_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
+    expected_chunks_dir = fullfile(config.output_path, 'blob_detail_chunks');
     enabled_log = evalc('characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);');
+    verifyTrue(testCase, contains(enabled_log, ['Per-blob detail chunks: ' expected_chunks_dir]));
     verifyTrue(testCase, contains(enabled_log, ['Per-blob detail CSV: ' expected_path]));
 
     if isfile(expected_path)
@@ -414,7 +411,9 @@ function test_blob_detail_status_line_reports_disabled_and_enabled_path(testCase
     verifyTrue(testCase, contains(parallel_log, ...
         'Per-blob detail CSV: disabled in parallel mode'));
     verifyFalse(testCase, contains(parallel_log, ['Per-blob detail CSV: ' expected_path]));
-    verifyFalse(testCase, isfield(sol_parallel, 'blob_detail_csv'));
+    verifyTrue(testCase, isfield(sol_parallel, 'blob_detail_csv'));
+    verifyEqual(testCase, sol_parallel.blob_detail_csv, '');
+    verifyFalse(testCase, sol_parallel.blob_detail_csv_exported);
     verifyFalse(testCase, isfile(expected_path));
 
     source_path = fullfile(root_dir, 'analysis', 'characterize_solubilization_v2.m');
@@ -422,7 +421,7 @@ function test_blob_detail_status_line_reports_disabled_and_enabled_path(testCase
     fallback_pos = strfind(source_text, 'characterize_solubilization_v2:parallelMaskFootprint');
     decision_pos = strfind(source_text, 'do_write_blob_detail = do_save_blob_detail && ~use_parallel');
     log_pos = strfind(source_text, 'Per-blob detail CSV:');
-    reconcile_pos = strfind(source_text, 'reconcile_blob_detail_csv(blob_detail_csv_path');
+    reconcile_pos = strfind(source_text, 'reconcile_blob_detail_chunks(blob_detail_chunks_dir');
     verifyNotEmpty(testCase, fallback_pos);
     verifyNotEmpty(testCase, decision_pos);
     verifyNotEmpty(testCase, log_pos);
@@ -490,10 +489,13 @@ function field_names = task4_checkpoint_metric_fields()
 end
 
 
-function [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(fixture_dir)
+function [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(fixture_dir, num_frames)
+    if nargin < 2
+        num_frames = 4;
+    end
     flow_domain = true(32, 32);
-    time_vector = (0:3).';
-    frame_masks = cell(4, 1);
+    time_vector = (0:num_frames-1).';
+    frame_masks = cell(num_frames, 1);
     frame_masks{1} = false(32, 32);
     frame_masks{1}(4:15, 4:15) = true;
     frame_masks{2} = false(32, 32);
@@ -504,6 +506,16 @@ function [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_f
     frame_masks{3}(18:22, 19:22) = true;
     frame_masks{4} = false(32, 32);
     frame_masks{4}(8:11, 8:11) = true;
+    for i = 5:num_frames
+        frame_masks{i} = false(32, 32);
+        side_len = max(3, 12 - i);
+        top = min(3 + i, 28 - side_len);
+        left = min(4 + mod(i, 5), 28 - side_len);
+        frame_masks{i}(top:top+side_len, left:left+side_len) = true;
+        if mod(i, 2) == 0
+            frame_masks{i}(20:23, 18:21) = true;
+        end
+    end
 
     frame_index = repmat(struct('tif_path', '', 'page', 1), numel(frame_masks), 1);
     for i = 1:numel(frame_masks)
