@@ -557,6 +557,57 @@ def create_summary(frame_summary, topology, slopes, pixel_size_um):
     }
 
 
+def write_blob_population_outputs(
+    blob_csv,
+    postprocess_dir,
+    chunksize=200000,
+    dpi=300,
+    no_figures=False,
+    min_slope_points=20,
+):
+    """Write blob-population Level A outputs for the batch postprocess driver."""
+    _ = chunksize
+    postprocess_dir = Path(postprocess_dir)
+    postprocess_dir.mkdir(parents=True, exist_ok=True)
+    output_root = postprocess_dir.parent
+    pixel_size_um = find_pixel_size_um(output_root)
+    timeseries_csv = find_timeseries_csv(output_root)
+
+    blobs = load_blob_detail(blob_csv)
+    timeseries = load_timeseries(timeseries_csv)
+    frame_summary = compute_frame_morphology(blobs, pixel_size_um=pixel_size_um)
+    frame_summary = align_timeseries(frame_summary, timeseries)
+    topology = compute_topology_population(blobs)
+    topology = align_timeseries(topology, timeseries)
+    slopes = compute_size_distribution_slopes(blobs, min_slope_points=min_slope_points)
+    slopes = align_timeseries(slopes, timeseries)
+
+    frame_summary.to_csv(postprocess_dir / "blob_population_morphology_by_frame.csv", index=False)
+    topology.to_csv(postprocess_dir / "topology_population_by_frame.csv", index=False)
+    slopes.to_csv(postprocess_dir / "size_distribution_slope_vs_time.csv", index=False)
+    summary = create_summary(frame_summary, topology, slopes, pixel_size_um)
+    with (postprocess_dir / "blob_population_morphology_summary.json").open("w", encoding="utf-8") as fp:
+        json.dump(summary, fp, indent=2, ensure_ascii=False, default=_json_default)
+
+    written = []
+    if not no_figures:
+        written = create_figures(
+            frame_summary,
+            topology,
+            slopes,
+            postprocess_dir / "figures_blob_population",
+            dpi=dpi,
+        )
+
+    return {
+        "frame_summary": frame_summary,
+        "topology": topology,
+        "slopes": slopes,
+        "summary": summary,
+        "figures": written,
+    }
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Analyze per-frame blob population morphology.")
     parser.add_argument("output_dir", nargs="?", default=str(DEFAULT_OUTPUT_DIR))

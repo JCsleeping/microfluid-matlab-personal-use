@@ -188,9 +188,15 @@ def load_rate_timeseries(csv_path):
     """Load and time-correct a CSV using only the columns needed by this script."""
     csv_path = Path(csv_path)
     df = pd.read_csv(csv_path)
+    if "RealTime_s" not in df.columns and "Time" in df.columns:
+        # Older pipeline exports use Time as elapsed seconds. Normalize that
+        # schema here so rate windows are interpreted in real minutes.
+        df["RealTime_s"] = pd.to_numeric(df["Time"], errors="coerce")
     validate_required_columns(df)
 
     df = df.copy()
+    if "FrameIndex" not in df.columns:
+        df["FrameIndex"] = np.arange(1, len(df) + 1, dtype=int)
     numeric_columns = [c for c in CORE_REQUIRED_COLUMNS + OPTIONAL_METRIC_COLUMNS if c in df.columns]
     for column in numeric_columns:
         df[column] = pd.to_numeric(df[column], errors="coerce")
@@ -770,6 +776,187 @@ def attach_all_rates(
         df["DissolutionRate_Sn_lr"], df
     ).to_numpy()
     return df
+
+
+def _simple_association_rows(df, metric_keys, rate_col):
+    rows = []
+    y = pd.to_numeric(df[rate_col], errors="coerce") if rate_col in df.columns else None
+    for metric in metric_keys:
+        available = metric in df.columns and y is not None
+        if not available:
+            rows.append(
+                {
+                    "metric": metric,
+                    "available": False,
+                    "n": 0,
+                    "pearson_r": np.nan,
+                    "spearman_r": np.nan,
+                    "rate_column": rate_col,
+                }
+            )
+            continue
+        x = pd.to_numeric(df[metric], errors="coerce")
+        valid = x.notna() & y.notna() & np.isfinite(x.to_numpy(dtype=float)) & np.isfinite(y.to_numpy(dtype=float))
+        n = int(valid.sum())
+        pearson = float(x[valid].corr(y[valid], method="pearson")) if n >= 3 else np.nan
+        spearman = float(x[valid].corr(y[valid], method="spearman")) if n >= 3 else np.nan
+        rows.append(
+            {
+                "metric": metric,
+                "available": True,
+                "n": n,
+                "pearson_r": pearson,
+                "spearman_r": spearman,
+                "rate_column": rate_col,
+            }
+        )
+    return rows
+
+
+def _simple_binned_rows(df, metric_keys, rate_col, n_bins=5, min_bin_count=20):
+    rows = []
+    if rate_col not in df.columns:
+        return rows
+    y_full = pd.to_numeric(df[rate_col], errors="coerce")
+    stages = list(df["Stage"].dropna().astype(str).unique()) if "Stage" in df.columns else ["all"]
+    for metric in metric_keys:
+        if metric not in df.columns:
+            continue
+        x_full = pd.to_numeric(df[metric], errors="coerce")
+        for stage in stages:
+            if stage == "all":
+                stage_mask = pd.Series(True, index=df.index)
+            else:
+                stage_mask = df["Stage"].astype(str) == stage
+            valid = (
+                stage_mask
+                & x_full.notna()
+                & y_full.notna()
+                & np.isfinite(x_full.to_numpy(dtype=float))
+                & np.isfinite(y_full.to_numpy(dtype=float))
+            )
+            if int(valid.sum()) < max(n_bins, min_bin_count):
+                continue
+            x = x_full[valid]
+            y = y_full[valid]
+            try:
+                bins = pd.qcut(x.rank(method="first"), q=min(n_bins, len(x)), labels=False, duplicates="drop")
+            except ValueError:
+                continue
+            for bin_id in sorted(pd.unique(bins.dropna())):
+                mask = bins == bin_id
+                if int(mask.sum()) < min_bin_count:
+                    continue
+                xb = x[mask]
+                yb = y[mask]
+                rows.append(
+                    {
+                        "metric": metric,
+                        "stage": stage,
+                        "bin_id": int(bin_id),
+                        "x_bin_min": float(xb.min()),
+                        "x_bin_max": float(xb.max()),
+                        "x_bin_median": float(xb.median()),
+                        "rate_median": float(yb.median()),
+                        "rate_p25": float(yb.quantile(0.25)),
+                        "rate_p75": float(yb.quantile(0.75)),
+                        "n": int(mask.sum()),
+                    }
+                )
+    return rows
+
+
+def write_rate_outputs(
+    csv_path,
+    postprocess_dir,
+    dpi=300,
+    no_figures=False,
+    rate_window_min=DEFAULT_RATE_WINDOW_MIN,
+    rate_min_points=DEFAULT_RATE_MIN_POINTS,
+):
+    """Write Level A rate CSVs used by the batch postprocess driver.
+
+    The standalone plotting CLI writes these outputs under ``figures_rate``.
+    The Level A driver expects top-level CSVs, so this helper keeps the same
+    rate estimator but emits the compact tables consumed by downstream QC and
+    interpretation scripts.
+    """
+    postprocess_dir = Path(postprocess_dir)
+    postprocess_dir.mkdir(parents=True, exist_ok=True)
+
+    df = load_rate_timeseries(csv_path)
+    attach_stage_and_masks(df)
+    pixel_size_um = find_pixel_size_um(postprocess_dir.parent)
+    unit_info = infer_metric_units(df, None, pixel_size_um)
+    attach_all_rates(
+        df,
+        rate_window_min=rate_window_min,
+        rate_min_points=rate_min_points,
+        pixel_size_um=pixel_size_um,
+        unit_info=unit_info,
+    )
+
+    df["SnMonotone"] = df["Sn_rate_input"]
+    first_sn = next((float(v) for v in df["Sn"].to_numpy(dtype=float) if np.isfinite(v) and v > 0), np.nan)
+    if np.isfinite(first_sn) and first_sn > 0:
+        df["RemovalFraction"] = (first_sn - df["Sn"]) / first_sn
+    else:
+        df["RemovalFraction"] = np.nan
+    df["DissolutionRate_Sn_per_min"] = df["DissolutionRate_Sn_time_lr"]
+    df["NormalizedDissolutionRate_Sn_per_min"] = df["NormalizedDissolutionRate_Sn_time_lr"]
+
+    rate_columns = [
+        "Time",
+        "RealTime_s",
+        "Sn",
+        "NumBlobs",
+        "MeanBlobSize",
+        "InterfaceArea",
+        "MaxBlobFrac",
+        "ReqMedian",
+        "ReqMean",
+        "ReqStd",
+        "MeanCircularity",
+        "a_i_2D",
+        "nDroplets",
+        "nColumns",
+        "nClusters",
+        "fracDroplets",
+        "fracColumns",
+        "fracClusters",
+        "MassDissolvedKg",
+        "FrameIndex",
+        "Time_min",
+        "SnNorm",
+        "RemovalFraction",
+        "SnMonotone",
+        "DissolutionRate_Sn_per_min",
+        "NormalizedDissolutionRate_Sn_per_min",
+        "Stage",
+    ]
+    present_rate_columns = [c for c in rate_columns if c in df.columns]
+    rates = df.loc[:, present_rate_columns].copy()
+    rates.to_csv(postprocess_dir / "dissolution_rates.csv", index=False)
+
+    metric_keys = [s["key"] for s in X_AXIS_SPECS] + [s["key"] for s in FRACTION_SPECS]
+    associations = pd.DataFrame(_simple_association_rows(df, metric_keys, "DissolutionRate_Sn_per_min"))
+    associations.to_csv(postprocess_dir / "rate_metric_associations.csv", index=False)
+    binned = pd.DataFrame(_simple_binned_rows(df, metric_keys, "DissolutionRate_Sn_per_min"))
+    binned.to_csv(postprocess_dir / "rate_metric_binned_summary.csv", index=False)
+
+    if not no_figures:
+        figures_dir = postprocess_dir / "figures_rate"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        fig, ax = plt.subplots(figsize=(6.0, 3.0))
+        ax.plot(df["Time_min"], df["DissolutionRate_Sn_per_min"], color=WONG_COLORS["blue"], linewidth=0.8)
+        ax.set_xlabel("Time (min)")
+        ax.set_ylabel("Dissolution rate (Sn/min)")
+        style_axes(ax)
+        for suffix in ("png", "svg"):
+            fig.savefig(figures_dir / f"dissolution_rate_window_{rate_window_min:g}min.{suffix}", dpi=dpi if suffix == "png" else None, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
+    return {"rates": rates, "associations": associations, "binned": binned}
 
 
 # --------------------------------------------------------------------------- #

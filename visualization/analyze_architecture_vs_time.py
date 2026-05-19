@@ -796,6 +796,57 @@ def create_all_figures(df, transitions, figures_dir, dpi=300):
     return written
 
 
+def analyze_architecture(
+    timeseries_csv,
+    postprocess_dir,
+    dpi=300,
+    no_figures=False,
+    rate_window_min=20.0,
+    rate_min_points=25,
+):
+    """Write architecture Level A outputs for the batch postprocess driver."""
+    _ = rate_window_min, rate_min_points
+    postprocess_dir = Path(postprocess_dir)
+    postprocess_dir.mkdir(parents=True, exist_ok=True)
+    thresholds = ArchitectureThresholds()
+    df = load_timeseries(timeseries_csv)
+    architecture_df = prepare_architecture_dataframe(
+        df,
+        output_dir=postprocess_dir,
+        rates_csv_path=None,
+        thresholds=thresholds,
+        min_sn_norm_valid=0.05,
+        min_blobs_valid=20,
+    )
+    transitions = detect_transitions(architecture_df, min_run_frames=5, window_min=20.0)
+    rate_summary = create_rate_summary(architecture_df)
+    summary = create_summary(architecture_df, transitions)
+    summary["thresholds"] = asdict(thresholds)
+
+    architecture_df.loc[:, OUTPUT_COLUMNS].to_csv(postprocess_dir / "architecture_vs_time.csv", index=False)
+    transitions.to_csv(postprocess_dir / "architecture_transitions.csv", index=False)
+    rate_summary.to_csv(postprocess_dir / "architecture_rate_summary.csv", index=False)
+    with (postprocess_dir / "architecture_summary.json").open("w", encoding="utf-8") as fp:
+        json.dump(summary, fp, indent=2, ensure_ascii=False, default=_json_default)
+
+    figure_paths = []
+    if not no_figures:
+        figure_paths = create_all_figures(
+            architecture_df,
+            transitions,
+            postprocess_dir / "figures_architecture_time",
+            dpi=dpi,
+        )
+
+    return {
+        "architecture": architecture_df,
+        "transitions": transitions,
+        "rate_summary": rate_summary,
+        "summary": summary,
+        "figures": figure_paths,
+    }
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Analyze residual architecture vs time.")
     parser.add_argument(
