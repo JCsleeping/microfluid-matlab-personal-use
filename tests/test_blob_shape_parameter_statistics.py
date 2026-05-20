@@ -147,6 +147,9 @@ class BlobShapeParameterStatisticsTests(unittest.TestCase):
             self.assertIn("ProjectedSphericity2D = 2 * sqrt(pi * Area_px) / P_outer_boundary", notes)
             self.assertIn("Circularity2D_boundary is not Wadell roundness", notes)
             self.assertIn("ProjectedRoughness_boundary is a 2D exterior-boundary proxy", notes)
+            self.assertIn("AxisAspectRatio and AspectRatio01 are reciprocal forms", notes)
+            self.assertIn("ProjectedSphericity2D and Circularity2D_boundary are mathematically related", notes)
+            self.assertIn("ShapeClassV0 and ShapeClassV1 must not be mixed", notes)
             self.assertNotIn("3D roughness result", notes)
 
             dictionary = pd.read_csv(output_dir / "blob_shape_parameter_metric_dictionary.csv")
