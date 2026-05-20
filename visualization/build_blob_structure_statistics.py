@@ -41,6 +41,21 @@ VALID_SHAPE_CLASSES = {
     "medium_caution",
 }
 
+VALID_SHAPE_CLASSES_BY_VERSION = {
+    "v0": VALID_SHAPE_CLASSES,
+    "v1": {
+        "compact_regular",
+        "near_compact_regular",
+        "moderately_elongated",
+        "elongated",
+        "moderately_concave",
+        "concave_lobed",
+        "branched_complex",
+        "compact_irregular",
+        "ambiguous_valid",
+    },
+}
+
 STAGE_ORDER = ["early_depletion", "active_dissolution", "late_depletion", "endpoint"]
 
 
@@ -49,6 +64,18 @@ class Inputs:
     morphology_dir: Path
     level_a_dir: Path
     output_dir: Path
+    shape_class_version: str = "v0"
+    shape_class_v1_dir: Path | None = None
+
+
+@dataclass(frozen=True)
+class ShapeClassSource:
+    version: str
+    source_dir: Path
+    source_file: Path
+    manifest_file: Path | None
+    active_shape_class_column: str = "ShapeClassActive"
+    active_reason_column: str = "ShapeClassReasonActive"
 
 
 def _timestamp() -> str:
@@ -90,6 +117,12 @@ def _weighted_mean(values: pd.Series, weights: pd.Series) -> float:
     return float(np.average(v[ok], weights=w[ok]))
 
 
+def _read_json(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def assign_sn_stage(level_a: pd.DataFrame) -> pd.DataFrame:
     """Assign fixed SnMonotone stages with endpoint taking precedence."""
     out = level_a.copy()
@@ -110,14 +143,10 @@ def assign_sn_stage(level_a: pd.DataFrame) -> pd.DataFrame:
     return out[["FrameIndex", "SnMonotone", "DissolutionRate_Sn_per_min", "SnStage", "StageOrder"]]
 
 
-def read_inputs(inputs: Inputs) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
+def _read_v0_shape_table(inputs: Inputs) -> tuple[pd.DataFrame, ShapeClassSource]:
     shape_path = inputs.morphology_dir / "blob_shape_class_by_blob.csv"
     if not shape_path.exists():
         raise FileNotFoundError(f"Missing morphology shape table: {shape_path}")
-    level_a_path = inputs.level_a_dir / "dissolution_rates.csv"
-    if not level_a_path.exists():
-        raise FileNotFoundError(f"Missing Level A dissolution table: {level_a_path}")
-
     usecols = [
         "FrameIndex",
         "RealTime_s",
@@ -140,6 +169,92 @@ def read_inputs(inputs: Inputs) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
         "A_blob_Atotal",
     ]
     shape = pd.read_csv(shape_path, usecols=lambda c: c in usecols)
+    shape["ShapeClassActive"] = shape["ShapeClass"].astype(str)
+    shape["ShapeClassReasonActive"] = shape.get("ShapeClassReason", pd.Series("", index=shape.index)).astype(str)
+    shape["ShapeClassVersion"] = "v0"
+    shape["InterpretationTier"] = np.where(
+        shape["ShapeClassActive"].isin(["small_unclassified", "boundary_invalid"]),
+        "not_boundary_interpretable",
+        "geometry_interpretable",
+    )
+    shape["ShapeClassSourceDir"] = str(inputs.morphology_dir)
+    shape["ShapeClassSourceFile"] = str(shape_path)
+    shape_source = ShapeClassSource(
+        version="v0",
+        source_dir=inputs.morphology_dir,
+        source_file=shape_path,
+        manifest_file=inputs.morphology_dir / "blob_morphology_manifest.json",
+    )
+    return shape, shape_source
+
+
+def _read_v1_shape_table(inputs: Inputs) -> tuple[pd.DataFrame, ShapeClassSource]:
+    if inputs.shape_class_v1_dir is None:
+        raise ValueError("--shape-class-v1-dir is required when --shape-class-version v1")
+    v1_dir = inputs.shape_class_v1_dir
+    shape_path = v1_dir / "blob_shape_class_v1_by_blob.csv"
+    if not shape_path.exists():
+        raise FileNotFoundError(f"Missing v1 formal shape table: {shape_path}")
+    usecols = [
+        "FrameIndex",
+        "RealTime_s",
+        "BlobID",
+        "ShapeClassV0",
+        "ShapeClassV1",
+        "ShapeClassV1Reason",
+        "ShapeClassVersion",
+        "ShapeV1InterpretationTier",
+        "MetricSource",
+        "BoundaryMetricSource",
+        "DatasetSubset",
+        "FullSidecarDerived",
+        "AreaThresholdVersion",
+        "ShapeClassSource",
+        "Area_px",
+        "AreaTier",
+        "ProjectedSphericity2D",
+        "Circularity2D_boundary",
+        "AspectRatio01",
+        "AxisAspectRatio",
+        "Solidity2D",
+        "ProjectedRoughness_boundary",
+        "PtotalOverPouter",
+        "ProjectedRegularity2D",
+    ]
+    shape = pd.read_csv(shape_path, usecols=lambda c: c in usecols)
+    required = {"ShapeClassV1", "ShapeClassV1Reason", "ShapeClassVersion", "ShapeV1InterpretationTier"}
+    missing = required - set(shape.columns)
+    if missing:
+        raise ValueError(f"v1 formal shape table missing required column(s): {', '.join(sorted(missing))}")
+    shape["ShapeClassActive"] = shape["ShapeClassV1"].astype(str)
+    shape["ShapeClassReasonActive"] = shape["ShapeClassV1Reason"].astype(str)
+    shape["ShapeClassVersion"] = "v1"
+    shape["InterpretationTier"] = shape["ShapeV1InterpretationTier"].astype(str)
+    shape["ShapeValid"] = shape["InterpretationTier"].eq("geometry_interpretable")
+    shape["ShapeInvalidReason"] = np.where(shape["ShapeValid"], "", shape["InterpretationTier"])
+    shape["ReliabilityClass"] = shape["InterpretationTier"]
+    shape["ShapeClass"] = shape["ShapeClassActive"]
+    shape["ShapeClassReason"] = shape["ShapeClassReasonActive"]
+    shape["ShapeClassSourceDir"] = str(v1_dir)
+    shape["ShapeClassSourceFile"] = str(shape_path)
+    shape_source = ShapeClassSource(
+        version="v1",
+        source_dir=v1_dir,
+        source_file=shape_path,
+        manifest_file=v1_dir / "shape_class_v1_formal_manifest.json",
+    )
+    return shape, shape_source
+
+
+def read_inputs(inputs: Inputs) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None, ShapeClassSource]:
+    version = inputs.shape_class_version.lower()
+    if version not in {"v0", "v1"}:
+        raise ValueError("shape_class_version must be 'v0' or 'v1'")
+    shape, shape_source = _read_v1_shape_table(inputs) if version == "v1" else _read_v0_shape_table(inputs)
+
+    level_a_path = inputs.level_a_dir / "dissolution_rates.csv"
+    if not level_a_path.exists():
+        raise FileNotFoundError(f"Missing Level A dissolution table: {level_a_path}")
     level_a = pd.read_csv(level_a_path, usecols=lambda c: c in {
         "FrameIndex",
         "SnMonotone",
@@ -147,9 +262,12 @@ def read_inputs(inputs: Inputs) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     })
     stages = assign_sn_stage(level_a)
 
-    atlas_path = inputs.morphology_dir / "representative_blob_atlas" / "representative_blob_atlas_manifest.csv"
+    if version == "v1":
+        atlas_path = inputs.shape_class_v1_dir / "representative_blob_atlas" / "representative_blob_atlas_manifest.csv"
+    else:
+        atlas_path = inputs.morphology_dir / "representative_blob_atlas" / "representative_blob_atlas_manifest.csv"
     atlas = pd.read_csv(atlas_path) if atlas_path.exists() else None
-    return shape, stages, atlas
+    return shape, stages, atlas, shape_source
 
 
 def add_analysis_columns(shape: pd.DataFrame, stages: pd.DataFrame) -> pd.DataFrame:
@@ -202,6 +320,12 @@ def summarize_by_group(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
             "PtotalOverPouter",
             "ProjectedRegularity2D",
         ]:
+            if metric not in group.columns:
+                record[f"Median_{metric}_valid"] = np.nan
+                record[f"Q25_{metric}_valid"] = np.nan
+                record[f"Q75_{metric}_valid"] = np.nan
+                record[f"AreaWeighted_{metric}_valid"] = np.nan
+                continue
             vals = group.loc[boundary, metric]
             record[f"Median_{metric}_valid"] = _median(vals) if not vals.empty else np.nan
             record[f"Q25_{metric}_valid"] = _q25(vals) if not vals.empty else np.nan
@@ -215,17 +339,40 @@ def summarize_by_group(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def build_class_summary(df: pd.DataFrame) -> pd.DataFrame:
+def build_class_summary(df: pd.DataFrame, shape_class_version: str = "v0") -> pd.DataFrame:
     summary = summarize_by_group(df, ["ShapeClass"])
-    summary["InterpretationAllowed"] = summary["ShapeClass"].isin(VALID_SHAPE_CLASSES)
-    summary.loc[summary["ShapeClass"].isin(["small_unclassified", "boundary_invalid"]), "InterpretationAllowed"] = False
-    summary["InterpretationNote"] = summary["ShapeClass"].map(
-        {
+    valid_classes = VALID_SHAPE_CLASSES_BY_VERSION.get(shape_class_version, VALID_SHAPE_CLASSES)
+    summary["InterpretationAllowed"] = summary["ShapeClass"].isin(valid_classes)
+    if shape_class_version == "v1":
+        summary.loc[
+            summary["ShapeClass"].isin(
+                [
+                    "count_only_lt100",
+                    "boundary_invalid",
+                    "low_area_compact_candidate_100_249",
+                    "low_area_elongated_candidate_100_249",
+                    "low_area_projected_shape_caution_100_249",
+                ]
+            ),
+            "InterpretationAllowed",
+        ] = False
+        note_map = {
+            "count_only_lt100": "count_only_area_lt_100",
+            "boundary_invalid": "excluded_boundary_metric_invalid",
+            "low_area_compact_candidate_100_249": "low_area_projected_shape_caution",
+            "low_area_elongated_candidate_100_249": "low_area_projected_shape_caution",
+            "low_area_projected_shape_caution_100_249": "low_area_projected_shape_caution",
+            "moderately_concave": "projected_low_solidity_proxy",
+        }
+    else:
+        summary.loc[summary["ShapeClass"].isin(["small_unclassified", "boundary_invalid"]), "InterpretationAllowed"] = False
+        note_map = {
             "small_unclassified": "count_only_area_lt_250",
             "boundary_invalid": "excluded_boundary_metric_invalid",
             "medium_caution": "geometry_caution_medium_area_tier",
         }
-    ).fillna("geometry_valid_projected_2d")
+    summary["InterpretationNote"] = summary["ShapeClass"].map(note_map).fillna("geometry_valid_projected_2d")
+    summary["ShapeClassVersion"] = shape_class_version
     return summary.sort_values(["InterpretationAllowed", "NBlobs"], ascending=[False, False])
 
 
@@ -240,6 +387,8 @@ def build_stage_summary(df: pd.DataFrame) -> pd.DataFrame:
     stage_class = stage_class.merge(stage_totals, on="SnStage", how="left")
     stage_class["StageCountFraction"] = stage_class["NBlobs"] / stage_class["StageBlobTotal"].replace(0, np.nan)
     stage_class["StageAreaFraction"] = stage_class["AreaSum_px"] / stage_class["StageAreaTotal_px"].replace(0, np.nan)
+    if "ShapeClassVersion" in df.columns:
+        stage_class["ShapeClassVersion"] = str(df["ShapeClassVersion"].dropna().iloc[0])
     stage_class["StageOrder"] = stage_class["SnStage"].map({name: idx for idx, name in enumerate(STAGE_ORDER)})
     return stage_class.sort_values(["StageOrder", "ShapeClass"]).drop(columns=["StageOrder"])
 
@@ -308,12 +457,15 @@ def write_atlas_review(path: Path, atlas: pd.DataFrame | None, class_summary: pd
 
 
 def write_scope_summary(path: Path, manifest: dict[str, object]) -> None:
+    shape_info = manifest.get("shape_class", {})
     lines = [
         "# G21 Blob Structure Statistics Manifest",
         "",
         f"Created UTC: `{manifest['created_at_utc']}`",
         f"Morphology product: `{manifest['morphology_product_dir']}`",
         f"Level A directory: `{manifest['level_a_dir']}`",
+        f"Shape-class version: `{shape_info.get('version', 'v0')}`",
+        f"Shape-class source file: `{shape_info.get('source_file', '')}`",
         "",
         "Scope: full-duration projected 2D blob-structure statistics from the accepted morphology data product.",
         "",
@@ -374,7 +526,10 @@ def write_figures(output_dir: Path, class_summary: pd.DataFrame, stage_summary: 
     plt.close(fig)
     written.append(str(path))
 
-    sample = df.loc[df["ShapeValid_bool"], ["ShapeClass", "ProjectedSphericity2D", "Solidity2D", "AxisAspectRatio", "Area_px"]].dropna()
+    sample_cols = ["ShapeClass", "ProjectedSphericity2D", "Solidity2D", "AxisAspectRatio", "Area_px"]
+    if not set(sample_cols).issubset(df.columns):
+        return written
+    sample = df.loc[df["ShapeValid_bool"], sample_cols].dropna()
     if len(sample) > 50000:
         sample = sample.sample(n=50000, random_state=21)
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), sharex=False)
@@ -396,10 +551,10 @@ def write_figures(output_dir: Path, class_summary: pd.DataFrame, stage_summary: 
 
 def build_blob_structure_statistics(inputs: Inputs) -> dict[str, object]:
     _safe_mkdir(inputs.output_dir)
-    shape, stages, atlas = read_inputs(inputs)
+    shape, stages, atlas, shape_source = read_inputs(inputs)
     df = add_analysis_columns(shape, stages)
 
-    class_summary = build_class_summary(df)
+    class_summary = build_class_summary(df, shape_source.version)
     stage_summary = build_stage_summary(df)
     transition = build_transition_by_stage(stage_summary)
 
@@ -416,6 +571,15 @@ def build_blob_structure_statistics(inputs: Inputs) -> dict[str, object]:
         "morphology_product_dir": str(inputs.morphology_dir),
         "level_a_dir": str(inputs.level_a_dir),
         "output_dir": str(inputs.output_dir),
+        "shape_class": {
+            "version": shape_source.version,
+            "source_dir": str(shape_source.source_dir),
+            "source_file": str(shape_source.source_file),
+            "manifest_file": str(shape_source.manifest_file) if shape_source.manifest_file is not None else "",
+            "active_shape_class_column": shape_source.active_shape_class_column,
+            "active_reason_column": shape_source.active_reason_column,
+            "source_manifest": _read_json(shape_source.manifest_file) if shape_source.manifest_file is not None else {},
+        },
         "row_counts": {
             "blob_rows": int(len(df)),
             "frames": int(df["FrameIndex"].nunique()),
@@ -426,6 +590,7 @@ def build_blob_structure_statistics(inputs: Inputs) -> dict[str, object]:
         "shape_class_counts": df["ShapeClass"].value_counts().astype(int).to_dict(),
         "scope": {
             "full_duration_projected_2d_statistics": True,
+            "shape_class_version": shape_source.version,
             "tracking": False,
             "fractal_dimension": False,
             "roughness_3d": False,
@@ -454,6 +619,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--morphology-dir", required=True, type=Path)
     parser.add_argument("--level-a-dir", required=True, type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--shape-class-version", choices=["v0", "v1"], default="v0")
+    parser.add_argument("--shape-class-v1-dir", type=Path)
     return parser.parse_args(argv)
 
 
@@ -461,12 +628,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     output_dir = args.output_dir
     if output_dir is None:
-        output_dir = args.morphology_dir / f"g21_blob_structure_statistics_{_timestamp()}"
+        suffix = "_v1" if args.shape_class_version == "v1" else ""
+        output_dir = args.morphology_dir / f"g21_blob_structure_statistics{suffix}_{_timestamp()}"
     manifest = build_blob_structure_statistics(
         Inputs(
             morphology_dir=args.morphology_dir,
             level_a_dir=args.level_a_dir,
             output_dir=output_dir,
+            shape_class_version=args.shape_class_version,
+            shape_class_v1_dir=args.shape_class_v1_dir,
         )
     )
     print(json.dumps({"output_dir": manifest["output_dir"], "row_counts": manifest["row_counts"]}, indent=2))
