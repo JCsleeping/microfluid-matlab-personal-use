@@ -521,6 +521,11 @@ class BlobMorphologyDataProductTests(unittest.TestCase):
             self.assertEqual(len(shape_by_blob), 6)
             self.assertIn("ShapeClass", shape_by_blob.columns)
 
+            shape_by_frame = pd.read_csv(output_dir / "blob_shape_class_summary_by_frame.csv")
+            self.assertIn("ShapeValidCount", shape_by_frame.columns)
+            self.assertIn("ShapeInvalidCount", shape_by_frame.columns)
+            self.assertGreater(shape_by_frame["ShapeInvalidCount"].sum(), 0)
+
             by_frame = pd.read_csv(output_dir / "blob_morphology_by_frame.csv")
             self.assertEqual(set(by_frame["FrameIndex"]), {1, 2, 3})
 
@@ -536,6 +541,16 @@ class BlobMorphologyDataProductTests(unittest.TestCase):
                 )
             )
             self.assertIn("SelectionReason", representatives.columns)
+            candidate_validity = representatives.merge(
+                shape_by_blob[["FrameIndex", "BlobID", "ShapeValid"]],
+                on=["FrameIndex", "BlobID"],
+                how="left",
+            )
+            valid_exemplars = candidate_validity.loc[
+                candidate_validity["ExemplarType"] != "qc_exclusion_example",
+                "ShapeValid",
+            ]
+            self.assertTrue(valid_exemplars.astype(bool).all())
 
             thresholds = json.loads((output_dir / "blob_morphology_thresholds.json").read_text(encoding="utf-8"))
             self.assertEqual(thresholds["reference_filter"]["min_area_px"], 250)
@@ -558,7 +573,11 @@ class BlobMorphologyDataProductTests(unittest.TestCase):
                 self.assertIn(field, manifest)
             self.assertIn("geometry_by_blob.csv", manifest["input_file_inventory"])
             self.assertIn("blob_morphology_by_blob.csv", manifest["output_file_inventory"])
-            self.assertGreater(manifest["output_file_inventory"]["blob_morphology_manifest.json"]["bytes"], 0)
+            manifest_size = (output_dir / "blob_morphology_manifest.json").stat().st_size
+            self.assertEqual(
+                manifest["output_file_inventory"]["blob_morphology_manifest.json"]["bytes"],
+                manifest_size,
+            )
 
             qc_md = (output_dir / "blob_morphology_qc_summary.md").read_text(encoding="utf-8")
             self.assertIn("2D exterior-boundary proxy", qc_md)

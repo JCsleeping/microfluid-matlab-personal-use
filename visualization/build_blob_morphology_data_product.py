@@ -713,9 +713,16 @@ def _finalize_frame_reliability_stats(stats: dict[object, dict[str, object]]) ->
 def _shape_frame_summary(classified: pd.DataFrame) -> pd.DataFrame:
     working = classified.copy()
     working["Area_px_numeric"] = _numeric(working, "Area_px")
+    working["ShapeValid_bool"] = _bool_series(working, "ShapeValid")
+    working["ShapeInvalid_bool"] = ~working["ShapeValid_bool"]
     return (
         working.groupby(["FrameIndex", "ShapeClass"], dropna=False)
-        .agg(BlobCount=("BlobID", "count"), AreaSum_px=("Area_px_numeric", "sum"))
+        .agg(
+            BlobCount=("BlobID", "count"),
+            AreaSum_px=("Area_px_numeric", "sum"),
+            ShapeValidCount=("ShapeValid_bool", "sum"),
+            ShapeInvalidCount=("ShapeInvalid_bool", "sum"),
+        )
         .reset_index()
     )
 
@@ -842,6 +849,7 @@ def _update_representatives(
     scored = _representative_scores(classified, thresholds)
     eligible = scored[
         _bool_series(scored, "BoundaryMetricValid")
+        & _bool_series(scored, "ShapeValid")
         & (_numeric(scored, "Area_px") >= 250)
         & ~scored["ShapeClass"].isin(["small_unclassified", "boundary_invalid"])
     ]
@@ -969,6 +977,27 @@ def _file_inventory(paths: dict[str, Path]) -> dict[str, dict[str, object]]:
             "bytes": int(path.stat().st_size) if path.exists() else None,
         }
     return inventory
+
+
+def _write_manifest_with_stable_inventory(
+    manifest_path: Path,
+    manifest: dict[str, object],
+    output_paths: dict[str, Path],
+    max_passes: int = 10,
+) -> None:
+    """Write a manifest whose output inventory includes the manifest itself."""
+    manifest["output_file_inventory"] = {}
+    _write_json(manifest_path, manifest)
+    for _ in range(max_passes):
+        inventory = _file_inventory(output_paths)
+        if inventory == manifest.get("output_file_inventory"):
+            return
+        manifest["output_file_inventory"] = inventory
+        _write_json(manifest_path, manifest)
+
+    final_inventory = _file_inventory(output_paths)
+    if final_inventory != manifest.get("output_file_inventory"):
+        raise RuntimeError("Manifest output_file_inventory did not stabilize after repeated writes")
 
 
 def _write_qc_outputs(
@@ -1171,20 +1200,24 @@ def build_blob_morphology_data_product(
         "git_commit_or_status_note": _git_commit_or_status_note(repo_path),
     }
     _write_qc_outputs(out_dir, validation, manifest, missing_mask_paths, missing_label_paths)
-    manifest["output_file_inventory"] = _file_inventory(output_paths)
-    _write_json(out_dir / "blob_morphology_manifest.json", manifest)
-    manifest["output_file_inventory"] = _file_inventory(output_paths)
-    _write_json(out_dir / "blob_morphology_manifest.json", manifest)
+    _write_manifest_with_stable_inventory(out_dir / "blob_morphology_manifest.json", manifest, output_paths)
     return manifest
 
 
 def _combine_shape_frame_parts(parts: list[pd.DataFrame]) -> pd.DataFrame:
     if not parts:
-        return pd.DataFrame(columns=["FrameIndex", "ShapeClass", "BlobCount", "AreaSum_px"])
+        return pd.DataFrame(
+            columns=["FrameIndex", "ShapeClass", "BlobCount", "AreaSum_px", "ShapeValidCount", "ShapeInvalidCount"]
+        )
     combined = pd.concat(parts, ignore_index=True)
     return (
         combined.groupby(["FrameIndex", "ShapeClass"], dropna=False)
-        .agg(BlobCount=("BlobCount", "sum"), AreaSum_px=("AreaSum_px", "sum"))
+        .agg(
+            BlobCount=("BlobCount", "sum"),
+            AreaSum_px=("AreaSum_px", "sum"),
+            ShapeValidCount=("ShapeValidCount", "sum"),
+            ShapeInvalidCount=("ShapeInvalidCount", "sum"),
+        )
         .reset_index()
     )
 
