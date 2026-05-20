@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
-from matplotlib.patches import Ellipse
 from skimage import measure, morphology
 
 
@@ -145,6 +144,16 @@ def _draw_contours(ax: plt.Axes, mask: np.ndarray, *, color: str, linewidth: flo
         ax.plot(contour[:, 1], contour[:, 0], color=color, linewidth=linewidth, linestyle=linestyle)
 
 
+def _region_axis_vectors(orientation_rad: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return skimage regionprops major/minor unit vectors in image x/y coords."""
+    # skimage defines orientation relative to the row axis in image coordinates.
+    # These formulas match the regionprops example and avoid Matplotlib's
+    # Cartesian angle convention, which is easy to misuse with imshow.
+    major = np.array([-math.sin(orientation_rad), -math.cos(orientation_rad)], dtype=float)
+    minor = np.array([math.cos(orientation_rad), -math.sin(orientation_rad)], dtype=float)
+    return major, minor
+
+
 def _draw_region_proxy(ax: plt.Axes, mask: np.ndarray) -> None:
     props = measure.regionprops(mask.astype(np.uint8))
     if not props:
@@ -155,31 +164,26 @@ def _draw_region_proxy(ax: plt.Axes, mask: np.ndarray) -> None:
     if prop.major_axis_length <= 1 or prop.minor_axis_length <= 1:
         return
 
-    angle = -math.degrees(prop.orientation) + 90.0
-    ellipse = Ellipse(
-        (cx, cy),
-        width=prop.minor_axis_length,
-        height=prop.major_axis_length,
-        angle=angle,
-        fill=False,
-        edgecolor="#b30059",
-        linewidth=1.2,
-        alpha=0.9,
-    )
-    ax.add_patch(ellipse)
-
-    theta = math.radians(angle)
+    major_vec, minor_vec = _region_axis_vectors(prop.orientation)
     major_half = prop.major_axis_length / 2.0
     minor_half = prop.minor_axis_length / 2.0
+    t = np.linspace(0, 2 * math.pi, 240)
+    ellipse_xy = (
+        np.array([cx, cy])[:, None]
+        + major_half * np.outer(major_vec, np.cos(t))
+        + minor_half * np.outer(minor_vec, np.sin(t))
+    )
+    ax.plot(ellipse_xy[0], ellipse_xy[1], color="#b30059", linewidth=1.2, alpha=0.9)
+
     ax.plot(
-        [cx - major_half * math.cos(theta), cx + major_half * math.cos(theta)],
-        [cy - major_half * math.sin(theta), cy + major_half * math.sin(theta)],
+        [cx - major_half * major_vec[0], cx + major_half * major_vec[0]],
+        [cy - major_half * major_vec[1], cy + major_half * major_vec[1]],
         color="#b30059",
         linewidth=1.0,
     )
     ax.plot(
-        [cx - minor_half * math.cos(theta + math.pi / 2), cx + minor_half * math.cos(theta + math.pi / 2)],
-        [cy - minor_half * math.sin(theta + math.pi / 2), cy + minor_half * math.sin(theta + math.pi / 2)],
+        [cx - minor_half * minor_vec[0], cx + minor_half * minor_vec[0]],
+        [cy - minor_half * minor_vec[1], cy + minor_half * minor_vec[1]],
         color="#b30059",
         linewidth=1.0,
         alpha=0.75,

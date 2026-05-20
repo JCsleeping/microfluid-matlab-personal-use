@@ -44,6 +44,15 @@ def write_candidates(path: Path, rows: list[dict]) -> None:
 
 
 class BlobAtlasRendererTests(unittest.TestCase):
+    def test_region_axis_vectors_follow_skimage_image_coordinates(self):
+        major, minor = blob_atlas._region_axis_vectors(0.0)
+        np.testing.assert_allclose(major, [0.0, -1.0], atol=1e-12)
+        np.testing.assert_allclose(minor, [1.0, 0.0], atol=1e-12)
+
+        major, minor = blob_atlas._region_axis_vectors(np.pi / 2)
+        np.testing.assert_allclose(major, [-1.0, 0.0], atol=1e-12)
+        np.testing.assert_allclose(minor, [0.0, -1.0], atol=1e-12)
+
     def test_successful_render_writes_png_and_manifest_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
