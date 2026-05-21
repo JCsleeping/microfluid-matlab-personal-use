@@ -83,6 +83,10 @@ class Inputs:
     shape_class_v1_dir: Path
     structure_statistics_dir: Path | None
     output_dir: Path
+    expected_frames: int | None = None
+    row_diff_warn_max_rows: int = 20
+    row_diff_warn_max_fraction: float = 0.00005
+    repo_root: Path | None = None
 
 
 def _timestamp() -> str:
@@ -93,9 +97,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _git_commit() -> str:
+def _default_repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _git_commit(repo_root: Path | None = None) -> str:
+    cwd = repo_root or _default_repo_root()
     try:
-        result = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         return result.stdout.strip()
     except Exception:
         return "unknown"
@@ -105,6 +119,15 @@ def _read_json(path: Path) -> dict:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _coerce_int(value: object) -> int | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return int(value)
+    except Exception:
+        return None
 
 
 def _safe_output_dir(path: Path) -> None:
@@ -131,6 +154,38 @@ def _read_csv_required(path: Path, required: set[str], label: str, usecols: list
     selected = usecols if usecols is not None else list(header)
     selected = [column for column in selected if column in set(header)]
     return pd.read_csv(path, usecols=selected)
+
+
+def _infer_expected_frames(inputs: Inputs) -> tuple[int | None, str]:
+    if inputs.expected_frames is not None:
+        return int(inputs.expected_frames), "argument"
+    candidates: list[tuple[str, int]] = []
+    morphology_manifest = _read_json(inputs.morphology_dir / "blob_morphology_manifest.json")
+    formal_manifest = _read_json(inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json")
+    stats_manifest = (
+        _read_json(inputs.structure_statistics_dir / "blob_structure_statistics_manifest.json")
+        if inputs.structure_statistics_dir is not None
+        else {}
+    )
+    manifest_candidates = [
+        ("morphology_manifest.frame_counts.frames", morphology_manifest.get("frame_counts", {}).get("frames")),
+        (
+            "morphology_manifest.row_counts.frames_observed_in_blob_csv",
+            morphology_manifest.get("row_counts", {}).get("frames_observed_in_blob_csv"),
+        ),
+        ("shape_class_v1_formal_manifest.row_counts.frames", formal_manifest.get("row_counts", {}).get("frames")),
+        ("structure_statistics_manifest.row_counts.frames", stats_manifest.get("row_counts", {}).get("frames")),
+    ]
+    for source, value in manifest_candidates:
+        coerced = _coerce_int(value)
+        if coerced is not None and coerced > 0:
+            candidates.append((source, coerced))
+    if not candidates:
+        return None, "not_available"
+    unique = sorted({value for _, value in candidates})
+    if len(unique) == 1:
+        return unique[0], ",".join(source for source, _ in candidates)
+    return max(unique), "manifest_disagreement_max"
 
 
 def _numeric(df: pd.DataFrame, column: str) -> pd.Series:
@@ -251,15 +306,37 @@ def build_row_reconciliation(inputs: Inputs, morphology: pd.DataFrame, v1: pd.Da
             }
         )
 
-    def add_pair(check: str, left_source: str, right_source: str, left: int | None, right: int | None, fail_on_diff: bool) -> None:
+    def add_pair(
+        check: str,
+        left_source: str,
+        right_source: str,
+        left: int | None,
+        right: int | None,
+        fail_on_diff: bool,
+        bounded_warn: bool = False,
+    ) -> None:
         if left is None or right is None:
             status = "WARN"
             diff = ""
             note = "comparison source missing"
         else:
             diff = int(left) - int(right)
-            status = "PASS" if diff == 0 else ("FAIL" if fail_on_diff else "WARN")
-            note = "matched" if diff == 0 else "row-count difference documented"
+            if diff == 0:
+                status = "PASS"
+                note = "matched"
+            elif bounded_warn:
+                fraction = abs(diff) / int(left) if int(left) else np.inf
+                within_rows = abs(diff) <= int(inputs.row_diff_warn_max_rows)
+                within_fraction = fraction <= float(inputs.row_diff_warn_max_fraction)
+                status = "WARN" if within_rows or within_fraction else "FAIL"
+                note = (
+                    "row-count difference within documented warning threshold"
+                    if status == "WARN"
+                    else "row-count difference exceeds warning threshold"
+                )
+            else:
+                status = "FAIL" if fail_on_diff else "WARN"
+                note = "row-count difference documented"
         rows.append(
             {
                 "Check": check,
@@ -278,13 +355,21 @@ def build_row_reconciliation(inputs: Inputs, morphology: pd.DataFrame, v1: pd.Da
     morphology_rows = int(len(morphology))
     v1_rows = int(len(v1))
     stats_rows = stats_manifest.get("row_counts", {}).get("blob_rows")
-    add_pair("level_a_vs_morphology_rows", "level_a_blob_detail_all_frames", "morphology_by_blob", level_a_rows, morphology_rows, False)
+    add_pair(
+        "level_a_vs_morphology_rows",
+        "level_a_blob_detail_all_frames",
+        "morphology_by_blob",
+        level_a_rows,
+        morphology_rows,
+        False,
+        bounded_warn=True,
+    )
     add_pair("morphology_vs_v1_rows", "morphology_by_blob", "shape_class_v1_by_blob", morphology_rows, v1_rows, True)
     add_pair("v1_vs_structure_statistics_rows", "shape_class_v1_by_blob", "structure_statistics_manifest", v1_rows, stats_rows, True)
     return pd.DataFrame(rows)
 
 
-def build_frame_qc(morphology: pd.DataFrame, v1: pd.DataFrame) -> pd.DataFrame:
+def build_frame_qc(morphology: pd.DataFrame, v1: pd.DataFrame, expected_frames: int | None = None) -> pd.DataFrame:
     morph = morphology.copy()
     morph["BoundaryMetricValid_bool"] = _bool(morph, "BoundaryMetricValid")
     morph["Area_px_num"] = _numeric(morph, "Area_px")
@@ -317,13 +402,19 @@ def build_frame_qc(morphology: pd.DataFrame, v1: pd.DataFrame) -> pd.DataFrame:
     frame = morph_summary.merge(v1_summary, on="FrameIndex", how="outer").sort_values("FrameIndex")
     frame["RowCountDelta_MorphologyMinusV1"] = frame["MorphologyBlobRows"].fillna(0) - frame["V1BlobRows"].fillna(0)
     frame["AreaDelta_MorphologyMinusV1_px"] = frame["MorphologyAreaSum_px"].fillna(0) - frame["V1AreaSum_px"].fillna(0)
-    max_frame = int(frame["FrameIndex"].max()) if len(frame) else 0
-    expected = pd.DataFrame({"FrameIndex": np.arange(1, max_frame + 1, dtype=int)})
-    frame = expected.merge(frame, on="FrameIndex", how="left")
+    max_frame = int(expected_frames) if expected_frames is not None else (int(frame["FrameIndex"].max()) if len(frame) else 0)
+    expected = pd.DataFrame({"FrameIndex": np.arange(1, max_frame + 1, dtype=int), "ExpectedFrame": True})
+    frame = expected.merge(frame, on="FrameIndex", how="outer").sort_values("FrameIndex")
+    expected_mask = frame["ExpectedFrame"].eq(True)
+    observed_mask = frame["MorphologyBlobRows"].notna() | frame["V1BlobRows"].notna()
     frame["FrameStatus"] = np.where(
-        frame["MorphologyBlobRows"].isna() | frame["V1BlobRows"].isna(),
+        ~expected_mask & observed_mask,
+        "UNEXPECTED_FRAME",
+        np.where(
+            expected_mask & (frame["MorphologyBlobRows"].isna() | frame["V1BlobRows"].isna()),
         "MISSING_FRAME",
-        np.where(frame["RowCountDelta_MorphologyMinusV1"].fillna(0).ne(0), "ROW_MISMATCH", "PASS"),
+            np.where(frame["RowCountDelta_MorphologyMinusV1"].fillna(0).ne(0), "ROW_MISMATCH", "PASS"),
+        ),
     )
     return frame
 
@@ -362,6 +453,36 @@ def build_metric_range_audit(morphology: pd.DataFrame, v1: pd.DataFrame) -> pd.D
                 "Status": _status_from_violations(violations, warn_only=warn_only),
             }
         )
+
+    def add_numeric_required(metric: str, values: pd.Series, universe: pd.Series) -> None:
+        add(
+            f"{metric}_non_missing_numeric",
+            f"{metric} is numeric and non-missing in required rows",
+            values.isna(),
+            universe,
+        )
+
+    all_rows = pd.Series(True, index=morphology.index)
+    for metric, values in [
+        ("Area_px", area),
+        ("MajorAxisLength_px", major),
+        ("MinorAxisLength_px", minor),
+        ("AxisAspectRatio", axis_ratio),
+        ("AspectRatio01", aspect01),
+        ("Solidity2D", solidity),
+        ("ProjectedSphericity2D", sphericity),
+        ("Circularity2D_boundary", circularity),
+        ("ProjectedRoughness_boundary", roughness),
+        ("PtotalOverPouter", p_total_over_outer),
+    ]:
+        add_numeric_required(metric, values, all_rows)
+
+    for metric, values in [
+        ("P_outer_boundary", p_outer),
+        ("Pc_outer_boundary", p_convex),
+        ("P_total_boundary", p_total),
+    ]:
+        add_numeric_required(metric, values, boundary_valid)
 
     finite_area = area.notna()
     add("Area_px", "Area_px > 0", area <= 0, finite_area)
@@ -428,6 +549,8 @@ def build_qc_summary(
     metric_audit: pd.DataFrame,
     morphology: pd.DataFrame,
     v1: pd.DataFrame,
+    expected_frames: int | None,
+    expected_frame_source: str,
 ) -> pd.DataFrame:
     rows = []
 
@@ -444,10 +567,32 @@ def build_qc_summary(
     warn_rows = int(row_reconciliation["Status"].astype(str).eq("WARN").sum())
     add("row_reconciliation_warnings_documented", "WARN" if warn_rows else "PASS", warn_rows, "0 or documented WARN")
     missing_frames = int(frame_qc["FrameStatus"].astype(str).eq("MISSING_FRAME").sum())
+    unexpected_frames = int(frame_qc["FrameStatus"].astype(str).eq("UNEXPECTED_FRAME").sum())
     row_mismatch_frames = int(frame_qc["FrameStatus"].astype(str).eq("ROW_MISMATCH").sum())
-    add("frame_coverage_complete", "PASS" if missing_frames == 0 else "FAIL", missing_frames, "0 missing frames")
+    add(
+        "frame_coverage_complete",
+        "PASS" if missing_frames == 0 and unexpected_frames == 0 else "FAIL",
+        f"missing={missing_frames}; unexpected={unexpected_frames}",
+        "0 missing frames; 0 unexpected frames",
+    )
     add("frame_row_counts_match_v1", "PASS" if row_mismatch_frames == 0 else "FAIL", row_mismatch_frames, "0 row-mismatch frames")
-    add("frame_count_12024", "PASS" if int(frame_qc["FrameIndex"].nunique()) == 12024 else "WARN", int(frame_qc["FrameIndex"].nunique()), "12024")
+    observed_frames = int(frame_qc["FrameIndex"].nunique())
+    if expected_frames is None:
+        add(
+            "expected_frame_count_available",
+            "WARN",
+            "not_available",
+            "expected frame count inferred or provided",
+            "Frame coverage cannot be claimed against a fixed full-duration frame count.",
+        )
+    else:
+        add(
+            "frame_count_matches_expected",
+            "PASS" if observed_frames == int(expected_frames) else "FAIL",
+            observed_frames,
+            str(int(expected_frames)),
+            f"Expected frame source: {expected_frame_source}.",
+        )
     metric_failures = int(metric_audit["Status"].astype(str).eq("FAIL").sum())
     metric_warnings = int(metric_audit["Status"].astype(str).eq("WARN").sum())
     add("metric_invariant_failures", "PASS" if metric_failures == 0 else "FAIL", metric_failures, "0 FAIL rows")
@@ -479,6 +624,14 @@ def _decision(qc_summary: pd.DataFrame, row_reconciliation: pd.DataFrame) -> str
     return "ACCEPT_BLOB_PIPELINE"
 
 
+def _collect_issues(qc_summary: pd.DataFrame, row_reconciliation: pd.DataFrame) -> tuple[list[str], list[str]]:
+    blocking = set(qc_summary.loc[qc_summary["Status"].astype(str).eq("FAIL"), "Gate"].astype(str))
+    warning = set(qc_summary.loc[qc_summary["Status"].astype(str).eq("WARN"), "Gate"].astype(str))
+    blocking.update(row_reconciliation.loc[row_reconciliation["Status"].astype(str).eq("FAIL"), "Check"].astype(str))
+    warning.update(row_reconciliation.loc[row_reconciliation["Status"].astype(str).eq("WARN"), "Check"].astype(str))
+    return sorted(blocking), sorted(warning)
+
+
 def write_review(
     path: Path,
     decision: str,
@@ -488,6 +641,12 @@ def write_review(
     qc_summary: pd.DataFrame,
     morphology: pd.DataFrame,
     v1: pd.DataFrame,
+    expected_frames: int | None,
+    expected_frame_source: str,
+    blocking_issues: list[str],
+    warning_issues: list[str],
+    row_diff_warn_max_rows: int,
+    row_diff_warn_max_fraction: float,
 ) -> None:
     rows_total = int(len(v1))
     frames_total = int(frame_qc["FrameIndex"].nunique())
@@ -534,6 +693,8 @@ def write_review(
         f"- Low-area projected-shape caution rows: `{low_area}`.",
         f"- Count-only rows: `{count_only}`.",
         f"- Level A minus morphology row difference: `{diff_text}` rows (`{diff_fraction_text}` of Level A blob rows).",
+        f"- Expected frames: `{expected_frames if expected_frames is not None else 'not_available'}` (`{expected_frame_source}`).",
+        f"- Row-difference WARN threshold: `<= {row_diff_warn_max_rows}` rows or `<= {row_diff_warn_max_fraction:.6%}`.",
         "",
         "## QC Gates",
         "",
@@ -541,6 +702,8 @@ def write_review(
         f"- WARN gates: `{len(warn_gates)}`.",
         f"- Metric invariant failures: `{int(metric_audit['Status'].astype(str).eq('FAIL').sum())}`.",
         f"- Missing-frame rows in frame QC: `{int(frame_qc['FrameStatus'].astype(str).eq('MISSING_FRAME').sum())}`.",
+        f"- Blocking issues: `{', '.join(blocking_issues) if blocking_issues else 'none'}`.",
+        f"- Warning issues: `{', '.join(warning_issues) if warning_issues else 'none'}`.",
         "",
         "## Interpretation Scope",
         "",
@@ -573,13 +736,23 @@ def write_review(
 
 def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
     _safe_output_dir(inputs.output_dir)
+    expected_frames, expected_frame_source = _infer_expected_frames(inputs)
     morphology = _load_morphology(inputs)
     v1 = _load_v1(inputs)
     row_reconciliation = build_row_reconciliation(inputs, morphology, v1)
-    frame_qc = build_frame_qc(morphology, v1)
+    frame_qc = build_frame_qc(morphology, v1, expected_frames)
     metric_audit = build_metric_range_audit(morphology, v1)
-    qc_summary = build_qc_summary(row_reconciliation, frame_qc, metric_audit, morphology, v1)
+    qc_summary = build_qc_summary(
+        row_reconciliation,
+        frame_qc,
+        metric_audit,
+        morphology,
+        v1,
+        expected_frames,
+        expected_frame_source,
+    )
     decision = _decision(qc_summary, row_reconciliation)
+    blocking_issues, warning_issues = _collect_issues(qc_summary, row_reconciliation)
 
     row_reconciliation.to_csv(inputs.output_dir / "g21_blob_row_reconciliation.csv", index=False)
     frame_qc.to_csv(inputs.output_dir / "g21_blob_computation_by_frame_qc.csv", index=False)
@@ -594,11 +767,18 @@ def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
         qc_summary,
         morphology,
         v1,
+        expected_frames,
+        expected_frame_source,
+        blocking_issues,
+        warning_issues,
+        inputs.row_diff_warn_max_rows,
+        inputs.row_diff_warn_max_fraction,
     )
     manifest = {
         "schema_version": "1.0",
         "created_at_utc": _utc_now(),
-        "git_commit": _git_commit(),
+        "git_commit": _git_commit(inputs.repo_root),
+        "repo_root": str(inputs.repo_root or _default_repo_root()),
         "decision_label": decision,
         "output_root": str(inputs.output_root),
         "postprocess_dir": str(inputs.postprocess_dir),
@@ -614,11 +794,31 @@ def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
             "low_area_shape_caution_rows": int(v1["ShapeV1InterpretationTier"].astype(str).eq("low_area_shape_caution").sum()),
             "count_only_rows": int(v1["ShapeV1InterpretationTier"].astype(str).eq("count_only").sum()),
         },
+        "coverage": {
+            "expected_frames": int(expected_frames) if expected_frames is not None else None,
+            "expected_frame_source": expected_frame_source,
+            "observed_frame_rows": int(frame_qc["FrameIndex"].nunique()),
+            "missing_frame_count": int(frame_qc["FrameStatus"].astype(str).eq("MISSING_FRAME").sum()),
+            "unexpected_frame_count": int(frame_qc["FrameStatus"].astype(str).eq("UNEXPECTED_FRAME").sum()),
+            "missing_frame_list_preview": frame_qc.loc[
+                frame_qc["FrameStatus"].astype(str).eq("MISSING_FRAME"), "FrameIndex"
+            ].head(20).astype(int).tolist(),
+            "unexpected_frame_list_preview": frame_qc.loc[
+                frame_qc["FrameStatus"].astype(str).eq("UNEXPECTED_FRAME"), "FrameIndex"
+            ].head(20).astype(int).tolist(),
+        },
+        "thresholds": {
+            "row_diff_warn_max_rows": int(inputs.row_diff_warn_max_rows),
+            "row_diff_warn_max_fraction": float(inputs.row_diff_warn_max_fraction),
+        },
+        "blocking_issues": blocking_issues,
+        "warning_issues": warning_issues,
         "qc": {
             "fail_gates": int(qc_summary["Status"].astype(str).eq("FAIL").sum()),
             "warn_gates": int(qc_summary["Status"].astype(str).eq("WARN").sum()),
             "metric_failures": int(metric_audit["Status"].astype(str).eq("FAIL").sum()),
             "missing_frames": int(frame_qc["FrameStatus"].astype(str).eq("MISSING_FRAME").sum()),
+            "unexpected_frames": int(frame_qc["FrameStatus"].astype(str).eq("UNEXPECTED_FRAME").sum()),
             "row_mismatch_frames": int(frame_qc["FrameStatus"].astype(str).eq("ROW_MISMATCH").sum()),
         },
         "outputs": OUTPUT_FILES,
@@ -648,6 +848,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--shape-class-v1-dir", required=True, type=Path)
     parser.add_argument("--structure-statistics-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--expected-frames", type=int, default=None)
+    parser.add_argument("--row-diff-warn-max-rows", type=int, default=20)
+    parser.add_argument("--row-diff-warn-max-fraction", type=float, default=0.00005)
+    parser.add_argument("--repo-root", type=Path, default=None)
     return parser.parse_args(argv)
 
 
@@ -662,6 +866,10 @@ def main(argv: list[str] | None = None) -> int:
             shape_class_v1_dir=args.shape_class_v1_dir,
             structure_statistics_dir=args.structure_statistics_dir,
             output_dir=output_dir,
+            expected_frames=args.expected_frames,
+            row_diff_warn_max_rows=args.row_diff_warn_max_rows,
+            row_diff_warn_max_fraction=args.row_diff_warn_max_fraction,
+            repo_root=args.repo_root,
         )
     )
     print(json.dumps({"output_dir": manifest["output_dir"], "decision_label": manifest["decision_label"], "qc": manifest["qc"]}, indent=2))
