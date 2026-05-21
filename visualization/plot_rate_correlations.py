@@ -654,6 +654,58 @@ def compute_normalized_rate(rate_series, df, eps=1e-12):
     return pd.Series(normalized, index=df.index, name="NormalizedDissolutionRate_Sn")
 
 
+def compute_dissolution_rates(
+    df,
+    rate_window_min=DEFAULT_RATE_WINDOW_MIN,
+    rate_min_points=DEFAULT_RATE_MIN_POINTS,
+    **_,
+):
+    """Compatibility wrapper returning the legacy primary rate columns.
+
+    The production path uses :func:`attach_all_rates`, whose primary rate is a
+    time-window local regression on monotone-smoothed Sn. Older tests and
+    notebooks called ``compute_dissolution_rates`` directly, so this wrapper
+    preserves that small API surface with the same interpretation boundary:
+    raw frame-to-frame Sn differences are not used.
+    """
+    out = df.copy()
+    if "RealTime_s" in out.columns:
+        out["Time_min"] = pd.to_numeric(out["RealTime_s"], errors="coerce") / 60.0
+    elif "Time_min" in out.columns:
+        out["Time_min"] = pd.to_numeric(out["Time_min"], errors="coerce")
+    elif "Time" in out.columns:
+        out["Time_min"] = pd.to_numeric(out["Time"], errors="coerce")
+    else:
+        out["Time_min"] = np.arange(len(out), dtype=float)
+
+    if "Sn" not in out.columns:
+        raise KeyError("DataFrame is missing required column 'Sn'")
+
+    sn = pd.to_numeric(out["Sn"], errors="coerce").to_numpy(dtype=float)
+    finite_for_monotone = np.where(np.isfinite(sn), sn, np.inf)
+    monotone = np.minimum.accumulate(finite_for_monotone)
+    monotone = np.where(np.isfinite(monotone), monotone, np.nan)
+    out["SnMonotone"] = monotone
+    out["Sn_rate_input"] = monotone
+
+    valid_sn = sn[np.isfinite(sn) & (sn > 0)]
+    sn0 = float(valid_sn[0]) if valid_sn.size else np.nan
+    out["RemovalFraction"] = (sn0 - sn) / sn0 if np.isfinite(sn0) and sn0 > 0 else np.nan
+
+    rate = compute_dissolution_rate_time_lr(
+        out,
+        time_col="Time_min",
+        sn_col="Sn_rate_input",
+        window_min=rate_window_min,
+        min_points=rate_min_points,
+    )
+    rate = rate.clip(lower=0.0)
+    out["DissolutionRate_Sn_per_min"] = rate.to_numpy()
+    out["DissolutionRate_Sn_time_lr"] = rate.to_numpy()
+    out["NormalizedDissolutionRate_Sn_per_min"] = compute_normalized_rate(rate, out).to_numpy()
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Optional physical rates
 # --------------------------------------------------------------------------- #

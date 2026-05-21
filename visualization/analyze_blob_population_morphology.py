@@ -316,6 +316,47 @@ def compute_size_distribution_slopes(blob_detail, q_low=0.10, q_high=0.90, min_s
     return pd.DataFrame(rows).sort_values("FrameIndex").reset_index(drop=True)
 
 
+def _assert_grouped_by_frame_index(blobs):
+    frames = pd.to_numeric(blobs["FrameIndex"], errors="coerce")
+    sentinel = object()
+    previous = sentinel
+    seen_closed = set()
+    for frame in frames:
+        if pd.isna(frame):
+            continue
+        frame = int(frame)
+        if frame != previous:
+            if frame in seen_closed:
+                raise ValueError("blob_detail_all_frames.csv is not grouped by FrameIndex")
+            if previous is not sentinel:
+                seen_closed.add(previous)
+            previous = frame
+
+
+def analyze_blob_population(blob_csv, chunksize=200000, min_slope_points=20, pixel_size_um=None):
+    """Compatibility wrapper for legacy Level A postprocess tests.
+
+    The production driver uses the lower-level compute_* functions directly.
+    This wrapper preserves the older API while keeping the streaming safety
+    check that frames must appear in contiguous FrameIndex blocks.
+    """
+    blobs = load_blob_detail(blob_csv)
+    _assert_grouped_by_frame_index(blobs)
+    frame_summary = compute_frame_morphology(blobs, pixel_size_um=pixel_size_um)
+    frame_summary = frame_summary.rename(
+        columns={column: column.replace("Circularity_", "Circularity2D_") for column in frame_summary.columns}
+    )
+    topology = compute_topology_population(blobs)
+    slopes = compute_size_distribution_slopes(
+        blobs,
+        q_low=0.0,
+        q_high=1.0,
+        min_slope_points=min_slope_points,
+    )
+    slopes["FractalProxyOnly"] = True
+    return frame_summary, topology, slopes
+
+
 def align_timeseries(frame_df, timeseries):
     aligned = frame_df.copy()
     if timeseries is None:
