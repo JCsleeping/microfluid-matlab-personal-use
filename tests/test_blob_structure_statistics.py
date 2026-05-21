@@ -230,6 +230,47 @@ class BlobStructureStatisticsTests(unittest.TestCase):
             saved_manifest = json.loads((out / "blob_structure_statistics_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_manifest["shape_class"]["source_file"], str(v1 / "blob_shape_class_v1_by_blob.csv"))
 
+    def test_build_statistics_rejects_blocked_shape_class_v1_formal_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            morph = root / "morph"
+            level_a = root / "level_a"
+            v1 = root / "v1_formal"
+            out = root / "stats_v1"
+            morph.mkdir()
+            level_a.mkdir()
+            v1.mkdir()
+
+            pd.DataFrame(
+                {
+                    "FrameIndex": [1],
+                    "BlobID": [1],
+                    "ShapeClassV1": ["compact_regular"],
+                    "ShapeClassV1Reason": ["renamed_v0_compact_round"],
+                    "ShapeClassVersion": ["v1"],
+                    "ShapeV1InterpretationTier": ["geometry_interpretable"],
+                    "Area_px": [500],
+                }
+            ).to_csv(v1 / "blob_shape_class_v1_by_blob.csv", index=False)
+            (v1 / "shape_class_v1_formal_manifest.json").write_text(
+                json.dumps({"decision_label": "BLOCKED_SHAPE_CLASS_V1_FORMAL", "row_counts": {"rows": 1}}),
+                encoding="utf-8",
+            )
+            pd.DataFrame({"FrameIndex": [1], "SnMonotone": [0.25], "DissolutionRate_Sn_per_min": [0.1]}).to_csv(
+                level_a / "dissolution_rates.csv", index=False
+            )
+
+            with self.assertRaisesRegex(ValueError, "blocked"):
+                build_blob_structure_statistics(
+                    Inputs(
+                        morphology_dir=morph,
+                        level_a_dir=level_a,
+                        output_dir=out,
+                        shape_class_version="v1",
+                        shape_class_v1_dir=v1,
+                    )
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

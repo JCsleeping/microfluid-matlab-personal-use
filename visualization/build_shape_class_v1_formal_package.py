@@ -21,8 +21,13 @@ OUTPUTS = [
     "shape_class_v0_to_v1_transition_by_sn_stage_count.csv",
     "shape_class_v0_to_v1_transition_by_sn_stage_area.csv",
     "shape_class_v1_gate_audit.csv",
+    "shape_class_v1_acceptance_gate_audit.csv",
     "shape_class_v1_schema.md",
     "g21_shape_class_v1_acceptance_review.md",
+    "g21_shape_class_v1_data_product_acceptance_review.md",
+    "g21_blob_shape_parameter_formula_notes_v1.md",
+    "g21_shape_class_v1_decision_rules.md",
+    "g21_shape_class_v1_field_dictionary.md",
     "shape_class_v1_formal_manifest.json",
 ]
 
@@ -191,12 +196,39 @@ def _stage_transitions(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 def _audit_gates(df: pd.DataFrame, transition_count_sum: int, transition_area_sum: float) -> pd.DataFrame:
     area = _numeric(df, "Area_px")
     classes = df["ShapeClassV1"].astype(str)
+    shape_version = df["ShapeClassVersion"].astype(str) if "ShapeClassVersion" in df.columns else pd.Series("", index=df.index)
     rows = []
 
     def add(gate: str, status: str, value: object, expected: str) -> None:
         rows.append({"Gate": gate, "Status": status, "Value": value, "Expected": expected})
 
     add("all_rows_have_shape_class_v1", "PASS" if classes.ne("").all() and classes.notna().all() else "FAIL", int(classes.ne("").sum()), "all rows")
+    add(
+        "all_rows_shape_class_version_v1",
+        "PASS" if shape_version.eq("v1").all() else "FAIL",
+        int(shape_version.eq("v1").sum()),
+        "all rows have ShapeClassVersion == v1",
+    )
+    for column, expected in [
+        ("MetricSource", "full_duration_sidecar"),
+        ("BoundaryMetricSource", "corrected_sidecar_boundary"),
+        ("DatasetSubset", "full_duration_sidecar"),
+    ]:
+        if column in df.columns:
+            values = df[column].astype(str)
+            passed = values.eq(expected).all()
+            value = int(values.eq(expected).sum())
+        else:
+            passed = False
+            value = "missing"
+        add(f"{column}_matches_expected", "PASS" if passed else "FAIL", value, f"all rows are {expected}")
+    full_sidecar = _bool_series(df, "FullSidecarDerived", default=False)
+    add(
+        "FullSidecarDerived_true",
+        "PASS" if full_sidecar.all() else "FAIL",
+        int(full_sidecar.sum()),
+        "all rows true",
+    )
     add(
         "area_lt100_count_only",
         "PASS" if classes[area < 100].eq("count_only_lt100").all() else "FAIL",
@@ -212,6 +244,23 @@ def _audit_gates(df: pd.DataFrame, transition_count_sum: int, transition_area_su
     )
     promoted = int(((area < 250) & classes.isin(BOUNDARY_CLASS_V1)).sum())
     add("area_lt250_not_boundary_class", "PASS" if promoted == 0 else "FAIL", promoted, "0")
+    roughness_invalid = _bool_series(df, "RoughnessInvalidFlag", default=False)
+    roughness_boundary_violations = int((roughness_invalid & classes.isin(BOUNDARY_CLASS_V1)).sum())
+    add(
+        "roughness_invalid_not_boundary_interpretable",
+        "PASS" if roughness_boundary_violations == 0 else "FAIL",
+        roughness_boundary_violations,
+        "0 RoughnessInvalidFlag rows in boundary morphology classes",
+    )
+    circularity_artifact = _bool_series(df, "CircularityArtifactFlag", default=False)
+    compact_regular = classes.isin(["compact_regular", "near_compact_regular"])
+    circ_compact_high_conf = int((circularity_artifact & compact_regular & area.ge(500)).sum())
+    add(
+        "circularity_artifact_not_compact_regular_high_confidence",
+        "PASS" if circ_compact_high_conf == 0 else "FAIL",
+        circ_compact_high_conf,
+        "0 CircularityArtifactFlag rows in compact/regular high-confidence classes",
+    )
     add(
         "transition_count_conserved",
         "PASS" if transition_count_sum == len(df) else "FAIL",
@@ -273,6 +322,150 @@ def _write_schema(path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_formula_notes_v1(path: Path) -> None:
+    lines = [
+        "# G21 Blob Shape Parameter Formula Notes V1",
+        "",
+        "All terms below are projected 2D image-derived quantities. They do not represent 3D roughness, true Wadell roundness, true 3D sphericity, tracking, split/merge lineage, or full fluid-fluid interfacial area.",
+        "",
+        "## CR / Circularity Ratio",
+        "",
+        "`Circularity2D_boundary = 4 * pi * Area_px / P_outer_boundary^2`.",
+        "",
+        "This is a 2D circularity diagnostic based on exterior projected perimeter. It is not Wadell roundness. Rows with `CircularityArtifactFlag=True` are not valid support for compact/regular high-confidence interpretation.",
+        "",
+        "## AR / Axis Ratio",
+        "",
+        "`AxisAspectRatio = MajorAxisLength_px / MinorAxisLength_px` and `AspectRatio01 = MinorAxisLength_px / MajorAxisLength_px`.",
+        "",
+        "`AxisAspectRatio` is the primary elongation classifier. `AspectRatio01` is its reciprocal compact-axis form and should not be treated as an independent evidence dimension.",
+        "",
+        "## S / Projected Sphericity Proxy",
+        "",
+        "`ProjectedSphericity2D = 2 * sqrt(pi * Area_px) / P_outer_boundary`.",
+        "",
+        "This is a projected 2D compactness proxy. It is mathematically related to `Circularity2D_boundary` and is not 3D particle sphericity.",
+        "",
+        "## P / Projected Regularity Proxy",
+        "",
+        "`ProjectedRegularity2D = mean(ProjectedSphericity2D, AspectRatio01, Solidity2D)`.",
+        "",
+        "This is an internal ranking proxy for representative blob selection and summary sorting. It is not original Krumbein regularity and is not used as a primary mechanism metric.",
+        "",
+        "## R / Projected Roughness Proxy",
+        "",
+        "`ProjectedRoughness_boundary = P_outer_boundary / Pc_outer_boundary`.",
+        "",
+        "`P_outer_boundary` is the exterior projected boundary and `Pc_outer_boundary` is the projected convex-hull perimeter. The ratio is a 2D exterior-boundary complexity proxy only. `P_outer_boundary` is not full NAPL-water interfacial area, and this ratio is not 3D roughness.",
+        "",
+        "## Additional Geometry Fields",
+        "",
+        "- `Solidity2D = Area_px / ConvexArea_px`: projected convexity / low-solidity proxy.",
+        "- `PtotalOverPouter = P_total_boundary / P_outer_boundary`: projected internal-boundary signal; mostly a diagnostic flag, not a mechanism class.",
+        "- `MajorAxisLength_px` and `MinorAxisLength_px`: second-moment ellipse axes. The ellipse summarizes moment geometry and is not a fitted physical boundary.",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_decision_rules(path: Path) -> None:
+    lines = [
+        "# G21 Shape-Class V1 Decision Rules",
+        "",
+        "Shape-class v1 is a deterministic projected 2D morphology labeling layer. Reliability gates are applied before morphology classes.",
+        "",
+        "## Reliability Gates",
+        "",
+        "```text",
+        "Area_px < 100 -> count_only_lt100",
+        "Area_px < 100",
+        "  -> ShapeClassV1 = count_only_lt100",
+        "  -> ShapeV1InterpretationTier = count_only",
+        "",
+        "100 <= Area_px < 250",
+        "  -> low_area_compact_candidate_100_249",
+        "  -> low_area_elongated_candidate_100_249",
+        "  -> low_area_projected_shape_caution_100_249",
+        "  -> ShapeV1InterpretationTier = low_area_shape_caution",
+        "",
+        "Area_px >= 250 and BoundaryMetricValid = false",
+        "  -> ShapeClassV1 = boundary_invalid",
+        "  -> ShapeV1InterpretationTier = no_boundary_interpretation",
+        "",
+        "Area_px >= 250 and BoundaryMetricValid = true",
+        "  -> eligible for projected 2D morphology classes",
+        "",
+        "Area_px >= 500 and BoundaryMetricValid = true",
+        "  -> high-confidence geometry tier for conservative summaries",
+        "```",
+        "",
+        "## Morphology Class Priority",
+        "",
+        "The first matching rule wins after the reliability gates:",
+        "",
+        "```text",
+        "1. preserved v0 branched_complex -> branched_complex",
+        "2. renamed v0 compact_round -> compact_regular",
+        "3. AxisAspectRatio >= q90 -> elongated",
+        "4. preserved v0 concave_lobed -> concave_lobed",
+        "5. preserved v0 compact_irregular -> compact_irregular",
+        "6. high ProjectedSphericity2D + compact axis ratio + high Solidity2D -> near_compact_regular",
+        "7. q75 <= AxisAspectRatio < q90 -> moderately_elongated",
+        "8. q25 <= Solidity2D < q50 -> moderately_concave",
+        "9. otherwise -> ambiguous_valid",
+        "```",
+        "",
+        "## Diagnostic Flags",
+        "",
+        "The AF-AL columns are non-exclusive diagnostic flags, not mutually exclusive shape classes:",
+        "",
+        "- `LowAreaProjectedShapeCaution`: 100-249 px low-area caution row.",
+        "- `ModerateBoundaryComplexityFlag`: projected roughness between q75 and q90.",
+        "- `HighBoundaryComplexityFlag`: projected roughness at or above q90.",
+        "- `InternalBoundarySignalFlag`: `PtotalOverPouter > 1`.",
+        "- `TouchesImageBorderFlag`: blob touches the image border.",
+        "- `CircularityArtifactFlag`: `Circularity2D_boundary > 1.05`.",
+        "- `RoughnessInvalidFlag`: `ProjectedRoughness_boundary < 1`.",
+        "",
+        "These flags can annotate a class but do not replace `ShapeClassV1`.",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_field_dictionary(path: Path) -> None:
+    rows = [
+        ("ShapeClassV0", "string", "Previous v0 label retained for transition auditing.", "Do not mix with v1 summaries without version field."),
+        ("ShapeClassV1", "string", "Formal v1 projected 2D shape class.", "Primary class label for v1 summaries."),
+        ("ShapeClassV1Reason", "string", "Deterministic assignment rule that produced ShapeClassV1.", "Use for audit and debugging."),
+        ("ShapeClassVersion", "string", "Fixed value `v1`.", "Prevents mixing v0 and v1 outputs."),
+        ("ShapeV1InterpretationTier", "string", "count_only, low_area_shape_caution, geometry_interpretable, or no_boundary_interpretation.", "Use before any morphology interpretation."),
+        ("MetricSource", "string", "Metric source for row-level geometry fields.", "Expected `full_duration_sidecar` in this G21 formal package."),
+        ("BoundaryMetricSource", "string", "Source for boundary/perimeter metrics.", "Expected `corrected_sidecar_boundary`."),
+        ("DatasetSubset", "string", "Dataset subset represented by the row.", "Expected `full_duration_sidecar`."),
+        ("FullSidecarDerived", "boolean", "Whether row came from full sidecar-derived geometry product.", "Must be true for full-duration v1 geometry statistics."),
+        ("AreaThresholdVersion", "string", "Identifier for 100/250/500 px gate convention.", "Current value: `area_gate_v1_lt100_100_249_ge250_ge500`."),
+        ("LowAreaProjectedShapeCaution", "boolean", "Area between 100 and 249 px.", "Caution only; not reliable boundary morphology."),
+        ("ModerateBoundaryComplexityFlag", "boolean", "Projected roughness between q75 and q90.", "Diagnostic flag only."),
+        ("HighBoundaryComplexityFlag", "boolean", "Projected roughness at or above q90.", "Diagnostic flag only."),
+        ("InternalBoundarySignalFlag", "boolean", "`PtotalOverPouter > 1`.", "Projected internal-boundary diagnostic only."),
+        ("TouchesImageBorderFlag", "boolean", "Blob touches the image border.", "Potential crop/border caution."),
+        ("CircularityArtifactFlag", "boolean", "`Circularity2D_boundary > 1.05`.", "Exclude from compact/regular high-confidence interpretation."),
+        ("RoughnessInvalidFlag", "boolean", "`ProjectedRoughness_boundary < 1`.", "Invalid roughness condition; exclude if present."),
+        ("Projected2DOnly", "boolean", "Scope flag.", "No 3D roughness or true interfacial area implied."),
+    ]
+    lines = [
+        "# G21 Shape-Class V1 Field Dictionary",
+        "",
+        "| Field | Type | Meaning | Interpretation Rule |",
+        "|---|---|---|---|",
+    ]
+    for field, kind, meaning, rule in rows:
+        lines.append(f"| `{field}` | {kind} | {meaning} | {rule} |")
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _write_review(path: Path, decision_label: str, audit: pd.DataFrame, manifest: dict) -> None:
     lines = [
         "# G21 Shape-Class V1 Acceptance Review",
@@ -296,6 +489,51 @@ def _write_review(path: Path, decision_label: str, audit: pd.DataFrame, manifest
         "",
         f"- Transition count sum: {manifest['conservation']['transition_count_sum']}",
         f"- Transition area sum: {manifest['conservation']['transition_area_sum_px']:.12g}",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_data_product_review(path: Path, decision_label: str, audit: pd.DataFrame, manifest: dict) -> None:
+    warn_rows = audit.loc[audit["Status"].astype(str).eq("WARN")]
+    fail_rows = audit.loc[audit["Status"].astype(str).eq("FAIL")]
+    if decision_label.startswith("BLOCKED"):
+        product_decision = "BLOCKED_NEEDS_FIX"
+    elif fail_rows.empty:
+        product_decision = "ACCEPT_WITH_SCOPE_LIMITS_NEAR_THRESHOLD_NOTE" if not warn_rows.empty else "ACCEPT_WITH_SCOPE_LIMITS"
+    else:
+        product_decision = "BLOCKED_NEEDS_FIX"
+    lines = [
+        "# G21 Shape-Class V1 Data Product Acceptance Review",
+        "",
+        f"Decision: `{product_decision}`",
+        f"Formal package decision: `{decision_label}`",
+        "",
+        "This review freezes the shape-class v1 data product for downstream projected 2D statistics. It ties together the morphology product, formal v1 by-blob table, transition conservation, area gates, provenance fields, and scope exclusions.",
+        "",
+        "## Accepted Scope",
+        "",
+        "- Full-duration projected 2D blob morphology statistics.",
+        "- Shape-class v1 summaries using `ShapeClassV1` and `ShapeClassVersion = v1`.",
+        "- Area-gated interpretation: `<100 px` count-only, `100-249 px` low-area caution, `>=250 px` projected morphology, `>=500 px` high-confidence tier.",
+        "- Diagnostic flags AF-AL may annotate rows but are not mutually exclusive shape classes.",
+        "",
+        "## Excluded Scope",
+        "",
+        "- Tracking, split/merge lineage, per-blob lifetime, boundary fractal dimension, 3D roughness, true Wadell roundness, and true fluid-fluid interfacial area.",
+        "",
+        "## Gate Audit",
+        "",
+        audit.to_markdown(index=False),
+        "",
+        "## Provenance",
+        "",
+        f"- Morphology product: `{manifest['morphology_dir']}`",
+        f"- Source v1 refinement: `{manifest['shape_class_v1_dir']}`",
+        f"- Formal output: `{manifest['output_dir']}`",
+        f"- Git commit: `{manifest['git_commit']}`",
+        f"- Rows: `{manifest['row_counts']['rows']}`",
+        f"- Frames: `{manifest['row_counts']['frames']}`",
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -344,7 +582,11 @@ def build_shape_class_v1_formal_package(
     stage_transition_count.to_csv(out_dir / "shape_class_v0_to_v1_transition_by_sn_stage_count.csv", index=False)
     stage_transition_area.to_csv(out_dir / "shape_class_v0_to_v1_transition_by_sn_stage_area.csv", index=False)
     audit.to_csv(out_dir / "shape_class_v1_gate_audit.csv", index=False)
+    audit.to_csv(out_dir / "shape_class_v1_acceptance_gate_audit.csv", index=False)
     _write_schema(out_dir / "shape_class_v1_schema.md")
+    _write_formula_notes_v1(out_dir / "g21_blob_shape_parameter_formula_notes_v1.md")
+    _write_decision_rules(out_dir / "g21_shape_class_v1_decision_rules.md")
+    _write_field_dictionary(out_dir / "g21_shape_class_v1_field_dictionary.md")
 
     manifest = {
         "schema_version": "1.0",
@@ -381,6 +623,7 @@ def build_shape_class_v1_formal_package(
         },
     }
     _write_review(out_dir / "g21_shape_class_v1_acceptance_review.md", decision_label, audit, manifest)
+    _write_data_product_review(out_dir / "g21_shape_class_v1_data_product_acceptance_review.md", decision_label, audit, manifest)
     (out_dir / "shape_class_v1_formal_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 

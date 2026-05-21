@@ -49,6 +49,12 @@ REQUIRED_OUTPUTS = [
     "blob_shape_parameter_statistics_manifest.json",
 ]
 
+V1_EXTRA_OUTPUTS = [
+    "g21_blob_shape_parameter_formula_notes_v1.md",
+    "g21_shape_class_v1_decision_rules.md",
+    "g21_shape_class_v1_field_dictionary.md",
+]
+
 
 def _numeric(df: pd.DataFrame, column: str) -> pd.Series:
     if column not in df.columns:
@@ -132,24 +138,37 @@ def assign_sn_stage(level_a: pd.DataFrame) -> pd.DataFrame:
     return out[["FrameIndex", "SnMonotone", "SnStage", "StageOrder"]]
 
 
-def read_shape_inputs(morphology_dir: Path, level_a_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    by_blob_path = morphology_dir / "blob_morphology_by_blob.csv"
-    level_a_path = level_a_dir / "dissolution_rates.csv"
-    thresholds_path = morphology_dir / "blob_morphology_thresholds.json"
-    if not by_blob_path.exists():
-        raise FileNotFoundError(f"Missing blob morphology table: {by_blob_path}")
-    if not level_a_path.exists():
-        raise FileNotFoundError(f"Missing Level A dissolution table: {level_a_path}")
+def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
+
+def _read_v1_shape_inputs(shape_class_v1_dir: Path) -> tuple[pd.DataFrame, dict]:
+    manifest_path = shape_class_v1_dir / "shape_class_v1_formal_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing v1 formal manifest: {manifest_path}")
+    manifest = _read_json(manifest_path)
+    decision_label = str(manifest.get("decision_label", ""))
+    if decision_label.startswith("BLOCKED"):
+        raise ValueError(f"v1 formal package is blocked: {decision_label}")
+    by_blob_path = shape_class_v1_dir / "blob_shape_class_v1_by_blob.csv"
+    if not by_blob_path.exists():
+        raise FileNotFoundError(f"Missing v1 formal shape table: {by_blob_path}")
     wanted = {
         "FrameIndex",
         "RealTime_s",
         "BlobID",
-        "BlobID_sidecar",
-        "ShapeClass",
-        "ShapeValid",
-        "ShapeInvalidReason",
-        "ReliabilityClass",
+        "ShapeClassV0",
+        "ShapeClassV1",
+        "ShapeClassV1Reason",
+        "ShapeClassVersion",
+        "ShapeV1InterpretationTier",
+        "MetricSource",
+        "BoundaryMetricSource",
+        "DatasetSubset",
+        "FullSidecarDerived",
+        "AreaThresholdVersion",
         "Area_px",
         "AreaTier",
         "MajorAxisLength_px",
@@ -173,18 +192,100 @@ def read_shape_inputs(morphology_dir: Path, level_a_dir: Path) -> tuple[pd.DataF
         "BoundaryMetricValid",
         "RoughnessLessThanOne",
         "CircularityGreaterThan1p05",
+        "LowAreaProjectedShapeCaution",
+        "ModerateBoundaryComplexityFlag",
+        "HighBoundaryComplexityFlag",
+        "InternalBoundarySignalFlag",
+        "TouchesImageBorderFlag",
+        "CircularityArtifactFlag",
+        "RoughnessInvalidFlag",
     }
     shape = pd.read_csv(by_blob_path, usecols=lambda column: column in wanted)
-    if "BlobID" not in shape.columns and "BlobID_sidecar" in shape.columns:
-        shape["BlobID"] = shape["BlobID_sidecar"]
-    if "Solidity2D" not in shape.columns and "Solidity_geometry" in shape.columns:
-        shape["Solidity2D"] = _numeric(shape, "Solidity_geometry")
+    required = {"ShapeClassV1", "ShapeClassV1Reason", "ShapeClassVersion", "ShapeV1InterpretationTier"}
+    missing = required - set(shape.columns)
+    if missing:
+        raise ValueError(f"v1 formal shape table missing required column(s): {', '.join(sorted(missing))}")
+    expected_rows = manifest.get("row_counts", {}).get("rows") if isinstance(manifest.get("row_counts"), dict) else None
+    if expected_rows is not None and int(expected_rows) != int(len(shape)):
+        raise ValueError(f"v1 formal row-count mismatch: manifest={expected_rows}, table={len(shape)}")
+    shape["ShapeClass"] = shape["ShapeClassV1"].astype(str)
+    shape["ShapeValid"] = shape["ShapeV1InterpretationTier"].astype(str).eq("geometry_interpretable")
+    shape["ShapeInvalidReason"] = np.where(shape["ShapeValid"], "", shape["ShapeV1InterpretationTier"].astype(str))
+    shape["ReliabilityClass"] = shape["ShapeV1InterpretationTier"].astype(str)
+    shape["ShapeClassReason"] = shape["ShapeClassV1Reason"].astype(str)
+    return shape, manifest
+
+
+def read_shape_inputs(
+    morphology_dir: Path,
+    level_a_dir: Path,
+    shape_class_version: str = "v0",
+    shape_class_v1_dir: Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict]:
+    by_blob_path = morphology_dir / "blob_morphology_by_blob.csv"
+    level_a_path = level_a_dir / "dissolution_rates.csv"
+    thresholds_path = morphology_dir / "blob_morphology_thresholds.json"
+    if not level_a_path.exists():
+        raise FileNotFoundError(f"Missing Level A dissolution table: {level_a_path}")
+    shape_meta: dict = {"version": "v0", "source_file": str(by_blob_path), "source_manifest": {}}
+    if shape_class_version == "v1":
+        if shape_class_v1_dir is None:
+            raise ValueError("--shape-class-v1-dir is required when --shape-class-version v1")
+        shape, v1_manifest = _read_v1_shape_inputs(shape_class_v1_dir)
+        shape_meta = {
+            "version": "v1",
+            "source_dir": str(shape_class_v1_dir),
+            "source_file": str(shape_class_v1_dir / "blob_shape_class_v1_by_blob.csv"),
+            "manifest_file": str(shape_class_v1_dir / "shape_class_v1_formal_manifest.json"),
+            "source_manifest": v1_manifest,
+        }
+    else:
+        if not by_blob_path.exists():
+            raise FileNotFoundError(f"Missing blob morphology table: {by_blob_path}")
+        wanted = {
+            "FrameIndex",
+            "RealTime_s",
+            "BlobID",
+            "BlobID_sidecar",
+            "ShapeClass",
+            "ShapeValid",
+            "ShapeInvalidReason",
+            "ReliabilityClass",
+            "Area_px",
+            "AreaTier",
+            "MajorAxisLength_px",
+            "MinorAxisLength_px",
+            "Eccentricity",
+            "Extent",
+            "ConvexArea_px",
+            "Solidity_geometry",
+            "Solidity2D",
+            "P_outer_boundary",
+            "Pc_outer_boundary",
+            "P_total_boundary",
+            "ProjectedSphericity2D",
+            "Circularity2D_boundary",
+            "AspectRatio01",
+            "AxisAspectRatio",
+            "ProjectedConvexityPerimeter",
+            "ProjectedRoughness_boundary",
+            "PtotalOverPouter",
+            "ProjectedRegularity2D",
+            "BoundaryMetricValid",
+            "RoughnessLessThanOne",
+            "CircularityGreaterThan1p05",
+        }
+        shape = pd.read_csv(by_blob_path, usecols=lambda column: column in wanted)
+        if "BlobID" not in shape.columns and "BlobID_sidecar" in shape.columns:
+            shape["BlobID"] = shape["BlobID_sidecar"]
+        if "Solidity2D" not in shape.columns and "Solidity_geometry" in shape.columns:
+            shape["Solidity2D"] = _numeric(shape, "Solidity_geometry")
     shape = add_missing_projected_metrics(shape)
 
     level_a = pd.read_csv(level_a_path, usecols=lambda column: column in {"FrameIndex", "SnMonotone"})
     stages = assign_sn_stage(level_a)
     thresholds = json.loads(thresholds_path.read_text(encoding="utf-8")) if thresholds_path.exists() else {}
-    return shape, stages, thresholds
+    return shape, stages, thresholds, shape_meta
 
 
 def add_stage_columns(shape: pd.DataFrame, stages: pd.DataFrame) -> pd.DataFrame:
@@ -347,12 +448,13 @@ def _fmt(value: object) -> str:
     return f"{float(numeric):.6g}"
 
 
-def write_formula_notes(output_dir: Path, thresholds: dict) -> None:
+def write_formula_notes(output_dir: Path, thresholds: dict, shape_class_version: str = "v0") -> None:
     threshold_data = thresholds.get("thresholds", {}) if isinstance(thresholds, dict) else {}
+    class_label = "v1" if shape_class_version == "v1" else "v0"
     lines = [
         "# G21 Blob Shape Parameter Formula and Classification Notes",
         "",
-        "This document records the projected 2D shape-parameter formulas and v0 class gates used by the G21 morphology data product.",
+        f"This document records the projected 2D shape-parameter formulas and {class_label} class gates used by the G21 morphology data product.",
         "",
         "## Core Formulas",
         "",
@@ -398,14 +500,20 @@ def write_formula_notes(output_dir: Path, thresholds: dict) -> None:
         "## Reliability Gate",
         "",
         "```text",
-        "Area_px < 250 -> small_unclassified / count-only",
-        "Area_px >= 250 and BoundaryMetricValid=false -> boundary_invalid",
-        "250 <= Area_px < 500 -> medium_caution",
-        "Area_px >= 250 and BoundaryMetricValid=true -> geometry_valid",
-        "Area_px >= 500 and BoundaryMetricValid=true -> high_confidence",
+        "v0:",
+        "  Area_px < 250 -> small_unclassified / count-only",
+        "  Area_px >= 250 and BoundaryMetricValid=false -> boundary_invalid",
+        "  250 <= Area_px < 500 -> medium_caution",
+        "",
+        "v1:",
+        "  Area_px < 100 -> count_only_lt100",
+        "  100 <= Area_px < 250 -> low_area_*_100_249 projected-shape caution",
+        "  Area_px >= 250 and BoundaryMetricValid=false -> boundary_invalid",
+        "  Area_px >= 250 and BoundaryMetricValid=true -> geometry_interpretable",
+        "  Area_px >= 500 and BoundaryMetricValid=true -> high-confidence geometry tier",
         "```",
         "",
-        "## V0 Shape-Class Gate",
+        f"## {class_label.upper()} Shape-Class Gate",
         "",
         "The reference population for thresholds is `BoundaryMetricValid=true` and `Area_px>=250`.",
         "The stored threshold quantiles are:",
@@ -429,10 +537,10 @@ def write_formula_notes(output_dir: Path, thresholds: dict) -> None:
     lines.extend(
         [
             "",
-            "V0 classes are assigned after the reliability gate:",
+            f"{class_label.upper()} classes are assigned after the reliability gate:",
             "",
             "```text",
-            "compact_round:",
+            "v0 compact_round / v1 compact_regular:",
             "  high ProjectedSphericity2D, high AspectRatio01, low AxisAspectRatio, high Solidity2D",
             "",
             "elongated:",
@@ -447,8 +555,17 @@ def write_formula_notes(output_dir: Path, thresholds: dict) -> None:
             "compact_irregular:",
             "  high Solidity2D with boundary-QC caution signal",
             "",
+            "v1 near_compact_regular:",
+            "  intermediate compact regular projected shape; avoids the term Wadell roundness",
+            "",
+            "v1 moderately_elongated:",
+            "  q75 <= AxisAspectRatio < q90",
+            "",
+            "v1 moderately_concave:",
+            "  q25 <= Solidity2D < q50; projected low-solidity proxy only",
+            "",
             "ambiguous_valid:",
-            "  passes reliability gate but does not satisfy the v0 extreme gates above",
+            "  passes reliability gate but does not satisfy the class gates above",
             "```",
             "",
             "These labels describe population-level projected 2D structure. They do not imply tracking, split/merge lineage, boundary fractal dimension, 3D roughness, or true fluid-fluid interfacial area.",
@@ -456,25 +573,85 @@ def write_formula_notes(output_dir: Path, thresholds: dict) -> None:
         ]
     )
     (output_dir / "g21_blob_shape_parameter_formula_notes.md").write_text("\n".join(lines), encoding="utf-8")
+    if shape_class_version == "v1":
+        (output_dir / "g21_blob_shape_parameter_formula_notes_v1.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_v1_decision_rules(output_dir: Path) -> None:
+    lines = [
+        "# G21 Shape-Class V1 Decision Rules",
+        "",
+        "Shape-class v1 applies reliability gates before projected 2D morphology labels.",
+        "",
+        "```text",
+        "Area_px < 100 -> count_only_lt100",
+        "100 <= Area_px < 250 -> low_area_*_100_249 caution classes",
+        "Area_px >= 250 and BoundaryMetricValid=false -> boundary_invalid",
+        "Area_px >= 250 and BoundaryMetricValid=true -> projected 2D morphology classes",
+        "Area_px >= 500 and BoundaryMetricValid=true -> high-confidence geometry tier",
+        "```",
+        "",
+        "Morphology rule order: branched_complex, compact_regular, elongated, concave_lobed, compact_irregular, near_compact_regular, moderately_elongated, moderately_concave, then ambiguous_valid.",
+        "",
+        "Diagnostic flags are non-exclusive annotations and do not replace `ShapeClassV1`.",
+        "",
+    ]
+    (output_dir / "g21_shape_class_v1_decision_rules.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_v1_field_dictionary(output_dir: Path) -> None:
+    lines = [
+        "# G21 Shape-Class V1 Field Dictionary",
+        "",
+        "| Field | Meaning |",
+        "|---|---|",
+        "| `ShapeClassV1` | Formal v1 projected 2D shape class. |",
+        "| `ShapeClassV1Reason` | Deterministic assignment reason. |",
+        "| `ShapeV1InterpretationTier` | Count-only, low-area caution, geometry-interpretable, or boundary-invalid tier. |",
+        "| `MetricSource` | Row-level metric source. |",
+        "| `BoundaryMetricSource` | Boundary/perimeter metric source. |",
+        "| `DatasetSubset` | Dataset subset represented by the row. |",
+        "| `FullSidecarDerived` | Whether rows derive from the full sidecar geometry table. |",
+        "| `LowAreaProjectedShapeCaution` | 100-249 px low-area caution. |",
+        "| `ModerateBoundaryComplexityFlag` | Projected roughness q75-q90. |",
+        "| `HighBoundaryComplexityFlag` | Projected roughness >= q90. |",
+        "| `InternalBoundarySignalFlag` | `PtotalOverPouter > 1`. |",
+        "| `TouchesImageBorderFlag` | Blob touches image border. |",
+        "| `CircularityArtifactFlag` | `Circularity2D_boundary > 1.05`; exclude from compact/regular high-confidence interpretation. |",
+        "| `RoughnessInvalidFlag` | `ProjectedRoughness_boundary < 1`; exclude if present. |",
+        "",
+    ]
+    (output_dir / "g21_shape_class_v1_field_dictionary.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def build_shape_parameter_statistics(
     morphology_dir: str | Path,
     level_a_dir: str | Path | None = None,
     output_dir: str | Path | None = None,
+    shape_class_version: str = "v0",
+    shape_class_v1_dir: str | Path | None = None,
 ) -> dict[str, object]:
     morphology_path = Path(morphology_dir)
     level_a_path = Path(level_a_dir) if level_a_dir is not None else morphology_path.parent
+    version = shape_class_version.lower()
+    if version not in {"v0", "v1"}:
+        raise ValueError("shape_class_version must be 'v0' or 'v1'")
     if output_dir is None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = morphology_path / f"g21_blob_shape_parameter_statistics_{stamp}"
+        suffix = "_v1" if version == "v1" else ""
+        out_dir = morphology_path / f"g21_blob_shape_parameter_statistics{suffix}_{stamp}"
     else:
         out_dir = Path(output_dir)
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Output directory is not empty: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    shape, stages, thresholds = read_shape_inputs(morphology_path, level_a_path)
+    shape, stages, thresholds, shape_meta = read_shape_inputs(
+        morphology_path,
+        level_a_path,
+        shape_class_version=version,
+        shape_class_v1_dir=Path(shape_class_v1_dir) if shape_class_v1_dir is not None else None,
+    )
     data = add_stage_columns(shape, stages)
     if "ReliabilityClass" not in data.columns:
         data["ReliabilityClass"] = "unknown"
@@ -490,7 +667,10 @@ def build_shape_parameter_statistics(
     by_stage = summarize_metrics(data, ["SnStage"])
     by_class_stage = summarize_metrics(data, ["SnStage", "ShapeClass"])
 
-    write_formula_notes(out_dir, thresholds)
+    write_formula_notes(out_dir, thresholds, shape_class_version=version)
+    if version == "v1":
+        write_v1_decision_rules(out_dir)
+        write_v1_field_dictionary(out_dir)
     metric_dictionary.to_csv(out_dir / "blob_shape_parameter_metric_dictionary.csv", index=False)
     overall.to_csv(out_dir / "blob_shape_parameter_overall_statistics.csv", index=False)
     shape_valid.to_csv(out_dir / "blob_shape_parameter_shape_valid_statistics.csv", index=False)
@@ -500,20 +680,23 @@ def build_shape_parameter_statistics(
     by_stage.to_csv(out_dir / "blob_shape_parameter_by_sn_stage.csv", index=False)
     by_class_stage.to_csv(out_dir / "blob_shape_parameter_by_class_stage.csv", index=False)
 
+    outputs = REQUIRED_OUTPUTS + (V1_EXTRA_OUTPUTS if version == "v1" else [])
     manifest = {
         "schema_version": "1.0",
         "created_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "morphology_dir": str(morphology_path),
         "level_a_dir": str(level_a_path),
         "output_dir": str(out_dir),
+        "shape_class": shape_meta,
         "row_counts": {
             "blob_rows": int(data.shape[0]),
             "frames": int(data["FrameIndex"].nunique()),
             "shape_valid_rows": int(_bool_series(data, "ShapeValid").sum()),
         },
-        "outputs": REQUIRED_OUTPUTS,
+        "outputs": outputs,
         "scope": {
             "projected_2d_only": True,
+            "shape_class_version": version,
             "tracking": False,
             "split_merge_lineage": False,
             "fractal_dimension": False,
@@ -533,12 +716,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--morphology-dir", required=True, help="Morphology data product directory.")
     parser.add_argument("--level-a-dir", help="Level A postprocess directory. Defaults to morphology-dir parent.")
     parser.add_argument("--output-dir", help="Optional explicit output directory.")
+    parser.add_argument("--shape-class-version", choices=["v0", "v1"], default="v0")
+    parser.add_argument("--shape-class-v1-dir", help="Formal shape-class v1 package directory.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    result = build_shape_parameter_statistics(args.morphology_dir, args.level_a_dir, args.output_dir)
+    result = build_shape_parameter_statistics(
+        args.morphology_dir,
+        args.level_a_dir,
+        args.output_dir,
+        shape_class_version=args.shape_class_version,
+        shape_class_v1_dir=args.shape_class_v1_dir,
+    )
     print(json.dumps({"output_dir": result["output_dir"], "row_counts": result["row_counts"]}, indent=2))
 
 

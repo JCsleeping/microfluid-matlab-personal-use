@@ -170,6 +170,141 @@ class BlobShapeParameterStatisticsTests(unittest.TestCase):
             by_stage = pd.read_csv(output_dir / "blob_shape_parameter_by_sn_stage.csv")
             self.assertEqual(set(by_stage["SnStage"]), {"early_depletion", "endpoint"})
 
+    def test_statistics_package_supports_shape_class_v1_formal_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            morph_dir = root / "morphology"
+            v1_dir = root / "v1_formal"
+            level_a_dir = root / "level_a"
+            output_dir = root / "stats_v1"
+            morph_dir.mkdir()
+            v1_dir.mkdir()
+            level_a_dir.mkdir()
+
+            pd.DataFrame(
+                [
+                    {
+                        "FrameIndex": 1,
+                        "RealTime_s": 0.0,
+                        "BlobID": 1,
+                        "ShapeClassV0": "small_unclassified",
+                        "ShapeClassV1": "count_only_lt100",
+                        "ShapeClassV1Reason": "area_lt_100_count_only",
+                        "ShapeClassVersion": "v1",
+                        "ShapeV1InterpretationTier": "count_only",
+                        "MetricSource": "full_duration_sidecar",
+                        "BoundaryMetricSource": "corrected_sidecar_boundary",
+                        "DatasetSubset": "full_duration_sidecar",
+                        "FullSidecarDerived": True,
+                        "Area_px": 80.0,
+                        "AreaTier": "tiny",
+                        "MajorAxisLength_px": 15.0,
+                        "MinorAxisLength_px": 10.0,
+                        "Solidity2D": 0.9,
+                        "ProjectedSphericity2D": 0.8,
+                        "Circularity2D_boundary": 0.64,
+                        "AspectRatio01": 2.0 / 3.0,
+                        "AxisAspectRatio": 1.5,
+                        "ProjectedRoughness_boundary": 1.05,
+                        "PtotalOverPouter": 1.0,
+                    },
+                    {
+                        "FrameIndex": 2,
+                        "RealTime_s": 1.0,
+                        "BlobID": 2,
+                        "ShapeClassV0": "compact_round",
+                        "ShapeClassV1": "compact_regular",
+                        "ShapeClassV1Reason": "renamed_v0_compact_round",
+                        "ShapeClassVersion": "v1",
+                        "ShapeV1InterpretationTier": "geometry_interpretable",
+                        "MetricSource": "full_duration_sidecar",
+                        "BoundaryMetricSource": "corrected_sidecar_boundary",
+                        "DatasetSubset": "full_duration_sidecar",
+                        "FullSidecarDerived": True,
+                        "Area_px": 500.0,
+                        "AreaTier": "large",
+                        "MajorAxisLength_px": 40.0,
+                        "MinorAxisLength_px": 35.0,
+                        "Solidity2D": 0.95,
+                        "ProjectedSphericity2D": 0.9,
+                        "Circularity2D_boundary": 0.81,
+                        "AspectRatio01": 0.875,
+                        "AxisAspectRatio": 40.0 / 35.0,
+                        "ProjectedRoughness_boundary": 1.04,
+                        "PtotalOverPouter": 1.0,
+                    },
+                    {
+                        "FrameIndex": 2,
+                        "RealTime_s": 1.0,
+                        "BlobID": 3,
+                        "ShapeClassV0": "ambiguous_valid",
+                        "ShapeClassV1": "near_compact_regular",
+                        "ShapeClassV1Reason": "intermediate_compact_regular_v1",
+                        "ShapeClassVersion": "v1",
+                        "ShapeV1InterpretationTier": "geometry_interpretable",
+                        "MetricSource": "full_duration_sidecar",
+                        "BoundaryMetricSource": "corrected_sidecar_boundary",
+                        "DatasetSubset": "full_duration_sidecar",
+                        "FullSidecarDerived": True,
+                        "Area_px": 700.0,
+                        "AreaTier": "large",
+                        "MajorAxisLength_px": 55.0,
+                        "MinorAxisLength_px": 40.0,
+                        "Solidity2D": 0.93,
+                        "ProjectedSphericity2D": 0.86,
+                        "Circularity2D_boundary": 0.74,
+                        "AspectRatio01": 40.0 / 55.0,
+                        "AxisAspectRatio": 55.0 / 40.0,
+                        "ProjectedRoughness_boundary": 1.08,
+                        "PtotalOverPouter": 1.0,
+                    },
+                ]
+            ).to_csv(v1_dir / "blob_shape_class_v1_by_blob.csv", index=False)
+            (v1_dir / "shape_class_v1_formal_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "decision_label": "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS",
+                        "row_counts": {"rows": 3, "frames": 2},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pd.DataFrame({"FrameIndex": [1, 2], "SnMonotone": [0.25, 0.001]}).to_csv(
+                level_a_dir / "dissolution_rates.csv", index=False
+            )
+            (morph_dir / "blob_morphology_thresholds.json").write_text(
+                json.dumps({"thresholds": {"AxisAspectRatio": {"q75": 1.2, "q90": 2.0}}}),
+                encoding="utf-8",
+            )
+
+            manifest = build_shape_parameter_statistics(
+                morph_dir,
+                level_a_dir,
+                output_dir=output_dir,
+                shape_class_version="v1",
+                shape_class_v1_dir=v1_dir,
+            )
+
+            self.assertEqual(manifest["shape_class"]["version"], "v1")
+            self.assertEqual(manifest["row_counts"]["shape_valid_rows"], 2)
+            expected = {
+                "g21_blob_shape_parameter_formula_notes_v1.md",
+                "g21_shape_class_v1_decision_rules.md",
+                "g21_shape_class_v1_field_dictionary.md",
+            }
+            self.assertTrue(expected.issubset({path.name for path in output_dir.iterdir()}))
+
+            by_class = pd.read_csv(output_dir / "blob_shape_parameter_by_class.csv")
+            self.assertIn("compact_regular", set(by_class["ShapeClass"]))
+            self.assertIn("count_only_lt100", set(by_class["ShapeClass"]))
+            self.assertNotIn("compact_round", set(by_class["ShapeClass"]))
+
+            notes = (output_dir / "g21_blob_shape_parameter_formula_notes_v1.md").read_text(encoding="utf-8")
+            self.assertIn("Area_px < 100 -> count_only_lt100", notes)
+            self.assertIn("not 3D roughness", notes)
+            decision_rules = (output_dir / "g21_shape_class_v1_decision_rules.md").read_text(encoding="utf-8")
+            self.assertIn("low_area_*_100_249", decision_rules)
+
 
 if __name__ == "__main__":
     unittest.main()

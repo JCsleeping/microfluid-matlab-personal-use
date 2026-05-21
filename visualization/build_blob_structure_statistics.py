@@ -192,6 +192,13 @@ def _read_v1_shape_table(inputs: Inputs) -> tuple[pd.DataFrame, ShapeClassSource
     if inputs.shape_class_v1_dir is None:
         raise ValueError("--shape-class-v1-dir is required when --shape-class-version v1")
     v1_dir = inputs.shape_class_v1_dir
+    manifest_path = v1_dir / "shape_class_v1_formal_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing v1 formal manifest: {manifest_path}")
+    manifest = _read_json(manifest_path)
+    decision_label = str(manifest.get("decision_label", ""))
+    if decision_label.startswith("BLOCKED"):
+        raise ValueError(f"v1 formal package is blocked: {decision_label}")
     shape_path = v1_dir / "blob_shape_class_v1_by_blob.csv"
     if not shape_path.exists():
         raise FileNotFoundError(f"Missing v1 formal shape table: {shape_path}")
@@ -226,6 +233,9 @@ def _read_v1_shape_table(inputs: Inputs) -> tuple[pd.DataFrame, ShapeClassSource
     missing = required - set(shape.columns)
     if missing:
         raise ValueError(f"v1 formal shape table missing required column(s): {', '.join(sorted(missing))}")
+    expected_rows = manifest.get("row_counts", {}).get("rows") if isinstance(manifest.get("row_counts"), dict) else None
+    if expected_rows is not None and int(expected_rows) != int(len(shape)):
+        raise ValueError(f"v1 formal row-count mismatch: manifest={expected_rows}, table={len(shape)}")
     shape["ShapeClassActive"] = shape["ShapeClassV1"].astype(str)
     shape["ShapeClassReasonActive"] = shape["ShapeClassV1Reason"].astype(str)
     shape["ShapeClassVersion"] = "v1"
@@ -241,7 +251,7 @@ def _read_v1_shape_table(inputs: Inputs) -> tuple[pd.DataFrame, ShapeClassSource
         version="v1",
         source_dir=v1_dir,
         source_file=shape_path,
-        manifest_file=v1_dir / "shape_class_v1_formal_manifest.json",
+        manifest_file=manifest_path,
     )
     return shape, shape_source
 

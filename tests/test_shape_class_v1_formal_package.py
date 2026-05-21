@@ -137,8 +137,13 @@ class ShapeClassV1FormalPackageTests(unittest.TestCase):
                 "shape_class_v0_to_v1_transition_by_sn_stage_count.csv",
                 "shape_class_v0_to_v1_transition_by_sn_stage_area.csv",
                 "shape_class_v1_gate_audit.csv",
+                "shape_class_v1_acceptance_gate_audit.csv",
                 "shape_class_v1_schema.md",
                 "g21_shape_class_v1_acceptance_review.md",
+                "g21_shape_class_v1_data_product_acceptance_review.md",
+                "g21_blob_shape_parameter_formula_notes_v1.md",
+                "g21_shape_class_v1_decision_rules.md",
+                "g21_shape_class_v1_field_dictionary.md",
                 "shape_class_v1_formal_manifest.json",
             }
             self.assertTrue(expected.issubset({path.name for path in out_dir.iterdir()}))
@@ -178,6 +183,18 @@ class ShapeClassV1FormalPackageTests(unittest.TestCase):
             review = (out_dir / "g21_shape_class_v1_acceptance_review.md").read_text(encoding="utf-8")
             self.assertIn("Decision: `ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS`", review)
             self.assertIn("100 <= Area < 250 px remains low-area projected-shape caution", review)
+            product_review = (out_dir / "g21_shape_class_v1_data_product_acceptance_review.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Decision: `ACCEPT_WITH_SCOPE_LIMITS`", product_review)
+            self.assertIn("Diagnostic flags AF-AL", product_review)
+            formula_notes = (out_dir / "g21_blob_shape_parameter_formula_notes_v1.md").read_text(encoding="utf-8")
+            self.assertIn("not Wadell roundness", formula_notes)
+            self.assertIn("not 3D roughness", formula_notes)
+            rules = (out_dir / "g21_shape_class_v1_decision_rules.md").read_text(encoding="utf-8")
+            self.assertIn("Area_px < 100 -> count_only_lt100", rules)
+            dictionary = (out_dir / "g21_shape_class_v1_field_dictionary.md").read_text(encoding="utf-8")
+            self.assertIn("CircularityArtifactFlag", dictionary)
 
             self.assertEqual(manifest["decision_label"], "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS")
             self.assertEqual(manifest["conservation"]["transition_count_sum"], 6)
