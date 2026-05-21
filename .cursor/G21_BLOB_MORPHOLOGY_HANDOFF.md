@@ -49,6 +49,194 @@ Data and figure bundle:
 C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_blob_structure_data_figure_bundle_20260521_192409
 ```
 
+## Current Pipeline Capabilities
+
+The current worktree can reproduce the accepted G21 blob morphology data chain
+from already completed pipeline outputs. It does not need to rerun the raw
+segmentation pipeline for the current G21 products.
+
+### Level A Postprocess And QC
+
+Current code can:
+
+```text
+read completed G21 timeseries and blob-detail CSV outputs
+stream large blob tables by chunk
+compute SnNorm and Removal
+compute SnMonotone
+compute local-regression dissolution rates
+generate 5/10/20 min rate-window sensitivity outputs
+write Level A architecture, topology, blob-population, rate, and association tables
+write Level A figures
+run Level A interpretation-safety QC
+recover experiment metadata into postprocess outputs
+```
+
+Current Level A restrictions:
+
+```text
+rate interpretation uses SnMonotone + local regression, not raw Sn differencing
+Level A metrics are scalar/population projected morphology metrics
+Level A does not provide corrected boundary masks, tracking, fractal dimensions, or 3D roughness
+```
+
+### Segmentation Context And Geometry Validation
+
+Current code can:
+
+```text
+recover or validate frame_timeline mapping from raw TIF inventory
+run segmentation context audit with explicit FrameTimelineCsv
+select G21-specific geometry validation frames from Level A outputs
+run selected-frame geometry sample validation
+run V2 perimeter estimator QC on validation outputs
+```
+
+Current accepted G21 validation status:
+
+```text
+sample validation passed
+V2 perimeter QC passed
+500-frame sidecar smoke passed
+full 12024-frame sidecar is not part of the frozen default product chain
+```
+
+### Geometry Sidecar Smoke
+
+Current code can:
+
+```text
+run sidecar dry-run
+run stratified 40-frame sidecar smoke
+run MaxFrames=100 and MaxFrames=500 sidecar smoke
+write geometry_by_blob, geometry_summary_by_frame, comparison, manifest, QC, masks, and labels for selected smoke runs
+verify blob-count and total-area agreement against Level A for processed frames
+```
+
+Current sidecar scope:
+
+```text
+500-frame sidecar is accepted as backend/subset support
+full sidecar is not required for the current blob morphology data/figure bundle
+do not claim full-duration boundary trends from 500-frame smoke
+```
+
+### Blob Morphology Data Product
+
+Current code can:
+
+```text
+assemble a morphology-ready by-blob table
+standardize projected shape fields across source tables
+compute AreaTier and interpretation tiers
+compute ProjectedSphericity2D, Circularity2D_boundary, AxisAspectRatio, AspectRatio01, Solidity2D, ProjectedRegularity2D, ProjectedRoughness_boundary, and PtotalOverPouter where source columns allow
+assign ShapeClassV0 and ShapeClassV1 labels
+write ShapeClassV1 formal package tables, transition matrices, gate audits, schema, field dictionary, formula notes, and acceptance review
+select representative blob candidates
+render representative blob atlas panels from accepted mask/label sources
+```
+
+ShapeClassV1 can currently distinguish:
+
+```text
+compact_regular
+near_compact_regular
+moderately_elongated
+elongated
+moderately_concave
+branched_complex
+ambiguous_valid
+low_area_compact_candidate_100_249
+low_area_elongated_candidate_100_249
+low_area_projected_shape_caution_100_249
+count_only_lt100
+boundary_invalid
+```
+
+### Blob Structure Statistics
+
+Current code can:
+
+```text
+summarize ShapeClassV1 count fractions and projected-area fractions
+summarize ShapeClassV1 by SnStage
+summarize projected shape metrics by class and stage
+summarize stage-wise transitions in count and projected area
+write metric dictionary and representative atlas review files
+write structure statistics manifest
+```
+
+These outputs are data summaries for user-side analysis. They are not final
+scientific interpretation.
+
+### Pipeline Acceptance And Release QC
+
+Current code can:
+
+```text
+check expected frame coverage
+check row-count reconciliation between morphology, ShapeClassV1, and structure statistics products
+check metric range invariants
+write frame-level computation QC
+write warning inventory
+write acceptance matrix
+write run-status markdown
+write release manifest with git commit and scope flags
+```
+
+Current accepted G21 decision:
+
+```text
+ACCEPT_BLOB_PIPELINE_WITH_DOCUMENTED_WARNINGS
+```
+
+The warnings are documented limitations, not blocking failures.
+
+### Data And Figure Bundle
+
+Current code can:
+
+```text
+package accepted G21 blob morphology tables into a user-facing data bundle
+write data_inventory.csv and figure_inventory.csv
+write field_dictionary.csv
+write formula_notes.md
+write qc_and_scope_notes.md
+write bundle_manifest.json
+render neutral figures as PNG and SVG
+copy or summarize representative atlas metadata
+```
+
+Current bundle figures:
+
+```text
+Fig_ShapeClassV1_CountAreaFractions
+Fig_ShapeClassV1_ByStage
+Fig_AreaTier_Distribution
+Fig_GeometryInterpretable_Fraction
+Fig_ShapeParameter_Distributions
+Fig_Sphericity_Roundness_Proxy_Map
+Fig_RepresentativeBlobAtlas
+```
+
+### Not Currently Implemented As Accepted Outputs
+
+Do not assume the current pipeline can produce accepted results for:
+
+```text
+full-duration Level B geometry interpretation
+full-duration corrected boundary trend
+tracking trajectories
+split/merge lineage
+single-blob lifetime
+boundary fractal dimension
+3D roughness
+true fluid-fluid interfacial area
+true Wadell roundness
+transport dimensionless-number interpretation
+mechanism or causal claims
+```
+
 ## Current Accepted Status
 
 ```text
