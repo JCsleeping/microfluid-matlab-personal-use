@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,59 @@ from visualization.build_shape_class_v1_formal_package import build_shape_class_
 
 
 class ShapeClassV1FormalPackageTests(unittest.TestCase):
+    def _write_minimal_fixture(self, root: Path, *, manifest_rows: int = 2, manifest_frames: int = 2):
+        morphology_dir = root / "morphology"
+        refinement_dir = root / "v1_refinement"
+        level_a_dir = root / "level_a"
+        morphology_dir.mkdir()
+        refinement_dir.mkdir()
+        level_a_dir.mkdir()
+        rows = pd.DataFrame(
+            [
+                {
+                    "FrameIndex": 1,
+                    "BlobID": 1,
+                    "ShapeClassV0": "small_unclassified",
+                    "ShapeClassV1": "count_only_lt100",
+                    "ShapeClassV1Reason": "area_lt_100_count_only",
+                    "ShapeClassVersion": "v1",
+                    "ShapeV1InterpretationTier": "count_only",
+                    "MetricSource": "full_duration_sidecar",
+                    "BoundaryMetricSource": "corrected_sidecar_boundary",
+                    "DatasetSubset": "full_duration_sidecar",
+                    "FullSidecarDerived": True,
+                    "Area_px": 80.0,
+                },
+                {
+                    "FrameIndex": 2,
+                    "BlobID": 2,
+                    "ShapeClassV0": "compact_round",
+                    "ShapeClassV1": "compact_regular",
+                    "ShapeClassV1Reason": "renamed_v0_compact_round",
+                    "ShapeClassVersion": "v1",
+                    "ShapeV1InterpretationTier": "geometry_interpretable",
+                    "MetricSource": "full_duration_sidecar",
+                    "BoundaryMetricSource": "corrected_sidecar_boundary",
+                    "DatasetSubset": "full_duration_sidecar",
+                    "FullSidecarDerived": True,
+                    "Area_px": 500.0,
+                },
+            ]
+        )
+        rows.to_csv(refinement_dir / "blob_shape_class_v1_by_blob.csv", index=False)
+        (refinement_dir / "shape_class_v1_manifest.json").write_text(
+            json.dumps({"qc": {"decision_label": "PASS"}, "row_counts": {"rows": manifest_rows, "frames": manifest_frames}}),
+            encoding="utf-8",
+        )
+        pd.DataFrame({"FrameIndex": [1, 2], "SnMonotone": [0.25, 0.001]}).to_csv(
+            level_a_dir / "dissolution_rates.csv", index=False
+        )
+        (morphology_dir / "blob_morphology_manifest.json").write_text(
+            json.dumps({"git_commit": "abc123", "row_counts": {"blob_rows": len(rows)}}),
+            encoding="utf-8",
+        )
+        return morphology_dir, refinement_dir, level_a_dir
+
     def test_formal_package_writes_acceptance_artifacts_and_conserves_transition_totals(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -198,6 +253,86 @@ class ShapeClassV1FormalPackageTests(unittest.TestCase):
 
             self.assertEqual(manifest["decision_label"], "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS")
             self.assertEqual(manifest["conservation"]["transition_count_sum"], 6)
+
+    def test_refinement_manifest_row_count_mismatch_blocks_formalization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            morphology_dir, refinement_dir, level_a_dir = self._write_minimal_fixture(Path(tmp), manifest_rows=3)
+
+            with self.assertRaisesRegex(ValueError, "row-count mismatch"):
+                build_shape_class_v1_formal_package(
+                    morphology_dir=morphology_dir,
+                    shape_class_v1_dir=refinement_dir,
+                    level_a_dir=level_a_dir,
+                    output_dir=Path(tmp) / "formal",
+                )
+
+    def test_missing_or_unaccepted_refinement_manifest_blocks_formalization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            morphology_dir, refinement_dir, level_a_dir = self._write_minimal_fixture(Path(tmp))
+            (refinement_dir / "shape_class_v1_manifest.json").unlink()
+
+            with self.assertRaisesRegex(ValueError, "Missing required ShapeClassV1 refinement manifest"):
+                build_shape_class_v1_formal_package(
+                    morphology_dir=morphology_dir,
+                    shape_class_v1_dir=refinement_dir,
+                    level_a_dir=level_a_dir,
+                    output_dir=Path(tmp) / "formal",
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            morphology_dir, refinement_dir, level_a_dir = self._write_minimal_fixture(Path(tmp))
+            (refinement_dir / "shape_class_v1_manifest.json").write_text(
+                json.dumps({"qc": {"decision_label": "REVIEW_GATE_VIOLATION"}, "row_counts": {"rows": 2, "frames": 2}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "accepted refinement decision"):
+                build_shape_class_v1_formal_package(
+                    morphology_dir=morphology_dir,
+                    shape_class_v1_dir=refinement_dir,
+                    level_a_dir=level_a_dir,
+                    output_dir=Path(tmp) / "formal",
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            morphology_dir, refinement_dir, level_a_dir = self._write_minimal_fixture(Path(tmp))
+            (refinement_dir / "shape_class_v1_manifest.json").write_text(
+                json.dumps({"qc": {"decision_label": "PASS"}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "missing row_counts.rows"):
+                build_shape_class_v1_formal_package(
+                    morphology_dir=morphology_dir,
+                    shape_class_v1_dir=refinement_dir,
+                    level_a_dir=level_a_dir,
+                    output_dir=Path(tmp) / "formal",
+                )
+
+    def test_git_provenance_is_repo_root_based_not_caller_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            morphology_dir, refinement_dir, level_a_dir = self._write_minimal_fixture(root)
+            out_dir = root / "formal"
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                manifest = build_shape_class_v1_formal_package(
+                    morphology_dir=morphology_dir,
+                    shape_class_v1_dir=refinement_dir,
+                    level_a_dir=level_a_dir,
+                    output_dir=out_dir,
+                )
+            finally:
+                os.chdir(original_cwd)
+            expected_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=Path(__file__).resolve().parents[1],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(manifest["git_commit"], expected_commit)
 
 
 if __name__ == "__main__":

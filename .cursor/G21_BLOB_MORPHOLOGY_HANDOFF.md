@@ -13,6 +13,7 @@ repo: D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\residual-structu
 branch: feat/residual-structure-metrics-20260424
 latest pipeline commit before this handoff: 526db3a Add blob structure data figure bundle builder
 tracked worktree state at handoff creation: clean before adding this handoff
+latest regenerated data/figure bundle after validation hardening: g21_blob_structure_data_figure_bundle_20260521_203432
 ```
 
 Known local scratch file moved out of the repo:
@@ -46,7 +47,7 @@ Pipeline acceptance:
 C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_blob_pipeline_acceptance_20260521_144653
 
 Data and figure bundle:
-C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_blob_structure_data_figure_bundle_20260521_192409
+C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_blob_structure_data_figure_bundle_20260521_203432
 ```
 
 ## Current Pipeline Capabilities
@@ -144,7 +145,9 @@ near_compact_regular
 moderately_elongated
 elongated
 moderately_concave
+concave_lobed
 branched_complex
+compact_irregular
 ambiguous_valid
 low_area_compact_candidate_100_249
 low_area_elongated_candidate_100_249
@@ -349,11 +352,12 @@ Verification already run for latest builder:
 ```text
 python -m unittest tests.test_blob_structure_data_figure_bundle -v
 python -m unittest tests.test_blob_structure_data_figure_bundle tests.test_blob_structure_statistics tests.test_blob_structure_figure_package -v
+python -m unittest tests.test_blob_pipeline_acceptance_review tests.test_blob_structure_data_figure_bundle tests.test_blob_structure_statistics tests.test_blob_structure_figure_package tests.test_shape_class_v1_formal_package -v
 python -m py_compile visualization\build_blob_structure_data_figure_bundle.py
 python visualization\build_blob_structure_data_figure_bundle.py --help
 ```
 
-## Regenerate The Current Data/Figure Bundle
+## Regenerate Or Refresh The Current Data/Figure Bundle
 
 From the repo root:
 
@@ -367,6 +371,17 @@ python visualization\build_blob_structure_data_figure_bundle.py `
   --repo-root "D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\residual-structure-metrics-20260424"
 ```
 
+This command creates a new timestamped bundle directory by default. To refresh
+the exact frozen bundle path, add:
+
+```powershell
+  --output-dir "C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_blob_structure_data_figure_bundle_20260521_203432" `
+  --overwrite
+```
+
+For cross-agent reproducibility, prefer creating a new timestamped bundle and
+then updating this handoff if it becomes the official frozen version.
+
 ## Next Short-Term Work
 
 The next recommended work is figure and table polish only.
@@ -374,7 +389,7 @@ The next recommended work is figure and table polish only.
 Possible tasks:
 
 ```text
-1. Review figures in g21_blob_structure_data_figure_bundle_20260521_192409.
+1. Review figures in g21_blob_structure_data_figure_bundle_20260521_203432.
 2. Improve layout, class order, colors, labels, and legend placement.
 3. Add Chinese/English label variants if needed.
 4. Keep all captions neutral and non-interpretive.
@@ -402,6 +417,16 @@ Make the current workflow experiment-agnostic:
 2. Apply the same package chain to G18/G20/G21.
 3. Emit identical data/figure bundle schemas for each experiment.
 4. Maintain one release registry per experiment.
+```
+
+Engineering cleanup to keep on the medium-term list:
+
+```text
+build_blob_morphology_data_product.py reads large CSVs in chunks, but some
+quantile and frame-summary steps still accumulate arrays before writing final
+tables. This is acceptable for the current G21 product, but future G18/G20/G21
+batch runs should move those summaries to bounded-memory or two-pass streaming
+aggregation before scaling to larger experiments.
 ```
 
 Target release registry fields:

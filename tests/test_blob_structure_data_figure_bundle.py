@@ -35,7 +35,7 @@ class BlobStructureDataFigureBundleTests(unittest.TestCase):
             {
                 "FrameIndex": [1, 1, 2, 2, 3],
                 "RealTime_s": [0, 0, 1, 1, 2],
-                "BlobID": [1, 2, 1, 2, 1],
+                "BlobID": [1, np.nan, 1, 2, 1],
                 "ShapeClassV1": [
                     "compact_regular",
                     "count_only_lt100",
@@ -232,11 +232,39 @@ class BlobStructureDataFigureBundleTests(unittest.TestCase):
                 self.assertTrue((inputs.output_dir / "tables" / name).exists(), name)
 
             data_inventory = pd.read_csv(inputs.output_dir / "data_inventory.csv")
+            expected_inventory_names = {
+                "shape_class_v1_count_area_summary.csv",
+                "shape_class_v1_by_stage_summary.csv",
+                "area_tier_summary.csv",
+                "geometry_interpretable_fraction_by_stage.csv",
+                "frame_level_blob_structure_summary.csv",
+                "representative_blob_table.csv",
+                "README_data_figure_bundle.md",
+                "data_inventory.csv",
+                "figure_inventory.csv",
+                "field_dictionary.csv",
+                "formula_notes.md",
+                "qc_and_scope_notes.md",
+                "bundle_manifest.json",
+            }
+            self.assertEqual(set(data_inventory["Name"]), expected_inventory_names)
             for path in data_inventory["Path"]:
                 self.assertTrue(Path(path).exists(), path)
 
             figure_inventory = pd.read_csv(inputs.output_dir / "figure_inventory.csv")
-            self.assertGreaterEqual(len(figure_inventory), 12)
+            expected_figure_stems = {
+                "Fig_ShapeClassV1_CountAreaFractions",
+                "Fig_ShapeClassV1_ByStage",
+                "Fig_AreaTier_Distribution",
+                "Fig_GeometryInterpretable_Fraction",
+                "Fig_ShapeParameter_Distributions",
+                "Fig_Sphericity_Roundness_Proxy_Map",
+                "Fig_RepresentativeBlobAtlas",
+            }
+            self.assertEqual(len(figure_inventory), 14)
+            self.assertEqual(set(figure_inventory["Figure"]), expected_figure_stems)
+            for stem, group in figure_inventory.groupby("Figure"):
+                self.assertEqual(set(group["Format"]), {"png", "svg"}, stem)
             for path in figure_inventory["Path"]:
                 self.assertTrue(Path(path).exists(), path)
 
@@ -268,7 +296,7 @@ class BlobStructureDataFigureBundleTests(unittest.TestCase):
             self.assertIn("No tracking", notes)
             self.assertIn("No 3D roughness", notes)
 
-            forbidden = ["proves", "suggests a mechanism", "caused by", "drives the"]
+            forbidden = ["proves", "suggests a mechanism", "caused", "drives", "indicates"]
             text = "\n".join(
                 [
                     (inputs.output_dir / "README_data_figure_bundle.md").read_text(encoding="utf-8"),
@@ -283,11 +311,120 @@ class BlobStructureDataFigureBundleTests(unittest.TestCase):
             self.assertEqual(int(class_summary["N"].sum()), 5)
             self.assertAlmostEqual(float(class_summary["CountFraction"].sum()), 1.0)
             self.assertAlmostEqual(float(class_summary["AreaFraction"].sum()), 1.0)
+            area_tier = pd.read_csv(inputs.output_dir / "tables" / "area_tier_summary.csv")
+            self.assertEqual(int(area_tier["N"].sum()), 5)
+            self.assertAlmostEqual(float(area_tier["CountFraction"].sum()), 1.0)
+            self.assertAlmostEqual(float(area_tier["AreaFraction"].sum()), 1.0)
+            stage_summary = pd.read_csv(inputs.output_dir / "tables" / "shape_class_v1_by_stage_summary.csv")
+            self.assertEqual(int(stage_summary["N"].sum()), 5)
+            for stage, stage_rows in stage_summary.groupby("SnStage"):
+                self.assertAlmostEqual(float(stage_rows["CountFractionWithinStage"].sum()), 1.0, msg=stage)
+                self.assertAlmostEqual(float(stage_rows["AreaFractionWithinStage"].sum()), 1.0, msg=stage)
+            frame_summary = pd.read_csv(inputs.output_dir / "tables" / "frame_level_blob_structure_summary.csv")
+            self.assertEqual(int(frame_summary["NRows"].sum()), 5)
+            self.assertEqual(len(frame_summary), 3)
 
             saved_manifest = json.loads((inputs.output_dir / "bundle_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_manifest["row_counts"]["shape_class_v1_rows"], 5)
             self.assertFalse(saved_manifest["scope"]["writes_scientific_interpretation"])
             self.assertEqual(manifest["output_dir"], str(inputs.output_dir))
+
+    def test_bundle_rejects_blocked_shape_or_acceptance_manifests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._make_fixture(Path(tmp))
+            (inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json").write_text(
+                json.dumps({"decision_label": "BLOCKED_SHAPE_CLASS_V1_FORMAL"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "accepted decision_label"):
+                build_data_figure_bundle(inputs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._make_fixture(Path(tmp))
+            (inputs.acceptance_dir / "g21_blob_pipeline_release_manifest.json").write_text(
+                json.dumps({"decision_label": "BLOCKED_BLOB_PIPELINE"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "accepted decision_label"):
+                build_data_figure_bundle(inputs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._make_fixture(Path(tmp))
+            (inputs.acceptance_dir / "g21_blob_pipeline_release_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "decision_label": "REVIEW_PENDING",
+                        "row_counts": {"morphology_rows": 5, "shape_class_v1_rows": 5, "frames": 3},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "accepted decision_label"):
+                build_data_figure_bundle(inputs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._make_fixture(Path(tmp))
+            (inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json").unlink()
+
+            with self.assertRaisesRegex(ValueError, "Missing required ShapeClassV1 formal manifest"):
+                build_data_figure_bundle(inputs)
+
+    def test_bundle_rejects_stale_manifest_row_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._make_fixture(Path(tmp))
+            (inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "decision_label": "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS",
+                        "row_counts": {"rows": 4, "frames": 3},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "row-count mismatch"):
+                build_data_figure_bundle(inputs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._make_fixture(Path(tmp))
+            (inputs.acceptance_dir / "g21_blob_pipeline_release_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "decision_label": "ACCEPT_BLOB_PIPELINE_WITH_DOCUMENTED_WARNINGS",
+                        "git_commit": "abc123",
+                        "row_counts": {"morphology_rows": 5, "shape_class_v1_rows": 5, "frames": 2},
+                        "warning_issues": [],
+                        "blocking_issues": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "row-count mismatch"):
+                build_data_figure_bundle(inputs)
+
+    def test_bundle_handles_candidate_table_without_rendered_atlas_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._make_fixture(Path(tmp))
+            atlas_manifest = inputs.shape_class_v1_dir / "representative_blob_atlas" / "representative_blob_atlas_manifest.csv"
+            atlas_manifest.unlink()
+            pd.DataFrame(
+                {
+                    "FrameIndex": [1],
+                    "BlobID": [1],
+                    "ShapeClass": ["compact_regular"],
+                    "ExemplarType": ["class_medoid"],
+                    "Area_px": [500],
+                }
+            ).to_csv(inputs.shape_class_v1_dir / "representative_blob_candidates.csv", index=False)
+
+            manifest = build_data_figure_bundle(inputs)
+
+            self.assertEqual(manifest["row_counts"]["shape_class_v1_rows"], 5)
+            self.assertTrue((inputs.output_dir / "figures" / "Fig_RepresentativeBlobAtlas.png").exists())
 
 
 if __name__ == "__main__":

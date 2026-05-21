@@ -43,6 +43,11 @@ BOUNDARY_CLASS_V1 = {
     "ambiguous_valid",
 }
 
+ACCEPTED_REFINEMENT_DECISIONS = {
+    "PASS",
+    "PASS_WITH_NEAR_THRESHOLD_NOTE",
+}
+
 REQUIRED_V1_COLUMNS = {
     "FrameIndex",
     "ShapeClassV0",
@@ -84,9 +89,25 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _git_commit() -> str:
+def _read_required_json(path: Path, label: str) -> dict:
+    if not path.exists():
+        raise ValueError(f"Missing required {label}: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _default_repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _git_commit(repo_root: Path | None = None) -> str:
     try:
-        result = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root or _default_repo_root()),
+        )
         return result.stdout.strip()
     except Exception:
         return "unknown"
@@ -101,6 +122,33 @@ def _load_v1_table(v1_dir: Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"v1 by-blob table is missing required column(s): {', '.join(missing)}")
     return df
+
+
+def _validate_refinement_manifest(refinement_manifest: dict, df: pd.DataFrame) -> None:
+    decision = str(refinement_manifest.get("qc", {}).get("decision_label", ""))
+    if decision not in ACCEPTED_REFINEMENT_DECISIONS:
+        raise ValueError(
+            "shape_class_v1_manifest does not have an accepted refinement decision: "
+            f"{decision if decision else 'missing'}"
+        )
+    row_counts = refinement_manifest.get("row_counts", {}) if isinstance(refinement_manifest, dict) else {}
+    expected_rows = row_counts.get("rows")
+    if expected_rows is None:
+        raise ValueError("shape_class_v1_manifest is missing row_counts.rows")
+    if int(expected_rows) != int(len(df)):
+        raise ValueError(
+            "shape_class_v1_manifest row-count mismatch: "
+            f"manifest rows={expected_rows}; table rows={len(df)}"
+        )
+    expected_frames = row_counts.get("frames")
+    if expected_frames is None:
+        raise ValueError("shape_class_v1_manifest is missing row_counts.frames")
+    observed_frames = int(pd.to_numeric(df["FrameIndex"], errors="coerce").dropna().nunique())
+    if int(expected_frames) != observed_frames:
+        raise ValueError(
+            "shape_class_v1_manifest frame-count mismatch: "
+            f"manifest frames={expected_frames}; table frames={observed_frames}"
+        )
 
 
 def _stage_table(level_a_dir: Path | None, frame_index: pd.Series) -> pd.DataFrame:
@@ -556,10 +604,11 @@ def build_shape_class_v1_formal_package(
         raise FileExistsError(f"Output directory is not empty: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    git_commit = _git_commit()
+    git_commit = _git_commit(_default_repo_root())
     source_manifest = _read_json(morphology_path / "blob_morphology_manifest.json")
-    refinement_manifest = _read_json(v1_path / "shape_class_v1_manifest.json")
+    refinement_manifest = _read_required_json(v1_path / "shape_class_v1_manifest.json", "ShapeClassV1 refinement manifest")
     df = _load_v1_table(v1_path)
+    _validate_refinement_manifest(refinement_manifest, df)
     stages = _stage_table(Path(level_a_dir) if level_a_dir else morphology_path.parent, df["FrameIndex"])
     df["FrameIndex"] = _numeric(df, "FrameIndex").astype("Int64")
     df = df.merge(stages, on="FrameIndex", how="left", validate="many_to_one")

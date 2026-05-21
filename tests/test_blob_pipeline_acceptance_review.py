@@ -108,7 +108,12 @@ class BlobPipelineAcceptanceReviewTests(unittest.TestCase):
         )
         v1_rows.to_csv(v1 / "blob_shape_class_v1_by_blob.csv", index=False)
         (v1 / "shape_class_v1_formal_manifest.json").write_text(
-            json.dumps({"decision_label": "ACCEPT", "row_counts": {"rows": len(v1_rows), "frames": 2}}),
+            json.dumps(
+                {
+                    "decision_label": "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS",
+                    "row_counts": {"rows": len(v1_rows), "frames": 2},
+                }
+            ),
             encoding="utf-8",
         )
         (stats / "blob_structure_statistics_manifest.json").write_text(
@@ -227,6 +232,49 @@ class BlobPipelineAcceptanceReviewTests(unittest.TestCase):
             self.assertEqual(manifest["decision_label"], "BLOCKED_BLOB_PIPELINE_QC")
             metric_qc = pd.read_csv(inputs.output_dir / "g21_blob_metric_range_audit.csv")
             row = metric_qc[metric_qc["Metric"].eq("P_outer_boundary_non_missing_numeric")].iloc[0]
+            self.assertEqual(row["Status"], "FAIL")
+
+    def test_blocked_shape_class_v1_formal_manifest_blocks_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._write_fixture(Path(tmp), level_a_extra_rows=0)
+            (inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "decision_label": "BLOCKED_SHAPE_CLASS_V1_FORMAL",
+                        "row_counts": {"rows": 4, "frames": 2},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manifest = build_pipeline_acceptance_review(inputs)
+
+            self.assertEqual(manifest["decision_label"], "BLOCKED_BLOB_PIPELINE_QC")
+            self.assertEqual(manifest["shape_class_v1_formal_decision_label"], "BLOCKED_SHAPE_CLASS_V1_FORMAL")
+            self.assertIn("shape_class_v1_formal_decision_accepted", manifest["blocking_issues"])
+            qc = pd.read_csv(inputs.output_dir / "g21_blob_computation_qc_summary.csv")
+            gate = qc[qc["Gate"].eq("shape_class_v1_formal_decision_accepted")].iloc[0]
+            self.assertEqual(gate["Status"], "FAIL")
+
+    def test_stale_shape_class_v1_formal_manifest_counts_block_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = self._write_fixture(Path(tmp), level_a_extra_rows=0)
+            (inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "decision_label": "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS",
+                        "row_counts": {"rows": 3, "frames": 2},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manifest = build_pipeline_acceptance_review(inputs)
+
+            self.assertEqual(manifest["decision_label"], "BLOCKED_BLOB_PIPELINE_QC")
+            self.assertIn("v1_vs_formal_manifest_rows", manifest["blocking_issues"])
+            recon = pd.read_csv(inputs.output_dir / "g21_blob_row_reconciliation.csv")
+            row = recon[recon["Check"].eq("v1_vs_formal_manifest_rows")].iloc[0]
             self.assertEqual(row["Status"], "FAIL")
 
 

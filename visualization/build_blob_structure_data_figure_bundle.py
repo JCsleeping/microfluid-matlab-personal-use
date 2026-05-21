@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -82,6 +81,16 @@ CLASS_COLORS = {
     "boundary_invalid": "#999999",
 }
 
+ACCEPTED_PIPELINE_DECISIONS = {
+    "ACCEPT_BLOB_PIPELINE",
+    "ACCEPT_BLOB_PIPELINE_WITH_DOCUMENTED_WARNINGS",
+}
+
+ACCEPTED_SHAPE_CLASS_DECISIONS = {
+    "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS",
+    "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_NEAR_THRESHOLD_NOTE",
+}
+
 
 @dataclass(frozen=True)
 class Inputs:
@@ -107,6 +116,37 @@ def _read_json(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_required_json(path: Path, label: str) -> dict[str, object]:
+    if not path.exists():
+        raise ValueError(f"Missing required {label}: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _require_decision(decision: str, accepted: set[str], label: str) -> None:
+    if decision not in accepted:
+        raise ValueError(
+            f"{label} does not have an accepted decision_label: "
+            f"{decision if decision else 'missing'}"
+        )
+
+
+def _require_manifest_count(
+    manifest: dict[str, object],
+    manifest_label: str,
+    key: str,
+    expected: int,
+) -> None:
+    row_counts = manifest.get("row_counts", {})
+    if not isinstance(row_counts, dict) or key not in row_counts:
+        raise ValueError(f"{manifest_label} is missing row_counts.{key}")
+    observed = int(row_counts[key])
+    if observed != int(expected):
+        raise ValueError(
+            f"{manifest_label} row-count mismatch for {key}: "
+            f"manifest={observed}; table={int(expected)}"
+        )
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -234,7 +274,7 @@ def _class_summary(shape: pd.DataFrame) -> pd.DataFrame:
     grouped = (
         shape.groupby("ShapeClassV1", dropna=False)
         .agg(
-            N=("BlobID", "count"),
+            N=("Area_px", "size"),
             AreaSum_px=("Area_px", "sum"),
             MedianArea_px=("Area_px", "median"),
             GeometryInterpretableRows=("ShapeV1InterpretationTier", lambda s: int((s.astype(str) == "geometry_interpretable").sum())),
@@ -256,7 +296,7 @@ def _class_summary(shape: pd.DataFrame) -> pd.DataFrame:
 def _stage_summary(shape: pd.DataFrame) -> pd.DataFrame:
     grouped = (
         shape.groupby(["SnStage", "ShapeClassV1"], dropna=False)
-        .agg(N=("BlobID", "count"), AreaSum_px=("Area_px", "sum"))
+        .agg(N=("Area_px", "size"), AreaSum_px=("Area_px", "sum"))
         .reset_index()
     )
     grouped["CountFractionWithinStage"] = grouped["N"] / grouped.groupby("SnStage")["N"].transform("sum").replace(0, np.nan)
@@ -272,7 +312,7 @@ def _area_tier_summary(shape: pd.DataFrame) -> pd.DataFrame:
     grouped = (
         shape.groupby("AreaTier", dropna=False)
         .agg(
-            N=("BlobID", "count"),
+            N=("Area_px", "size"),
             AreaSum_px=("Area_px", "sum"),
             BoundaryMetricValidRows=("BoundaryMetricValid", "sum"),
         )
@@ -536,8 +576,13 @@ def _plot_representative_atlas(rep: pd.DataFrame, figures_dir: Path, written: li
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    panels = rep[rep.get("Status", "").astype(str).eq("RENDERED")].copy() if "Status" in rep else rep.copy()
-    panels = panels[panels.get("PanelPath", pd.Series("", index=panels.index)).astype(str).map(lambda p: Path(p).exists())]
+    panels = rep.copy()
+    if "Status" in panels.columns:
+        panels = panels[panels["Status"].astype(str).eq("RENDERED")]
+    if "PanelPath" in panels.columns:
+        panels = panels[panels["PanelPath"].astype(str).map(lambda p: Path(p).exists())]
+    else:
+        panels = panels.iloc[0:0].copy()
     if panels.empty:
         fig, ax = plt.subplots(figsize=(6, 2))
         ax.text(0.5, 0.5, "No representative panels available", ha="center", va="center")
@@ -699,7 +744,15 @@ def _write_data_inventory(output_dir: Path, table_paths: dict[str, Path]) -> pd.
     for name, path in table_paths.items():
         df = pd.read_csv(path)
         rows.append({"Name": name, "Type": "table", "Path": str(path), "Rows": int(len(df)), "Description": name.replace("_", " ").replace(".csv", "")})
-    for name in ["README_data_figure_bundle.md", "field_dictionary.csv", "formula_notes.md", "qc_and_scope_notes.md", "bundle_manifest.json"]:
+    for name in [
+        "README_data_figure_bundle.md",
+        "data_inventory.csv",
+        "figure_inventory.csv",
+        "field_dictionary.csv",
+        "formula_notes.md",
+        "qc_and_scope_notes.md",
+        "bundle_manifest.json",
+    ]:
         path = output_dir / name
         rows.append({"Name": name, "Type": "metadata", "Path": str(path), "Rows": "", "Description": name})
     inventory = pd.DataFrame(rows)
@@ -723,14 +776,35 @@ def build_data_figure_bundle(inputs: Inputs) -> dict[str, object]:
     _safe_output_dir(output_dir, inputs.overwrite)
 
     shape = _load_shape_table(inputs.shape_class_v1_dir)
-    acceptance_manifest = _read_json(inputs.acceptance_dir / "g21_blob_pipeline_release_manifest.json")
-    formal_manifest = _read_json(inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json")
-    stats_manifest = _read_json(inputs.structure_statistics_dir / "blob_structure_statistics_manifest.json")
+    acceptance_manifest = _read_required_json(
+        inputs.acceptance_dir / "g21_blob_pipeline_release_manifest.json",
+        "pipeline acceptance manifest",
+    )
+    formal_manifest = _read_required_json(
+        inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json",
+        "ShapeClassV1 formal manifest",
+    )
+    stats_manifest = _read_required_json(
+        inputs.structure_statistics_dir / "blob_structure_statistics_manifest.json",
+        "structure statistics manifest",
+    )
+    acceptance_decision = str(acceptance_manifest.get("decision_label", ""))
+    formal_decision = str(formal_manifest.get("decision_label", ""))
+    _require_decision(acceptance_decision, ACCEPTED_PIPELINE_DECISIONS, "Pipeline acceptance manifest")
+    _require_decision(formal_decision, ACCEPTED_SHAPE_CLASS_DECISIONS, "ShapeClassV1 formal manifest")
+    n_rows = int(len(shape))
+    n_frames = int(shape["FrameIndex"].nunique()) if "FrameIndex" in shape else 0
+    _require_manifest_count(formal_manifest, "ShapeClassV1 formal manifest", "rows", n_rows)
+    _require_manifest_count(formal_manifest, "ShapeClassV1 formal manifest", "frames", n_frames)
+    _require_manifest_count(acceptance_manifest, "Pipeline acceptance manifest", "shape_class_v1_rows", n_rows)
+    _require_manifest_count(acceptance_manifest, "Pipeline acceptance manifest", "frames", n_frames)
+    _require_manifest_count(stats_manifest, "Structure statistics manifest", "blob_rows", n_rows)
+    _require_manifest_count(stats_manifest, "Structure statistics manifest", "frames", n_frames)
 
     table_paths = _write_tables(inputs, output_dir, shape)
     figure_inventory = _write_figures(output_dir, shape, table_paths)
 
-    decision_label = str(acceptance_manifest.get("decision_label", ""))
+    decision_label = acceptance_decision
     (output_dir / "README_data_figure_bundle.md").write_text(_readme(decision_label), encoding="utf-8")
     _field_dictionary().to_csv(output_dir / "field_dictionary.csv", index=False)
     (output_dir / "formula_notes.md").write_text(_formula_notes(), encoding="utf-8")
@@ -753,8 +827,8 @@ def build_data_figure_bundle(inputs: Inputs) -> dict[str, object]:
         "acceptance_decision_label": decision_label,
         "shape_class_decision_label": formal_manifest.get("decision_label", ""),
         "row_counts": {
-            "shape_class_v1_rows": int(len(shape)),
-            "frames": int(shape["FrameIndex"].nunique()) if "FrameIndex" in shape else 0,
+            "shape_class_v1_rows": n_rows,
+            "frames": n_frames,
             "tables": {name: int(len(pd.read_csv(path))) for name, path in table_paths.items()},
             "figures": int(len(figure_inventory)),
         },

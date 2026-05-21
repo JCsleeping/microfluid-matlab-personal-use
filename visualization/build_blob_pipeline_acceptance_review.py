@@ -46,6 +46,11 @@ BOUNDARY_MORPHOLOGY_CLASSES_V1 = {
     "ambiguous_valid",
 }
 
+ACCEPTED_SHAPE_CLASS_FORMAL_DECISIONS = {
+    "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_SCOPE_LIMITS",
+    "ACCEPT_SHAPE_CLASS_V1_FORMAL_WITH_NEAR_THRESHOLD_NOTE",
+}
+
 MORPHOLOGY_REQUIRED_COLUMNS = {
     "FrameIndex",
     "BlobID",
@@ -358,7 +363,11 @@ def build_row_reconciliation(inputs: Inputs, morphology: pd.DataFrame, v1: pd.Da
     level_a_rows = _csv_row_count(level_a_path)
     morphology_rows = int(len(morphology))
     v1_rows = int(len(v1))
+    v1_frames = int(v1["FrameIndex"].nunique())
+    formal_rows = formal_manifest.get("row_counts", {}).get("rows")
+    formal_frames = formal_manifest.get("row_counts", {}).get("frames")
     stats_rows = stats_manifest.get("row_counts", {}).get("blob_rows")
+    stats_frames = stats_manifest.get("row_counts", {}).get("frames")
     add_pair(
         "level_a_vs_morphology_rows",
         "level_a_blob_detail_all_frames",
@@ -369,7 +378,24 @@ def build_row_reconciliation(inputs: Inputs, morphology: pd.DataFrame, v1: pd.Da
         bounded_warn=True,
     )
     add_pair("morphology_vs_v1_rows", "morphology_by_blob", "shape_class_v1_by_blob", morphology_rows, v1_rows, True)
+    add_pair("v1_vs_formal_manifest_rows", "shape_class_v1_by_blob", "shape_class_v1_formal_manifest", v1_rows, formal_rows, True)
+    add_pair(
+        "v1_vs_formal_manifest_frames",
+        "shape_class_v1_by_blob",
+        "shape_class_v1_formal_manifest",
+        v1_frames,
+        formal_frames,
+        True,
+    )
     add_pair("v1_vs_structure_statistics_rows", "shape_class_v1_by_blob", "structure_statistics_manifest", v1_rows, stats_rows, True)
+    add_pair(
+        "v1_vs_structure_statistics_frames",
+        "shape_class_v1_by_blob",
+        "structure_statistics_manifest",
+        v1_frames,
+        stats_frames,
+        True,
+    )
     return pd.DataFrame(rows)
 
 
@@ -555,6 +581,7 @@ def build_qc_summary(
     v1: pd.DataFrame,
     expected_frames: int | None,
     expected_frame_source: str,
+    shape_class_v1_formal_decision: str = "",
 ) -> pd.DataFrame:
     rows = []
 
@@ -601,6 +628,13 @@ def build_qc_summary(
     metric_warnings = int(metric_audit["Status"].astype(str).eq("WARN").sum())
     add("metric_invariant_failures", "PASS" if metric_failures == 0 else "FAIL", metric_failures, "0 FAIL rows")
     add("metric_invariant_warnings", "WARN" if metric_warnings else "PASS", metric_warnings, "0 or documented WARN rows")
+    formal_decision = str(shape_class_v1_formal_decision or "")
+    add(
+        "shape_class_v1_formal_decision_accepted",
+        "PASS" if formal_decision in ACCEPTED_SHAPE_CLASS_FORMAL_DECISIONS else "FAIL",
+        formal_decision if formal_decision else "missing",
+        "accepted ShapeClassV1 formal decision_label",
+    )
     add("morphology_rows", "PASS", int(len(morphology)), "recorded")
     add("shape_class_v1_rows", "PASS" if len(morphology) == len(v1) else "FAIL", int(len(v1)), str(len(morphology)))
     add(
@@ -868,6 +902,8 @@ def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
     expected_frames, expected_frame_source = _infer_expected_frames(inputs)
     morphology = _load_morphology(inputs)
     v1 = _load_v1(inputs)
+    formal_manifest = _read_json(inputs.shape_class_v1_dir / "shape_class_v1_formal_manifest.json")
+    formal_decision = str(formal_manifest.get("decision_label", ""))
     row_reconciliation = build_row_reconciliation(inputs, morphology, v1)
     frame_qc = build_frame_qc(morphology, v1, expected_frames)
     metric_audit = build_metric_range_audit(morphology, v1)
@@ -879,6 +915,7 @@ def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
         v1,
         expected_frames,
         expected_frame_source,
+        formal_decision,
     )
     decision = _decision(qc_summary, row_reconciliation)
     blocking_issues, warning_issues = _collect_issues(qc_summary, row_reconciliation)
@@ -926,6 +963,7 @@ def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
         "git_commit": _git_commit(inputs.repo_root),
         "repo_root": str(inputs.repo_root or _default_repo_root()),
         "decision_label": decision,
+        "shape_class_v1_formal_decision_label": formal_decision,
         "output_root": str(inputs.output_root),
         "postprocess_dir": str(inputs.postprocess_dir),
         "morphology_dir": str(inputs.morphology_dir),

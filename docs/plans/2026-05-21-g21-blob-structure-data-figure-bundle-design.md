@@ -73,13 +73,13 @@ figures/Fig_RepresentativeBlobAtlas.svg
 ## Data Flow
 
 1. Read ShapeClassV1 by-blob rows from `blob_shape_class_v1_by_blob.csv`.
-2. Read structure statistics summaries from `g21_blob_structure_statistics_v1_*`.
-3. Read acceptance QC tables from `g21_blob_pipeline_acceptance_*`.
+2. Read ShapeClassV1, structure statistics, and pipeline acceptance manifests for provenance and decision labels.
+3. Regenerate bundle-facing summary tables from the ShapeClassV1 rows.
 4. Write normalized summary tables into `tables/`.
 5. Render neutral figures into `figures/`.
 6. Write inventories and manifest describing source paths, output paths, row counts, git commit, and scope limits.
 
-The builder may reuse existing structure statistics outputs rather than recomputing all aggregate tables from raw rows. Tables that are easy to derive directly from ShapeClassV1 rows, such as area-tier summaries and frame-level summaries, should be regenerated to make the bundle self-contained.
+The builder should not duplicate the full structure-statistics package. It should use the accepted ShapeClassV1 rows as the table source of truth, while carrying the upstream structure-statistics and acceptance manifests into the bundle manifest.
 
 ## Scope Rules
 
