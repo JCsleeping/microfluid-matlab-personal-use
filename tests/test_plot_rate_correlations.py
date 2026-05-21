@@ -579,6 +579,37 @@ class PlotDriverTests(unittest.TestCase):
                 self.assertNotIn("ganglia", stem.lower())
                 self.assertNotIn("06_", stem)
 
+    def test_fraction_kind_count_uses_count_fraction_columns(self):
+        df = make_synthetic_df(n=40, with_mass=True)
+        df["areaFracDropletsValid"] = np.linspace(0.1, 0.2, len(df))
+        df["countFracDropletsValid"] = np.linspace(0.7, 0.8, len(df))
+        df["areaFracColumnsValid"] = np.linspace(0.2, 0.3, len(df))
+        df["countFracColumnsValid"] = np.linspace(0.2, 0.1, len(df))
+        df["areaFracClustersValid"] = 1.0 - df["areaFracDropletsValid"] - df["areaFracColumnsValid"]
+        df["countFracClustersValid"] = 1.0 - df["countFracDropletsValid"] - df["countFracColumnsValid"]
+        unit_info = self._attach_pipeline(df, pixel_size_um=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            figures_dir = Path(tmp)
+            plot_rate_correlations.create_all_rate_figures(
+                df,
+                figures_dir=figures_dir,
+                rate_method="time-lr",
+                dpi=80,
+                pixel_size_um=None,
+                log_x_metrics=set(),
+                plot_set=("stage",),
+                fraction_kind="Count",
+                unit_info=unit_info,
+            )
+
+            data = pd.read_excel(
+                figures_dir / "rate_time_lr_vs_frac_droplets_stage_scatter_data.xlsx",
+                sheet_name="data_all",
+            )
+            self.assertIn("countFracDropletsValid_raw", data.columns)
+            self.assertNotIn("fracDroplets_raw", data.columns)
+            self.assertAlmostEqual(data["countFracDropletsValid_raw"].iloc[0], 0.7)
+
     def test_binned_summary_defaults_to_active_removal_only(self):
         """rate_metric_binned_summary.csv should not contain non-active stages by default."""
         df = make_synthetic_df(n=80, with_mass=True)

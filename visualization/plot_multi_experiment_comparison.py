@@ -84,6 +84,9 @@ PRIMARY_Y_BY_STEM = {
     "10_fraction_droplets": ("areaFracDropletsValid", "fracDroplets"),
     "11_fraction_columns": ("areaFracColumnsValid", "fracColumns"),
     "12_fraction_clusters": ("areaFracClustersValid", "fracClusters"),
+    "S10_count_fraction_droplets": ("countFracDropletsValid", "countFracDroplets"),
+    "S11_count_fraction_columns": ("countFracColumnsValid", "countFracColumns"),
+    "S12_count_fraction_clusters": ("countFracClustersValid", "countFracClusters"),
     "13_sn_norm_ai_2D_overlay": ("SnNorm",),
     "14_rate_vs_ai_2D_stage": ("DissolutionRate_per_min",),
     "S01_rate_vs_ai_2D_stage": ("DissolutionRate_per_min",),
@@ -120,6 +123,12 @@ Y_LABELS = {
     "areaFracDropletsValid": "Droplet fraction",
     "areaFracColumnsValid": "Column fraction",
     "areaFracClustersValid": "Cluster fraction",
+    "countFracDroplets": "Droplet count fraction",
+    "countFracColumns": "Column count fraction",
+    "countFracClusters": "Cluster count fraction",
+    "countFracDropletsValid": "Droplet count fraction",
+    "countFracColumnsValid": "Column count fraction",
+    "countFracClustersValid": "Cluster count fraction",
     "fracDroplets": "Droplet fraction",
     "fracColumns": "Column fraction",
     "fracClusters": "Cluster fraction",
@@ -393,6 +402,9 @@ def _metric_from_rate_stem(stem):
         "frac_droplets": ("fracDroplets", "fracDroplets_plot", "areaFracDropletsValid"),
         "frac_columns": ("fracColumns", "fracColumns_plot", "areaFracColumnsValid"),
         "frac_clusters": ("fracClusters", "fracClusters_plot", "areaFracClustersValid"),
+        "count_fraction_droplets": ("countFracDropletsValid", "countFracDroplets"),
+        "count_fraction_columns": ("countFracColumnsValid", "countFracColumns"),
+        "count_fraction_clusters": ("countFracClustersValid", "countFracClusters"),
     }
     return aliases.get(metric)
 

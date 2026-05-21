@@ -154,6 +154,11 @@ class MultiExperimentComparisonTests(unittest.TestCase):
                 pd.DataFrame({"fracDroplets": [0.5], "areaFracDropletsValid": [0.6]}),
                 ["areaFracDropletsValid"],
             ),
+            (
+                "S10_count_fraction_droplets",
+                pd.DataFrame({"countFracDroplets": [0.4], "countFracDropletsValid": [0.7]}),
+                ["countFracDropletsValid"],
+            ),
         ]
         for stem, df, expected in cases:
             with self.subTest(stem=stem):

@@ -81,13 +81,42 @@ OPTIONAL_METRIC_COLUMNS = (
     "fracDroplets",
     "fracColumns",
     "fracClusters",
+    "areaFracDroplets",
+    "areaFracColumns",
+    "areaFracClusters",
+    "areaFracDropletsValid",
+    "areaFracColumnsValid",
+    "areaFracClustersValid",
+    "countFracDroplets",
+    "countFracColumns",
+    "countFracClusters",
+    "countFracDropletsValid",
+    "countFracColumnsValid",
+    "countFracClustersValid",
     "MassDissolvedKg",
     "FrameIndex",
 )
 REQUIRED_COLUMNS = CORE_REQUIRED_COLUMNS
 
 DEFAULT_LOG_X_METRICS = ("a_i_2D", "InterfaceArea", "NumBlobs")
-FORCE_LINEAR_METRICS = {"MaxBlobFrac", "fracDroplets", "fracColumns", "fracClusters"}
+FORCE_LINEAR_METRICS = {
+    "MaxBlobFrac",
+    "fracDroplets",
+    "fracColumns",
+    "fracClusters",
+    "areaFracDroplets",
+    "areaFracColumns",
+    "areaFracClusters",
+    "areaFracDropletsValid",
+    "areaFracColumnsValid",
+    "areaFracClustersValid",
+    "countFracDroplets",
+    "countFracColumns",
+    "countFracClusters",
+    "countFracDropletsValid",
+    "countFracColumnsValid",
+    "countFracClustersValid",
+}
 LOG_X_ALLOWED_METRICS = frozenset(
     {
         "a_i_2D",
@@ -98,6 +127,18 @@ LOG_X_ALLOWED_METRICS = frozenset(
         "fracDroplets",
         "fracColumns",
         "fracClusters",
+        "areaFracDroplets",
+        "areaFracColumns",
+        "areaFracClusters",
+        "areaFracDropletsValid",
+        "areaFracColumnsValid",
+        "areaFracClustersValid",
+        "countFracDroplets",
+        "countFracColumns",
+        "countFracClusters",
+        "countFracDropletsValid",
+        "countFracColumnsValid",
+        "countFracClustersValid",
     }
 )
 
@@ -161,18 +202,47 @@ FRACTION_SPECS = [
         "key": "fracDroplets",
         "stem": "frac_droplets",
         "label_template": "{kind} fraction droplets (-)",
+        "label": "Droplets",
     },
     {
         "key": "fracColumns",
         "stem": "frac_columns",
         "label_template": "{kind} fraction columns (-)",
+        "label": "Columns",
     },
     {
         "key": "fracClusters",
         "stem": "frac_clusters",
         "label_template": "{kind} fraction clusters (-)",
+        "label": "Clusters",
     },
 ]
+
+
+def _first_existing_metric(df, candidates):
+    columns = set(df.columns)
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _resolved_fraction_specs(df, fraction_kind=None):
+    kind = str(fraction_kind or "Area").lower()
+    resolved = []
+    for spec in FRACTION_SPECS:
+        label = spec["label"]
+        if kind == "count":
+            candidates = [f"countFrac{label}Valid", f"countFrac{label}", spec["key"]]
+        else:
+            candidates = [f"areaFrac{label}Valid", f"areaFrac{label}", spec["key"]]
+        selected = _first_existing_metric(df, candidates)
+        if selected is None:
+            selected = spec["key"]
+        item = dict(spec)
+        item["key"] = selected
+        resolved.append(item)
+    return resolved
 
 
 # --------------------------------------------------------------------------- #
@@ -1469,8 +1539,11 @@ def create_all_rate_figures(
     written = []
     binned_rows_all = []
 
-    all_specs = list(X_AXIS_SPECS) + list(FRACTION_SPECS)
+    fraction_kind = fraction_kind or "Area"
+    fraction_specs = _resolved_fraction_specs(df, fraction_kind)
+    all_specs = list(X_AXIS_SPECS) + fraction_specs
     fraction_keys = {s["key"] for s in FRACTION_SPECS}
+    fraction_keys.update(s["key"] for s in fraction_specs)
     method_stem = _rate_method_stem(rate_method)
     valid_for_scale = valid_interpretation_mask(df)
 
@@ -1693,11 +1766,11 @@ def write_rate_outputs(
         unit_info=unit_info,
     )
 
-    all_specs = list(X_AXIS_SPECS) + list(FRACTION_SPECS)
-    all_metric_keys = [s["key"] for s in all_specs]
     rate_method = "time-lr"
     rate_col = RATE_METHOD_TO_COLUMN[rate_method]
     fraction_kind = _resolve_fraction_kind(unit_args, df)
+    all_specs = list(X_AXIS_SPECS) + _resolved_fraction_specs(df, fraction_kind)
+    all_metric_keys = [s["key"] for s in all_specs]
 
     figure_paths = []
     binned_rows = []
@@ -2119,8 +2192,8 @@ def main(argv=None):
     with open(unit_json_path, "w", encoding="utf-8") as fp:
         json.dump(unit_info, fp, indent=2, ensure_ascii=False, default=_json_default)
 
-    all_metric_keys = [s["key"] for s in X_AXIS_SPECS] + [s["key"] for s in FRACTION_SPECS]
-    all_specs = list(X_AXIS_SPECS) + list(FRACTION_SPECS)
+    all_specs = list(X_AXIS_SPECS) + _resolved_fraction_specs(df, fraction_kind)
+    all_metric_keys = [s["key"] for s in all_specs]
     rate_col = RATE_METHOD_TO_COLUMN[args.rate_method]
     availability_path = figures_dir / "rate_plot_metric_availability.csv"
     pd.DataFrame(metric_availability_rows(df, all_specs, rate_col)).to_csv(

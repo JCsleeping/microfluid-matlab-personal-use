@@ -343,6 +343,26 @@ def _plot_line(ax, df, column, label, color, log_scale=False, synthetic_y="earli
     )
 
 
+def _first_existing_column(df, candidates):
+    for column in candidates:
+        if column in df.columns:
+            return column
+    return None
+
+
+def _legend_above(ax, ncol=1):
+    ax.legend(
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.04),
+        ncol=ncol,
+        frameon=False,
+        handlelength=1.6,
+        handletextpad=0.4,
+        columnspacing=1.2,
+        borderaxespad=0.0,
+    )
+
+
 def _plot_invalid_points(ax, df, column, log_scale=False):
     if "ValidStructure" not in df.columns or column not in df.columns:
         return
@@ -471,42 +491,78 @@ def plot_mean_circularity(ax, df, log_scale=False):
 
 
 def plot_frac_droplets(ax, df, log_scale=False):
+    column = _first_existing_column(df, ("areaFracDropletsValid", "areaFracDroplets", "fracDroplets"))
+    if column is None:
+        _finalize_time_axis(ax, "Droplet fraction", log_scale)
+        return
     _plot_line(
         ax,
         df,
-        "fracDroplets",
-        "Droplets",
+        column,
+        "Area fraction",
         WONG_COLORS["blue"],
         log_scale,
     )
-    _plot_invalid_points(ax, df, "fracDroplets", log_scale)
+    _legend_above(ax)
     _finalize_time_axis(ax, "Droplet fraction", log_scale)
 
 
 def plot_frac_columns(ax, df, log_scale=False):
+    column = _first_existing_column(df, ("areaFracColumnsValid", "areaFracColumns", "fracColumns"))
+    if column is None:
+        _finalize_time_axis(ax, "Column fraction", log_scale)
+        return
     _plot_line(
         ax,
         df,
-        "fracColumns",
-        "Columns",
+        column,
+        "Area fraction",
         WONG_COLORS["vermillion"],
         log_scale,
     )
-    _plot_invalid_points(ax, df, "fracColumns", log_scale)
+    _legend_above(ax)
     _finalize_time_axis(ax, "Column fraction", log_scale)
 
 
 def plot_frac_clusters(ax, df, log_scale=False):
+    column = _first_existing_column(df, ("areaFracClustersValid", "areaFracClusters", "fracClusters"))
+    if column is None:
+        _finalize_time_axis(ax, "Cluster fraction", log_scale)
+        return
     _plot_line(
         ax,
         df,
-        "fracClusters",
-        "Clusters",
+        column,
+        "Area fraction",
         WONG_COLORS["bluish_green"],
         log_scale,
     )
-    _plot_invalid_points(ax, df, "fracClusters", log_scale)
+    _legend_above(ax)
     _finalize_time_axis(ax, "Cluster fraction", log_scale)
+
+
+def plot_count_frac_droplets(ax, df, log_scale=False):
+    column = _first_existing_column(df, ("countFracDropletsValid", "countFracDroplets"))
+    if column is not None:
+        _plot_line(ax, df, column, "Count fraction", WONG_COLORS["blue"], log_scale)
+        _legend_above(ax)
+    _finalize_time_axis(ax, "Droplet count fraction", log_scale)
+
+
+def plot_count_frac_columns(ax, df, log_scale=False):
+    column = _first_existing_column(df, ("countFracColumnsValid", "countFracColumns"))
+    if column is not None:
+        _plot_line(ax, df, column, "Count fraction", WONG_COLORS["vermillion"], log_scale)
+        _legend_above(ax)
+    _finalize_time_axis(ax, "Column count fraction", log_scale)
+
+
+def plot_count_frac_clusters(ax, df, log_scale=False):
+    column = _first_existing_column(df, ("countFracClustersValid", "countFracClusters"))
+    if column is not None:
+        _plot_line(ax, df, column, "Count fraction", WONG_COLORS["bluish_green"], log_scale)
+        _legend_above(ax)
+    _finalize_time_axis(ax, "Cluster count fraction", log_scale)
 
 
 def plot_req_stats(ax, df, log_scale=False):
@@ -645,6 +701,12 @@ PLOTTERS = [
     ("14_rate_vs_ai_2D_stage", plot_rate_vs_ai_2d_stage),
 ]
 
+SUPPLEMENTAL_COUNT_PLOTTERS = [
+    ("S10_count_fraction_droplets", plot_count_frac_droplets),
+    ("S11_count_fraction_columns", plot_count_frac_columns),
+    ("S12_count_fraction_clusters", plot_count_frac_clusters),
+]
+
 DATA_EXPORTS = [
     (
         "timeseries_6panel",
@@ -672,6 +734,18 @@ DATA_EXPORTS = [
             "fracDroplets",
             "fracColumns",
             "fracClusters",
+            "areaFracDroplets",
+            "areaFracColumns",
+            "areaFracClusters",
+            "areaFracDropletsValid",
+            "areaFracColumnsValid",
+            "areaFracClustersValid",
+            "countFracDroplets",
+            "countFracColumns",
+            "countFracClusters",
+            "countFracDropletsValid",
+            "countFracColumnsValid",
+            "countFracClustersValid",
             "ValidStructure",
             "DissolutionStage",
         ],
@@ -697,14 +771,53 @@ DATA_EXPORTS = [
         "09_mean_circularity",
         ["RealTime_s", "Time_min", "MeanCircularity", "MeanCircularity_raw", "MeanCircularity_valid"],
     ),
-    ("10_fraction_droplets", ["RealTime_s", "Time_min", "fracDroplets"]),
-    ("11_fraction_columns", ["RealTime_s", "Time_min", "fracColumns"]),
-    ("12_fraction_clusters", ["RealTime_s", "Time_min", "fracClusters"]),
+    (
+        "10_fraction_droplets",
+        [
+            "RealTime_s",
+            "Time_min",
+            "fracDroplets",
+            "areaFracDroplets",
+            "areaFracDropletsValid",
+            "countFracDroplets",
+            "countFracDropletsValid",
+        ],
+    ),
+    (
+        "11_fraction_columns",
+        [
+            "RealTime_s",
+            "Time_min",
+            "fracColumns",
+            "areaFracColumns",
+            "areaFracColumnsValid",
+            "countFracColumns",
+            "countFracColumnsValid",
+        ],
+    ),
+    (
+        "12_fraction_clusters",
+        [
+            "RealTime_s",
+            "Time_min",
+            "fracClusters",
+            "areaFracClusters",
+            "areaFracClustersValid",
+            "countFracClusters",
+            "countFracClustersValid",
+        ],
+    ),
     ("13_sn_norm_ai_2D_overlay", ["RealTime_s", "Time_min", "Sn", "SnNorm", "a_i_2D"]),
     (
         "14_rate_vs_ai_2D_stage",
         ["RealTime_s", "Time_min", "a_i_2D", "DissolutionRate_per_min", "DissolutionStage", "ValidStructure"],
     ),
+]
+
+SUPPLEMENTAL_COUNT_DATA_EXPORTS = [
+    ("S10_count_fraction_droplets", ["RealTime_s", "Time_min", "countFracDroplets", "countFracDropletsValid"]),
+    ("S11_count_fraction_columns", ["RealTime_s", "Time_min", "countFracColumns", "countFracColumnsValid"]),
+    ("S12_count_fraction_clusters", ["RealTime_s", "Time_min", "countFracClusters", "countFracClustersValid"]),
 ]
 
 
@@ -724,14 +837,15 @@ def _write_data_workbook(df, stem, columns, figures_dir):
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     xlsx_path = figures_dir / f"{stem}_data.xlsx"
-    data = df.loc[:, columns].copy()
+    available_columns = [column for column in columns if column in df.columns]
+    data = df.loc[:, available_columns].copy()
     with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
         data.to_excel(writer, sheet_name="data", index=False)
         worksheet = writer.sheets["data"]
         worksheet.freeze_panes(1, 0)
-        if len(columns):
-            worksheet.autofilter(0, 0, len(data), len(columns) - 1)
-        for index, column in enumerate(columns):
+        if len(available_columns):
+            worksheet.autofilter(0, 0, len(data), len(available_columns) - 1)
+        for index, column in enumerate(available_columns):
             width = min(max(len(column) + 2, 12), 28)
             worksheet.set_column(index, index, width)
     return xlsx_path
@@ -898,6 +1012,32 @@ def _classify_existing_topology_fractions(timeseries, topology_by_frame):
     return "ambiguous"
 
 
+def _attach_topology_fraction_columns(timeseries, topology_by_frame):
+    out = timeseries.copy()
+    topology_columns = [
+        "areaFracDroplets",
+        "areaFracColumns",
+        "areaFracClusters",
+        "countFracDroplets",
+        "countFracColumns",
+        "countFracClusters",
+    ]
+    out = out.drop(columns=[column for column in topology_columns if column in out.columns])
+    if "FrameIndex" in topology_by_frame.columns:
+        out = out.merge(topology_by_frame[["FrameIndex", *topology_columns]], on="FrameIndex", how="left")
+    else:
+        for column in topology_columns:
+            out[column] = np.nan
+
+    if "ValidStructure" in out.columns:
+        valid_structure = out["ValidStructure"].fillna(False).astype(bool)
+    else:
+        valid_structure = pd.Series(True, index=out.index)
+    for column in topology_columns:
+        out[f"{column}Valid"] = pd.to_numeric(out[column], errors="coerce").where(valid_structure, np.nan)
+    return out
+
+
 def apply_blob_detail_qc(timeseries, blob_detail, min_blob_area_px=20):
     """Attach valid circularity means and compute circularity/topology audit tables."""
     enriched = timeseries.copy()
@@ -967,6 +1107,7 @@ def apply_blob_detail_qc(timeseries, blob_detail, min_blob_area_px=20):
 
     topology_by_frame = _compute_topology_fractions(blobs, min_blob_area_px=min_blob_area_px)
     classification = _classify_existing_topology_fractions(enriched, topology_by_frame)
+    enriched = _attach_topology_fraction_columns(enriched, topology_by_frame)
     topology_status = pd.DataFrame(
         {
             "Metric": ["Existing fracDroplets/fracColumns/fracClusters classification"],
@@ -1286,6 +1427,10 @@ def create_all_figures(
             },
         }
     written = []
+    has_count_fractions = any(
+        column in plot_df.columns
+        for column in ("countFracDroplets", "countFracColumns", "countFracClusters")
+    )
 
     for log_scale in (False, True):
         suffix = "_log" if log_scale else ""
@@ -1297,6 +1442,12 @@ def create_all_figures(
             fig = _create_individual_figure(plot_df, plotter, log_scale=log_scale)
             written.extend(_save_figure(fig, f"{stem}{suffix}", figures_dir, dpi))
             plt.close(fig)
+
+        if has_count_fractions:
+            for stem, plotter in SUPPLEMENTAL_COUNT_PLOTTERS:
+                fig = _create_individual_figure(plot_df, plotter, log_scale=log_scale)
+                written.extend(_save_figure(fig, f"{stem}{suffix}", figures_dir, dpi))
+                plt.close(fig)
 
     if blob_detail is not None:
         req_data = selected_req_distribution_data(
@@ -1311,6 +1462,11 @@ def create_all_figures(
             plt.close(fig)
 
     written.extend(write_plot_data_workbooks(plot_df, figures_dir))
+    if has_count_fractions:
+        written.extend(
+            _write_data_workbook(plot_df, stem, columns, figures_dir)
+            for stem, columns in SUPPLEMENTAL_COUNT_DATA_EXPORTS
+        )
     written.extend(write_qc_workbooks(plot_df, qc, figures_dir))
     return written
 

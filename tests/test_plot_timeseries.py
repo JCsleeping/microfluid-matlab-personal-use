@@ -377,6 +377,9 @@ class PlotTimeseriesTests(unittest.TestCase):
         self.assertAlmostEqual(row1["countFracDroplets"], 1.0)
         row3 = topology.loc[topology["FrameIndex"] == 3].iloc[0]
         self.assertAlmostEqual(row3["areaFracColumns"], 80.0 / 110.0)
+        self.assertAlmostEqual(row3["areaFracClusters"], 30.0 / 110.0)
+        self.assertAlmostEqual(row3["countFracColumns"], 0.5)
+        self.assertAlmostEqual(row3["countFracClusters"], 0.5)
         self.assertEqual(qc["topology"]["classification"], "ambiguous")
 
     def test_selected_frame_blob_detail_uses_nearest_times(self):
@@ -782,10 +785,38 @@ class PlotTimeseriesTests(unittest.TestCase):
             names = {path.name for path in written}
             self.assertIn("15_req_distribution.png", names)
             self.assertIn("15_req_distribution.svg", names)
+            for stem in (
+                "S10_count_fraction_droplets",
+                "S11_count_fraction_columns",
+                "S12_count_fraction_clusters",
+            ):
+                self.assertIn(f"{stem}.png", names)
+                self.assertIn(f"{stem}.svg", names)
+                self.assertIn(f"{stem}_log.png", names)
+                self.assertIn(f"{stem}_log.svg", names)
+                self.assertIn(f"{stem}_data.xlsx", names)
             circularity = pd.read_excel(figures_dir / "circularity_gt1_audit.xlsx", sheet_name="gt1_blobs")
             self.assertIn("Circularity", circularity.columns)
             topology = pd.read_excel(figures_dir / "topology_fraction_audit.xlsx", sheet_name="by_frame")
             self.assertIn("areaFracDroplets", topology.columns)
+            self.assertIn("countFracDroplets", topology.columns)
+            droplets_data = pd.read_excel(figures_dir / "10_fraction_droplets_data.xlsx")
+            for column in (
+                "fracDroplets",
+                "areaFracDroplets",
+                "areaFracDropletsValid",
+                "countFracDroplets",
+                "countFracDropletsValid",
+            ):
+                self.assertIn(column, droplets_data.columns)
+            invalid_row = droplets_data.loc[droplets_data["Time_min"] == 21.0].iloc[0]
+            self.assertTrue(np.isnan(invalid_row["areaFracDropletsValid"]))
+            self.assertTrue(np.isnan(invalid_row["countFracDropletsValid"]))
+            count_data = pd.read_excel(figures_dir / "S10_count_fraction_droplets_data.xlsx")
+            self.assertEqual(
+                list(count_data.columns),
+                ["RealTime_s", "Time_min", "countFracDroplets", "countFracDropletsValid"],
+            )
             summary = pd.read_excel(figures_dir / "summary_metrics.xlsx")
             self.assertIn("ReliablePeak_a_i_2D", summary["Metric"].tolist())
 
