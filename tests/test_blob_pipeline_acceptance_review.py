@@ -133,6 +133,10 @@ class BlobPipelineAcceptanceReviewTests(unittest.TestCase):
             self.assertEqual(manifest["decision_label"], "ACCEPT_BLOB_PIPELINE_WITH_DOCUMENTED_WARNINGS")
             for name in [
                 "g21_blob_pipeline_acceptance_review.md",
+                "g21_blob_pipeline_run_status.md",
+                "g21_blob_pipeline_acceptance_matrix.csv",
+                "g21_blob_frame_coverage_summary.csv",
+                "g21_blob_computation_warning_inventory.csv",
                 "g21_blob_computation_qc_summary.csv",
                 "g21_blob_computation_by_frame_qc.csv",
                 "g21_blob_metric_range_audit.csv",
@@ -153,6 +157,17 @@ class BlobPipelineAcceptanceReviewTests(unittest.TestCase):
             self.assertEqual(manifest["thresholds"]["row_diff_warn_max_rows"], 20)
             self.assertEqual(manifest["coverage"]["expected_frames"], 2)
             self.assertEqual(manifest["blocking_issues"], [])
+            run_status = (inputs.output_dir / "g21_blob_pipeline_run_status.md").read_text(encoding="utf-8")
+            self.assertIn("Blob Pipeline Run Status", run_status)
+            self.assertIn("Expected frames", run_status)
+            self.assertIn("`2`", run_status)
+            self.assertIn("tracking", run_status)
+            matrix = pd.read_csv(inputs.output_dir / "g21_blob_pipeline_acceptance_matrix.csv")
+            self.assertTrue({"Category", "Check", "Status", "Value", "Expected", "Notes"}.issubset(matrix.columns))
+            frame_summary = pd.read_csv(inputs.output_dir / "g21_blob_frame_coverage_summary.csv")
+            self.assertIn("missing_frames", set(frame_summary["Metric"]))
+            warnings = pd.read_csv(inputs.output_dir / "g21_blob_computation_warning_inventory.csv")
+            self.assertIn("level_a_vs_morphology_rows", set(warnings["Check"]))
 
     def test_large_level_a_morphology_row_difference_blocks_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:

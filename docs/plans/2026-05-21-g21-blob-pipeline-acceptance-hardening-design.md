@@ -147,6 +147,10 @@ The output package remains:
 
 ```text
 g21_blob_pipeline_acceptance_review.md
+g21_blob_pipeline_run_status.md
+g21_blob_pipeline_acceptance_matrix.csv
+g21_blob_frame_coverage_summary.csv
+g21_blob_computation_warning_inventory.csv
 g21_blob_computation_qc_summary.csv
 g21_blob_computation_by_frame_qc.csv
 g21_blob_metric_range_audit.csv
@@ -155,6 +159,22 @@ g21_blob_pipeline_release_manifest.json
 ```
 
 The review markdown must explain each warning in plain terms and state whether any issue blocks blob-structure statistics.
+
+The run-status markdown and machine-readable matrix files summarize pipeline execution separately from scientific interpretation:
+
+```text
+g21_blob_pipeline_run_status.md
+  Human-readable run status: coverage, row counts, blocking issues, warning issues, and scope.
+
+g21_blob_pipeline_acceptance_matrix.csv
+  One table combining QC summary gates, row reconciliation checks, and metric invariant checks.
+
+g21_blob_frame_coverage_summary.csv
+  Compact frame coverage counts: expected, pass, missing, unexpected, mismatch, first, and last frame.
+
+g21_blob_computation_warning_inventory.csv
+  All WARN/FAIL checks extracted into a short inventory for review.
+```
 
 ## Done Criteria
 

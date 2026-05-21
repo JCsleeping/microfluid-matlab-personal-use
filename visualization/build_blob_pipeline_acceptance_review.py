@@ -23,6 +23,10 @@ import pandas as pd
 
 OUTPUT_FILES = [
     "g21_blob_pipeline_acceptance_review.md",
+    "g21_blob_pipeline_run_status.md",
+    "g21_blob_pipeline_acceptance_matrix.csv",
+    "g21_blob_frame_coverage_summary.csv",
+    "g21_blob_computation_warning_inventory.csv",
     "g21_blob_computation_qc_summary.csv",
     "g21_blob_computation_by_frame_qc.csv",
     "g21_blob_metric_range_audit.csv",
@@ -632,6 +636,80 @@ def _collect_issues(qc_summary: pd.DataFrame, row_reconciliation: pd.DataFrame) 
     return sorted(blocking), sorted(warning)
 
 
+def build_acceptance_matrix(
+    qc_summary: pd.DataFrame,
+    row_reconciliation: pd.DataFrame,
+    metric_audit: pd.DataFrame,
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for _, row in qc_summary.iterrows():
+        rows.append(
+            {
+                "Category": "qc_summary",
+                "Check": row.get("Gate", ""),
+                "Status": row.get("Status", ""),
+                "Value": row.get("Value", ""),
+                "Expected": row.get("Expected", ""),
+                "Notes": row.get("Notes", ""),
+            }
+        )
+    for _, row in row_reconciliation.iterrows():
+        rows.append(
+            {
+                "Category": "row_reconciliation",
+                "Check": row.get("Check", ""),
+                "Status": row.get("Status", ""),
+                "Value": row.get("DifferenceRows", row.get("Rows", "")),
+                "Expected": row.get("ReferenceRows", ""),
+                "Notes": row.get("Note", ""),
+            }
+        )
+    for _, row in metric_audit.iterrows():
+        rows.append(
+            {
+                "Category": "metric_audit",
+                "Check": row.get("Metric", ""),
+                "Status": row.get("Status", ""),
+                "Value": row.get("ViolationRows", ""),
+                "Expected": row.get("Rule", ""),
+                "Notes": f"RowsChecked={row.get('RowsChecked', '')}; ViolationFraction={row.get('ViolationFraction', '')}",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_frame_coverage_summary(frame_qc: pd.DataFrame, expected_frames: int | None) -> pd.DataFrame:
+    status = frame_qc["FrameStatus"].astype(str)
+    rows = [
+        {"Metric": "expected_frames", "Value": expected_frames if expected_frames is not None else ""},
+        {"Metric": "frame_rows_in_qc", "Value": int(frame_qc["FrameIndex"].nunique())},
+        {"Metric": "pass_frames", "Value": int(status.eq("PASS").sum())},
+        {"Metric": "missing_frames", "Value": int(status.eq("MISSING_FRAME").sum())},
+        {"Metric": "unexpected_frames", "Value": int(status.eq("UNEXPECTED_FRAME").sum())},
+        {"Metric": "row_mismatch_frames", "Value": int(status.eq("ROW_MISMATCH").sum())},
+        {
+            "Metric": "morphology_observed_frames",
+            "Value": int(frame_qc.loc[frame_qc["MorphologyBlobRows"].notna(), "FrameIndex"].nunique()),
+        },
+        {
+            "Metric": "shape_class_v1_observed_frames",
+            "Value": int(frame_qc.loc[frame_qc["V1BlobRows"].notna(), "FrameIndex"].nunique()),
+        },
+        {"Metric": "first_frame", "Value": int(frame_qc["FrameIndex"].min()) if len(frame_qc) else ""},
+        {"Metric": "last_frame", "Value": int(frame_qc["FrameIndex"].max()) if len(frame_qc) else ""},
+    ]
+    return pd.DataFrame(rows)
+
+
+def build_warning_inventory(
+    qc_summary: pd.DataFrame,
+    row_reconciliation: pd.DataFrame,
+    metric_audit: pd.DataFrame,
+) -> pd.DataFrame:
+    matrix = build_acceptance_matrix(qc_summary, row_reconciliation, metric_audit)
+    return matrix[matrix["Status"].astype(str).isin({"WARN", "FAIL"})].reset_index(drop=True)
+
+
 def write_review(
     path: Path,
     decision: str,
@@ -734,6 +812,57 @@ def write_review(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def write_run_status(
+    path: Path,
+    decision: str,
+    expected_frames: int | None,
+    expected_frame_source: str,
+    frame_qc: pd.DataFrame,
+    morphology: pd.DataFrame,
+    v1: pd.DataFrame,
+    blocking_issues: list[str],
+    warning_issues: list[str],
+) -> None:
+    status = frame_qc["FrameStatus"].astype(str)
+    geometry_interpretable = int(v1["ShapeV1InterpretationTier"].astype(str).eq("geometry_interpretable").sum())
+    low_area = int(v1["ShapeV1InterpretationTier"].astype(str).eq("low_area_shape_caution").sum())
+    count_only = int(v1["ShapeV1InterpretationTier"].astype(str).eq("count_only").sum())
+    lines = [
+        "# G21 Blob Pipeline Run Status",
+        "",
+        f"Decision: `{decision}`",
+        "",
+        "## Frame Coverage",
+        "",
+        f"- Expected frames: `{expected_frames if expected_frames is not None else 'not_available'}` (`{expected_frame_source}`).",
+        f"- QC frame rows: `{int(frame_qc['FrameIndex'].nunique())}`.",
+        f"- PASS frames: `{int(status.eq('PASS').sum())}`.",
+        f"- Missing frames: `{int(status.eq('MISSING_FRAME').sum())}`.",
+        f"- Unexpected frames: `{int(status.eq('UNEXPECTED_FRAME').sum())}`.",
+        f"- Row-mismatch frames: `{int(status.eq('ROW_MISMATCH').sum())}`.",
+        "",
+        "## Blob Computation",
+        "",
+        f"- Morphology rows: `{len(morphology)}`.",
+        f"- ShapeClassV1 rows: `{len(v1)}`.",
+        f"- Geometry-interpretable rows: `{geometry_interpretable}`.",
+        f"- Low-area projected-shape caution rows: `{low_area}`.",
+        f"- Count-only rows: `{count_only}`.",
+        "",
+        "## Issues",
+        "",
+        f"- Blocking issues: `{', '.join(blocking_issues) if blocking_issues else 'none'}`.",
+        f"- Warning issues: `{', '.join(warning_issues) if warning_issues else 'none'}`.",
+        "",
+        "## Scope",
+        "",
+        "This run-status report describes the blob computation pipeline and projected 2D morphology data product. It does not run or claim tracking, split/merge lineage, boundary fractal dimension, 3D roughness, true Wadell roundness, or true fluid-fluid interfacial area.",
+        "",
+        "Boundary interpretation remains restricted to `BoundaryMetricValid` / geometry-interpretable rows.",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
     _safe_output_dir(inputs.output_dir)
     expected_frames, expected_frame_source = _infer_expected_frames(inputs)
@@ -758,6 +887,12 @@ def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
     frame_qc.to_csv(inputs.output_dir / "g21_blob_computation_by_frame_qc.csv", index=False)
     metric_audit.to_csv(inputs.output_dir / "g21_blob_metric_range_audit.csv", index=False)
     qc_summary.to_csv(inputs.output_dir / "g21_blob_computation_qc_summary.csv", index=False)
+    acceptance_matrix = build_acceptance_matrix(qc_summary, row_reconciliation, metric_audit)
+    frame_coverage_summary = build_frame_coverage_summary(frame_qc, expected_frames)
+    warning_inventory = build_warning_inventory(qc_summary, row_reconciliation, metric_audit)
+    acceptance_matrix.to_csv(inputs.output_dir / "g21_blob_pipeline_acceptance_matrix.csv", index=False)
+    frame_coverage_summary.to_csv(inputs.output_dir / "g21_blob_frame_coverage_summary.csv", index=False)
+    warning_inventory.to_csv(inputs.output_dir / "g21_blob_computation_warning_inventory.csv", index=False)
     write_review(
         inputs.output_dir / "g21_blob_pipeline_acceptance_review.md",
         decision,
@@ -773,6 +908,17 @@ def build_pipeline_acceptance_review(inputs: Inputs) -> dict[str, object]:
         warning_issues,
         inputs.row_diff_warn_max_rows,
         inputs.row_diff_warn_max_fraction,
+    )
+    write_run_status(
+        inputs.output_dir / "g21_blob_pipeline_run_status.md",
+        decision,
+        expected_frames,
+        expected_frame_source,
+        frame_qc,
+        morphology,
+        v1,
+        blocking_issues,
+        warning_issues,
     )
     manifest = {
         "schema_version": "1.0",

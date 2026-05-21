@@ -198,6 +198,27 @@ row_mismatch_frames = 0
 metric_failures = 0
 ```
 
+Inspect new run-status outputs:
+
+```text
+g21_blob_pipeline_run_status.md
+g21_blob_pipeline_acceptance_matrix.csv
+g21_blob_frame_coverage_summary.csv
+g21_blob_computation_warning_inventory.csv
+```
+
+Expected run-status content:
+
+```text
+Expected frames = 12024
+PASS frames = 12024
+Missing frames = 0
+Unexpected frames = 0
+Row-mismatch frames = 0
+Blocking issues = none
+Warning inventory contains only documented row reconciliation and non-boundary-valid diagnostic warnings
+```
+
 ## Task 6: Final Verification and Commit
 
 Run:
