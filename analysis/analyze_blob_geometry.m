@@ -1,11 +1,14 @@
-function blob = analyze_blob_geometry(dnapl_mask, pixel_size)
+function blob = analyze_blob_geometry(dnapl_mask, pixel_size, flow_domain, solid_mask)
 % ANALYZE_BLOB_GEOMETRY  Compute geometric properties of connected DNAPL blobs.
 %
 %   blob = analyze_blob_geometry(dnapl_mask, pixel_size)
+%   blob = analyze_blob_geometry(dnapl_mask, pixel_size, flow_domain, solid_mask)
 %
 %   Inputs:
 %       dnapl_mask - M x N logical DNAPL mask
 %       pixel_size - Physical pixel size [m] (optional, can be [])
+%       flow_domain - M x N logical pore-space mask (optional)
+%       solid_mask - M x N logical solid/pillar mask (optional)
 %
 %   Output:
 %       blob - Struct with fields:
@@ -16,6 +19,8 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size)
 %           .size_distribution  Summary statistics struct
 
     if nargin < 2, pixel_size = []; end
+    if nargin < 3, flow_domain = []; end
+    if nargin < 4, solid_mask = []; end
 
     %% Label connected components (8-connectivity)
     cc = bwconncomp(dnapl_mask, 8);
@@ -59,6 +64,14 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size)
         blob_mask(cc.PixelIdxList{i}) = true;
         props(i).EulerNumber = bweuler(blob_mask, 8);
         props(i).EquivRadius = props(i).EquivDiameter / 2;
+        hole_info = classify_blob_holes(blob_mask, dnapl_mask, flow_domain, solid_mask);
+        props(i).HoleCount = hole_info.HoleCount;
+        props(i).WaterHoleCount = hole_info.WaterHoleCount;
+        props(i).SolidHoleCount = hole_info.SolidHoleCount;
+        props(i).MixedHoleCount = hole_info.MixedHoleCount;
+        props(i).UnknownHoleCount = hole_info.UnknownHoleCount;
+        props(i).EffectiveEulerNumber = hole_info.EffectiveEulerNumber;
+        props(i).DominantHoleType = hole_info.DominantHoleType;
 
         % Physical units
         if ~isempty(pixel_size) && pixel_size > 0
@@ -73,7 +86,9 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size)
             props(i).EquivRadius_m    = NaN;
         end
 
-        if props(i).EulerNumber < 1
+        if props(i).WaterHoleCount + props(i).MixedHoleCount > 0
+            props(i).TopologyType = "cluster";
+        elseif ~hole_info.DomainAware && props(i).EulerNumber < 1
             props(i).TopologyType = "cluster";
         elseif props(i).Circularity > 0.5
             props(i).TopologyType = "droplet";
@@ -118,6 +133,13 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size)
     EquivRadius = [props.EquivRadius]';
     Compactness = [props.Compactness]';
     EulerNumber = [props.EulerNumber]';
+    HoleCount = [props.HoleCount]';
+    WaterHoleCount = [props.WaterHoleCount]';
+    SolidHoleCount = [props.SolidHoleCount]';
+    MixedHoleCount = [props.MixedHoleCount]';
+    UnknownHoleCount = [props.UnknownHoleCount]';
+    EffectiveEulerNumber = [props.EffectiveEulerNumber]';
+    DominantHoleType = reshape(string({props.DominantHoleType}), [], 1);
     GangliaType = reshape(string({props.GangliaType}), [], 1);
     TopologyType = reshape(string({props.TopologyType}), [], 1);
     Centroid_X = cellfun(@(c) c(1), {props.Centroid})';
@@ -125,7 +147,9 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size)
 
     blob.blob_table = table(BlobID, Area, Perimeter, Circularity, ...
         AspectRatio, Eccentricity, Solidity, EquivDiameter, EquivRadius, ...
-        Compactness, EulerNumber, Centroid_X, Centroid_Y, GangliaType, TopologyType);
+        Compactness, EulerNumber, HoleCount, WaterHoleCount, SolidHoleCount, ...
+        MixedHoleCount, UnknownHoleCount, EffectiveEulerNumber, DominantHoleType, ...
+        Centroid_X, Centroid_Y, GangliaType, TopologyType);
 
     %% Size distribution statistics
     areas = [props.Area];
@@ -154,6 +178,80 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size)
         'frac_droplets', sum(areas(topology_types == "droplet")) / max(total_area, eps), ...
         'frac_columns', sum(areas(topology_types == "column")) / max(total_area, eps), ...
         'frac_clusters', sum(areas(topology_types == "cluster")) / max(total_area, eps));
+end
+
+
+function hole_info = classify_blob_holes(blob_mask, dnapl_mask, flow_domain, solid_mask)
+    hole_mask = imfill(blob_mask, 'holes') & ~blob_mask;
+    hole_cc = bwconncomp(hole_mask, 8);
+
+    hole_info = struct( ...
+        'HoleCount', hole_cc.NumObjects, ...
+        'WaterHoleCount', 0, ...
+        'SolidHoleCount', 0, ...
+        'MixedHoleCount', 0, ...
+        'UnknownHoleCount', 0, ...
+        'EffectiveEulerNumber', 1, ...
+        'DominantHoleType', "none", ...
+        'DomainAware', false);
+
+    if hole_cc.NumObjects == 0
+        return;
+    end
+
+    domain_ok = ~isempty(flow_domain) && ~isempty(solid_mask) && ...
+        isequal(size(flow_domain), size(blob_mask)) && ...
+        isequal(size(solid_mask), size(blob_mask));
+    if ~domain_ok
+        hole_info.UnknownHoleCount = hole_cc.NumObjects;
+        hole_info.DominantHoleType = "unknown";
+        return;
+    end
+
+    hole_info.DomainAware = true;
+    flow_domain = logical(flow_domain);
+    solid_mask = logical(solid_mask);
+    dnapl_mask = logical(dnapl_mask);
+    water_mask = flow_domain & ~solid_mask & ~dnapl_mask;
+
+    for k = 1:hole_cc.NumObjects
+        hole_pixels = hole_cc.PixelIdxList{k};
+        area_px = numel(hole_pixels);
+        solid_px = sum(solid_mask(hole_pixels));
+        water_px = sum(water_mask(hole_pixels));
+        unknown_px = max(0, area_px - solid_px - water_px);
+
+        if solid_px / area_px >= 0.5
+            hole_info.SolidHoleCount = hole_info.SolidHoleCount + 1;
+        elseif water_px / area_px >= 0.5
+            hole_info.WaterHoleCount = hole_info.WaterHoleCount + 1;
+        elseif solid_px > 0 && water_px > 0
+            hole_info.MixedHoleCount = hole_info.MixedHoleCount + 1;
+        elseif unknown_px > 0
+            hole_info.UnknownHoleCount = hole_info.UnknownHoleCount + 1;
+        else
+            hole_info.UnknownHoleCount = hole_info.UnknownHoleCount + 1;
+        end
+    end
+
+    hole_info.EffectiveEulerNumber = 1 - hole_info.WaterHoleCount - hole_info.MixedHoleCount;
+    type_counts = [
+        hole_info.WaterHoleCount, ...
+        hole_info.SolidHoleCount, ...
+        hole_info.MixedHoleCount, ...
+        hole_info.UnknownHoleCount];
+    nonzero_types = sum(type_counts > 0);
+    if nonzero_types == 0
+        hole_info.DominantHoleType = "none";
+    elseif nonzero_types > 1 || hole_info.MixedHoleCount > 0
+        hole_info.DominantHoleType = "mixed";
+    elseif hole_info.WaterHoleCount > 0
+        hole_info.DominantHoleType = "water";
+    elseif hole_info.SolidHoleCount > 0
+        hole_info.DominantHoleType = "solid";
+    else
+        hole_info.DominantHoleType = "unknown";
+    end
 end
 
 

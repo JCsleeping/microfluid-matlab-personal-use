@@ -419,6 +419,69 @@ function test_blob_geometry_reports_topology_and_req_statistics(testCase)
         1, 'AbsTol', 1e-10);
 end
 
+function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
+    setup_path();
+    mask = false(80, 80);
+    mask(20:60, 20:60) = true;
+    mask(32:48, 32:48) = false;
+    flow_domain = true(size(mask));
+    solid_mask = false(size(mask));
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask);
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).HoleCount, 1);
+    verifyEqual(testCase, blob.props(1).WaterHoleCount, 1);
+    verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "water");
+    verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 0);
+    verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
+    verifyTrue(testCase, all(ismember(["HoleCount", "WaterHoleCount", ...
+        "SolidHoleCount", "MixedHoleCount", "UnknownHoleCount", ...
+        "EffectiveEulerNumber", "DominantHoleType"], ...
+        string(blob.blob_table.Properties.VariableNames))));
+end
+
+function test_blob_geometry_solid_pillar_hole_not_cluster(testCase)
+    setup_path();
+    mask = false(80, 80);
+    mask(20:60, 20:60) = true;
+    mask(32:48, 32:48) = false;
+    solid_mask = false(size(mask));
+    solid_mask(32:48, 32:48) = true;
+    flow_domain = true(size(mask));
+    flow_domain(solid_mask) = false;
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask);
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyLessThan(testCase, blob.props(1).EulerNumber, 1);
+    verifyEqual(testCase, blob.props(1).HoleCount, 1);
+    verifyEqual(testCase, blob.props(1).WaterHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).SolidHoleCount, 1);
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "solid");
+    verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 1);
+    verifyNotEqual(testCase, blob.props(1).TopologyType, "cluster");
+    verifyEqual(testCase, blob.topology_summary.n_clusters, 0);
+end
+
+function test_blob_geometry_without_domain_keeps_legacy_unknown_hole_behavior(testCase)
+    setup_path();
+    mask = false(80, 80);
+    mask(20:60, 20:60) = true;
+    mask(32:48, 32:48) = false;
+
+    blob = analyze_blob_geometry(mask, []);
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).HoleCount, 1);
+    verifyEqual(testCase, blob.props(1).WaterHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).UnknownHoleCount, 1);
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "unknown");
+    verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
+end
+
 
 %% ========== analyze_interfaces ==========
 

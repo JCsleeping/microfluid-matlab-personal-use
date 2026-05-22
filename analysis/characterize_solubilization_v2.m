@@ -1,4 +1,4 @@
-function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config, heartbeat)
+function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config, heartbeat, solid_mask)
 % CHARACTERIZE_SOLUBILIZATION_V2  Track DNAPL dissolution across a time series.
 %
 %   sol = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config)
@@ -14,6 +14,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 %       flow_domain  - M x N logical pore-space mask (constant)
 %       time_vector  - 1 x N time stamps [s or PV]
 %       config       - Pipeline configuration struct
+%       solid_mask   - Optional M x N logical solid mask for hole classification
 %
 %   Output:
 %       sol - Struct with time-series results:
@@ -23,6 +24,9 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
 
     if nargin < 5
         heartbeat = struct('enabled', false);
+    end
+    if nargin < 6
+        solid_mask = [];
     end
 
     num_frames = numel(frame_index);
@@ -353,7 +357,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             sat = calculate_saturation(first_mask, flow_domain, px);
             sn_arr(1) = sat.Sn;
             iface_arr(1) = compute_timeseries_interface_length(first_mask, solid_contact_zone);
-            [blob_metrics_1, blob_table_1] = compute_timeseries_blob_metrics(first_mask);
+            [blob_metrics_1, blob_table_1] = compute_timeseries_blob_metrics(first_mask, flow_domain, solid_mask);
             nblobs_arr(1) = blob_metrics_1.num_blobs;
             mbs_arr(1) = blob_metrics_1.mean_blob_size;
             max_blob_frac_arr(1) = blob_metrics_1.max_blob_frac;
@@ -493,7 +497,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             sat_t = calculate_saturation(mask_t, flow_domain, px);
             sn_arr(t) = sat_t.Sn;
             iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
-            blob_metrics_t = compute_timeseries_blob_metrics(mask_t);
+            blob_metrics_t = compute_timeseries_blob_metrics(mask_t, flow_domain, solid_mask);
             nblobs_arr(t) = blob_metrics_t.num_blobs;
             mbs_arr(t) = blob_metrics_t.mean_blob_size;
             max_blob_frac_arr(t) = blob_metrics_t.max_blob_frac;
@@ -548,7 +552,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                 sat_t = calculate_saturation(mask_t, flow_domain, px);
                 sn_arr(t) = sat_t.Sn;
                 iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
-                [blob_metrics_t, blob_table_t] = compute_timeseries_blob_metrics(mask_t);
+                [blob_metrics_t, blob_table_t] = compute_timeseries_blob_metrics(mask_t, flow_domain, solid_mask);
                 nblobs_arr(t) = blob_metrics_t.num_blobs;
                 mbs_arr(t) = blob_metrics_t.mean_blob_size;
                 max_blob_frac_arr(t) = blob_metrics_t.max_blob_frac;

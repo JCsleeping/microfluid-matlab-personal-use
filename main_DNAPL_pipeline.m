@@ -510,7 +510,7 @@ function results = main_DNAPL_pipeline(config)
 
     %% 3c. Blob Geometry
     fprintf('\n  Analyzing blob geometry...\n');
-    blob = analyze_blob_geometry(dnapl_mask, config.physical.pixel_size);
+    blob = analyze_blob_geometry(dnapl_mask, config.physical.pixel_size, flow_domain, solid_mask);
     results.blobs = blob;
     fprintf('    %d blobs detected\n', blob.num_blobs);
 
@@ -555,7 +555,7 @@ function results = main_DNAPL_pipeline(config)
         fprintf('========================================================\n');
 
         [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_domain, ...
-            config.time_vector, config, heartbeat);
+            config.time_vector, config, heartbeat, solid_mask);
         results.solubilization = sol;
         results.time_vector = config.time_vector(1:numel(sol.saturation_vs_time));
         results.pipeline_status = sol.pipeline_status;
