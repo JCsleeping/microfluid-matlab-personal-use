@@ -102,6 +102,57 @@ function config = validate_config(config)
              'Set output.save_blob_detail=false or disable parallel processing.']);
     end
 
+    %% Blob geometry controls
+    if ~isfield(config, 'geometry') || isempty(config.geometry)
+        config.geometry = struct();
+    end
+    if ~isfield(config.geometry, 'mode') || isempty(config.geometry.mode)
+        config.geometry.mode = 'core_only';
+    end
+    if ~isfield(config.geometry, 'object_connectivity') || isempty(config.geometry.object_connectivity)
+        config.geometry.object_connectivity = 8;
+    end
+    if ~isfield(config.geometry, 'schema_version') || isempty(config.geometry.schema_version)
+        config.geometry.schema_version = 'geometry_v2_core_only';
+    end
+    if ~isfield(config.geometry, 'include_heavy_shape_props') || isempty(config.geometry.include_heavy_shape_props)
+        config.geometry.include_heavy_shape_props = true;
+    end
+
+    valid_geometry_modes = {'core_only', 'legacy_fullframe'};
+    geometry_mode = char(string(config.geometry.mode));
+    if ~ismember(geometry_mode, valid_geometry_modes)
+        error('validate_config:badParam', ...
+            ['geometry.mode="%s" is not implemented in Phase 1. ' ...
+             'Allowed modes are: %s.'], ...
+            geometry_mode, strjoin(valid_geometry_modes, ', '));
+    end
+    config.geometry.mode = geometry_mode;
+
+    default_core_schema = 'geometry_v2_core_only';
+    default_legacy_schema = 'geometry_v1_legacy_fullframe';
+    if strcmp(geometry_mode, 'legacy_fullframe') && ...
+            strcmp(char(string(config.geometry.schema_version)), default_core_schema)
+        config.geometry.schema_version = default_legacy_schema;
+    end
+
+    if isempty(config.geometry.object_connectivity) || ~isnumeric(config.geometry.object_connectivity) || ...
+            ~isscalar(config.geometry.object_connectivity) || ...
+            ~ismember(config.geometry.object_connectivity, [4 8])
+        error('validate_config:badParam', ...
+            'geometry.object_connectivity must be 4 or 8 for 2-D masks.');
+    end
+
+    if ~(ischar(config.geometry.schema_version) || isstring(config.geometry.schema_version)) || ...
+            strlength(string(config.geometry.schema_version)) == 0
+        error('validate_config:badParam', ...
+            'geometry.schema_version must be a non-empty string.');
+    end
+    config.geometry.schema_version = char(string(config.geometry.schema_version));
+
+    assert_logical_scalar(config.geometry.include_heavy_shape_props, ...
+        'geometry.include_heavy_shape_props');
+
     if isfinite(config.output.max_frames_per_session)
         if ~config.output.checkpoint
             error('validate_config:badParam', ...

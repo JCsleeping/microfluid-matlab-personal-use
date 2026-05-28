@@ -510,7 +510,12 @@ function results = main_DNAPL_pipeline(config)
 
     %% 3c. Blob Geometry
     fprintf('\n  Analyzing blob geometry...\n');
-    blob = analyze_blob_geometry(dnapl_mask, config.physical.pixel_size, flow_domain, solid_mask);
+    geometry_opts = [];
+    if isfield(config, 'geometry')
+        geometry_opts = config.geometry;
+    end
+    blob = analyze_blob_geometry(dnapl_mask, config.physical.pixel_size, ...
+        flow_domain, solid_mask, geometry_opts);
     results.blobs = blob;
     fprintf('    %d blobs detected\n', blob.num_blobs);
 

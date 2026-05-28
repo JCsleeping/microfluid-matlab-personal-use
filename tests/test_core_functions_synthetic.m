@@ -26,9 +26,14 @@ function test_validate_config_accepts_residual_metric_defaults(testCase)
     cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
     config = make_valid_test_config(fixture_dir, tif_path);
 
-    verifyFalse(testCase, config.output.save_blob_detail);
+    verifyTrue(testCase, config.output.save_blob_detail);
     verifyEqual(testCase, config.output.blob_detail_chunk_size, 100);
     verifyEqual(testCase, config.output.blob_detail_save_format, 'v7');
+    verifyTrue(testCase, isfield(config, 'geometry'));
+    verifyEqual(testCase, config.geometry.mode, 'core_only');
+    verifyEqual(testCase, config.geometry.object_connectivity, 8);
+    verifyEqual(testCase, config.geometry.schema_version, 'geometry_v2_core_only');
+    verifyTrue(testCase, config.geometry.include_heavy_shape_props);
     verifyEqual(testCase, config.architecture.pool_like.max_blob_fraction_min, 0.50);
     verifyEqual(testCase, config.architecture.pool_like.num_blobs_max, 10);
     verifyEqual(testCase, config.architecture.pool_like.a_i_2D_max, 3.0e4);
@@ -38,6 +43,18 @@ function test_validate_config_accepts_residual_metric_defaults(testCase)
 
     config = validate_config(config);
     verifyTrue(testCase, isstruct(config));
+end
+
+function test_validate_config_rejects_roi_geometry_mode_in_phase1(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.geometry.mode = 'roi';
+
+    verifyError(testCase, ...
+        @() validate_config(config), ...
+        'validate_config:badParam');
 end
 
 function test_config_pipeline_scans_overridden_data_path(testCase)
@@ -321,6 +338,9 @@ function test_blob_geometry_empty_mask(testCase)
     verifyEqual(testCase, blob.topology_summary.frac_droplets, 0);
     verifyEqual(testCase, blob.topology_summary.frac_columns, 0);
     verifyEqual(testCase, blob.topology_summary.frac_clusters, 0);
+    verifyTrue(testCase, all(ismember(["GeometryMode", "GeometrySchemaVersion", ...
+        "ObjectConnectivity", "HoleClassificationComputed", "HoleCountSource", ...
+        "EulerHoleCount"], string(blob.blob_table.Properties.VariableNames))));
 end
 
 function test_blob_geometry_single_blob(testCase)
@@ -419,7 +439,7 @@ function test_blob_geometry_reports_topology_and_req_statistics(testCase)
         1, 'AbsTol', 1e-10);
 end
 
-function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
+function test_blob_geometry_core_only_marks_domain_holes_not_classified(testCase)
     setup_path();
     mask = false(80, 80);
     mask(20:60, 20:60) = true;
@@ -430,10 +450,67 @@ function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
     blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask);
 
     verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).EulerNumber, 0);
+    verifyEqual(testCase, blob.props(1).EulerHoleCount, 1);
+    verifyFalse(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "euler_number");
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "not_classified");
+    verifyTrue(testCase, isnan(blob.props(1).WaterHoleCount));
+    verifyTrue(testCase, isnan(blob.props(1).SolidHoleCount));
+    verifyEqual(testCase, blob.props(1).GeometryMode, "core_only");
+    verifyEqual(testCase, blob.props(1).GeometrySchemaVersion, "geometry_v2_core_only");
+    verifyEqual(testCase, blob.props(1).ObjectConnectivity, 8);
+    verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
+    verifyTrue(testCase, all(ismember(["GeometryMode", "GeometrySchemaVersion", ...
+        "ObjectConnectivity", "HoleClassificationComputed", "HoleCountSource", ...
+        "EulerHoleCount"], string(blob.blob_table.Properties.VariableNames))));
+end
+
+function test_blob_geometry_core_connectivity_diagonal(testCase)
+    setup_path();
+    mask = false(8, 8);
+    mask(3, 3) = true;
+    mask(4, 4) = true;
+
+    blob8 = analyze_blob_geometry(mask, [], [], [], ...
+        struct('mode', 'core_only', 'object_connectivity', 8));
+    blob4 = analyze_blob_geometry(mask, [], [], [], ...
+        struct('mode', 'core_only', 'object_connectivity', 4));
+
+    verifyEqual(testCase, blob8.num_blobs, 1);
+    verifyEqual(testCase, blob4.num_blobs, 2);
+    verifyEqual(testCase, unique(blob8.blob_table.ObjectConnectivity), 8);
+    verifyEqual(testCase, unique(blob4.blob_table.ObjectConnectivity), 4);
+end
+
+function test_blob_geometry_rejects_roi_mode_in_phase1(testCase)
+    setup_path();
+    mask = false(20, 20);
+    mask(5:10, 5:10) = true;
+
+    verifyError(testCase, ...
+        @() analyze_blob_geometry(mask, [], [], [], struct('mode', 'roi')), ...
+        'analyze_blob_geometry:badGeometryMode');
+end
+
+function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
+    setup_path();
+    mask = false(80, 80);
+    mask(20:60, 20:60) = true;
+    mask(32:48, 32:48) = false;
+    flow_domain = true(size(mask));
+    solid_mask = false(size(mask));
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, legacy_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
     verifyEqual(testCase, blob.props(1).HoleCount, 1);
     verifyEqual(testCase, blob.props(1).WaterHoleCount, 1);
     verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
     verifyEqual(testCase, blob.props(1).DominantHoleType, "water");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "legacy_domain_aware");
+    verifyEqual(testCase, blob.props(1).GeometryMode, "legacy_fullframe");
     verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 0);
     verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
     verifyTrue(testCase, all(ismember(["HoleCount", "WaterHoleCount", ...
@@ -452,7 +529,7 @@ function test_blob_geometry_solid_pillar_hole_not_cluster(testCase)
     flow_domain = true(size(mask));
     flow_domain(solid_mask) = false;
 
-    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask);
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, legacy_geometry_opts());
 
     verifyEqual(testCase, blob.num_blobs, 1);
     verifyLessThan(testCase, blob.props(1).EulerNumber, 1);
@@ -460,18 +537,20 @@ function test_blob_geometry_solid_pillar_hole_not_cluster(testCase)
     verifyEqual(testCase, blob.props(1).WaterHoleCount, 0);
     verifyEqual(testCase, blob.props(1).SolidHoleCount, 1);
     verifyEqual(testCase, blob.props(1).DominantHoleType, "solid");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "legacy_domain_aware");
     verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 1);
     verifyNotEqual(testCase, blob.props(1).TopologyType, "cluster");
     verifyEqual(testCase, blob.topology_summary.n_clusters, 0);
 end
 
-function test_blob_geometry_without_domain_keeps_legacy_unknown_hole_behavior(testCase)
+function test_blob_geometry_legacy_unknown_hole_without_domain(testCase)
     setup_path();
     mask = false(80, 80);
     mask(20:60, 20:60) = true;
     mask(32:48, 32:48) = false;
 
-    blob = analyze_blob_geometry(mask, []);
+    blob = analyze_blob_geometry(mask, [], [], [], legacy_geometry_opts());
 
     verifyEqual(testCase, blob.num_blobs, 1);
     verifyEqual(testCase, blob.props(1).HoleCount, 1);
@@ -479,6 +558,8 @@ function test_blob_geometry_without_domain_keeps_legacy_unknown_hole_behavior(te
     verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
     verifyEqual(testCase, blob.props(1).UnknownHoleCount, 1);
     verifyEqual(testCase, blob.props(1).DominantHoleType, "unknown");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "legacy_domain_aware");
     verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
 end
 
@@ -582,4 +663,12 @@ function value = local_percentile(values, percentile)
 
     weight = position - lower_idx;
     value = values(lower_idx) + weight * (values(upper_idx) - values(lower_idx));
+end
+
+function opts = legacy_geometry_opts()
+    opts = struct( ...
+        'mode', 'legacy_fullframe', ...
+        'object_connectivity', 8, ...
+        'schema_version', 'geometry_v1_legacy_fullframe', ...
+        'include_heavy_shape_props', true);
 end

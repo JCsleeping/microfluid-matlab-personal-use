@@ -14,7 +14,7 @@ function config = config_pipeline(varargin)
     %% User settings
 
     % --- Data path ---
-    config.data_path = 'G:\微流控\20 1-BO 4UL 5% TWEEN 80 4UL WATER DISPLACEMENT\02 NAPL';
+    config.data_path = 'G:\Microfluid\18 1-BO 4UL 5% TWEEM 80 4UL WATER DISPLACE\01 Tween 80';
 
     % --- Input files ---
     % Leave empty here. After user overrides are applied, the final
@@ -86,12 +86,19 @@ function config = config_pipeline(varargin)
     config.architecture.ganglia_rich.num_blobs_min = 25;
     config.architecture.ganglia_rich.a_i_2D_min = 6.0e4;
 
+    % --- Per-blob geometry computation ---
+    % Phase 1 stable mode avoids per-blob full-frame hole classification.
+    config.geometry.mode = 'core_only';
+    config.geometry.object_connectivity = 8;
+    config.geometry.schema_version = 'geometry_v2_core_only';
+    config.geometry.include_heavy_shape_props = true;
+
     % --- Mass transfer model ---
     config.physical.sherwood_correlation = 'powers';
 
     % --- Visualization ---
-    config.visualization.show_figures = true;
-    config.visualization.save_figures = true;
+    config.visualization.show_figures = false;
+    config.visualization.save_figures = false;
     config.visualization.figure_format = 'png';
     config.visualization.colormap_blobs = 'jet';
 
@@ -109,7 +116,7 @@ function config = config_pipeline(varargin)
     config.output.save_heartbeat = true;
     config.output.heartbeat_frame_interval = 10;
     config.output.heartbeat_time_interval_sec = 30;
-    config.output.save_blob_detail = false;
+    config.output.save_blob_detail = true;
     config.output.blob_detail_chunk_size = 100;
     config.output.blob_detail_save_format = 'v7';
     config.output.blob_detail_allow_format_fallback = true;
