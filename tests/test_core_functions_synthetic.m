@@ -45,16 +45,18 @@ function test_validate_config_accepts_residual_metric_defaults(testCase)
     verifyTrue(testCase, isstruct(config));
 end
 
-function test_validate_config_rejects_roi_geometry_mode_in_phase1(testCase)
+function test_validate_config_accepts_roi_geometry_mode(testCase)
     setup_path();
     [fixture_dir, tif_path] = create_temp_tif_fixture();
     cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
     config = make_valid_test_config(fixture_dir, tif_path);
     config.geometry.mode = 'roi';
 
-    verifyError(testCase, ...
-        @() validate_config(config), ...
-        'validate_config:badParam');
+    config = validate_config(config);
+    verifyEqual(testCase, config.geometry.mode, 'roi');
+    verifyEqual(testCase, config.geometry.schema_version, 'geometry_v3_roi_holes');
+    verifyEqual(testCase, config.geometry.roi_pad, 1);
+    verifyEqual(testCase, config.geometry.max_roi_area_fraction, 0.25);
 end
 
 function test_config_pipeline_scans_overridden_data_path(testCase)
@@ -573,14 +575,92 @@ function test_blob_geometry_core_connectivity_diagonal(testCase)
     verifyEqual(testCase, unique(blob4.blob_table.ObjectConnectivity), 4);
 end
 
-function test_blob_geometry_rejects_roi_mode_in_phase1(testCase)
+function test_blob_geometry_roi_classifies_water_hole(testCase)
     setup_path();
-    mask = false(20, 20);
-    mask(5:10, 5:10) = true;
+    mask = false(100, 100);
+    mask(30:70, 30:70) = true;
+    mask(42:58, 42:58) = false;
+    flow_domain = true(size(mask));
+    solid_mask = false(size(mask));
 
-    verifyError(testCase, ...
-        @() analyze_blob_geometry(mask, [], [], [], struct('mode', 'roi')), ...
-        'analyze_blob_geometry:badGeometryMode');
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, roi_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).HoleCount, 1);
+    verifyEqual(testCase, blob.props(1).WaterHoleCount, 1);
+    verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "water");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "roi_domain_aware");
+    verifyEqual(testCase, blob.props(1).GeometryMode, "roi");
+    verifyEqual(testCase, blob.props(1).GeometrySchemaVersion, "geometry_v3_roi_holes");
+    verifyFalse(testCase, blob.props(1).RoiFallbackUsed);
+    verifyEqual(testCase, blob.props(1).RoiFallbackReason, "none");
+    verifyGreaterThan(testCase, blob.props(1).RoiAreaFraction, 0);
+    verifyTrue(testCase, all(ismember(["RoiFallbackUsed", "RoiFallbackReason", ...
+        "TouchesImageBorder", "RoiAreaFraction"], ...
+        string(blob.blob_table.Properties.VariableNames))));
+end
+
+function test_blob_geometry_roi_classifies_solid_hole_not_cluster(testCase)
+    setup_path();
+    mask = false(100, 100);
+    mask(30:70, 30:70) = true;
+    mask(42:58, 42:58) = false;
+    solid_mask = false(size(mask));
+    solid_mask(42:58, 42:58) = true;
+    flow_domain = true(size(mask));
+    flow_domain(solid_mask) = false;
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, roi_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).HoleCount, 1);
+    verifyEqual(testCase, blob.props(1).WaterHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).SolidHoleCount, 1);
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "solid");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 1);
+    verifyEqual(testCase, blob.props(1).EulerHoleCount, 1);
+    verifyNotEqual(testCase, blob.props(1).TopologyType, "cluster");
+end
+
+function test_blob_geometry_roi_fallback_when_domain_unavailable(testCase)
+    setup_path();
+    mask = false(100, 100);
+    mask(30:70, 30:70) = true;
+    mask(42:58, 42:58) = false;
+
+    blob = analyze_blob_geometry(mask, [], [], [], roi_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).EulerHoleCount, 1);
+    verifyFalse(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "euler_number_domain_unavailable");
+    verifyTrue(testCase, blob.props(1).RoiFallbackUsed);
+    verifyEqual(testCase, blob.props(1).RoiFallbackReason, "domain_masks_unavailable");
+    verifyTrue(testCase, isnan(blob.props(1).WaterHoleCount));
+    verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
+end
+
+function test_blob_geometry_roi_fallback_when_roi_too_large(testCase)
+    setup_path();
+    mask = false(80, 80);
+    mask(5:75, 5:75) = true;
+    mask(32:48, 32:48) = false;
+    flow_domain = true(size(mask));
+    solid_mask = false(size(mask));
+    opts = roi_geometry_opts();
+    opts.max_roi_area_fraction = 0.10;
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, opts);
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyFalse(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "euler_number_large_roi_fallback");
+    verifyTrue(testCase, blob.props(1).RoiFallbackUsed);
+    verifyEqual(testCase, blob.props(1).RoiFallbackReason, "max_roi_area_fraction_exceeded");
+    verifyGreaterThan(testCase, blob.props(1).RoiAreaFraction, 0.10);
 end
 
 function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
@@ -770,4 +850,15 @@ function opts = legacy_geometry_opts()
         'object_connectivity', 8, ...
         'schema_version', 'geometry_v1_legacy_fullframe', ...
         'include_heavy_shape_props', true);
+end
+
+function opts = roi_geometry_opts()
+    opts = struct( ...
+        'mode', 'roi', ...
+        'object_connectivity', 8, ...
+        'schema_version', 'geometry_v3_roi_holes', ...
+        'include_heavy_shape_props', true, ...
+        'roi_pad', 1, ...
+        'max_roi_area_fraction', 0.25, ...
+        'max_roi_pixels', 2e6);
 end

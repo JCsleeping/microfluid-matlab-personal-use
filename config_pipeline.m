@@ -88,11 +88,16 @@ function config = config_pipeline(varargin)
     config.architecture.ganglia_rich.a_i_2D_min = 6.0e4;
 
     % --- Per-blob geometry computation ---
-    % Phase 1 stable mode avoids per-blob full-frame hole classification.
+    % Default stable mode avoids per-blob full-frame hole classification.
+    % Set geometry.mode='roi' for reusable ROI-local domain-aware hole
+    % classification after synthetic validation.
     config.geometry.mode = 'core_only';
     config.geometry.object_connectivity = 8;
     config.geometry.schema_version = 'geometry_v2_core_only';
     config.geometry.include_heavy_shape_props = true;
+    config.geometry.roi_pad = 1;
+    config.geometry.max_roi_area_fraction = 0.25;
+    config.geometry.max_roi_pixels = 2e6;
 
     % --- Mass transfer model ---
     config.physical.sherwood_correlation = 'powers';

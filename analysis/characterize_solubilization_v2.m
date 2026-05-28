@@ -957,14 +957,26 @@ function geometry_opts = resolve_geometry_options(config)
         geometry_opts.object_connectivity = 8;
     end
     if ~isfield(geometry_opts, 'schema_version') || isempty(geometry_opts.schema_version)
-        if strcmp(char(string(geometry_opts.mode)), 'legacy_fullframe')
+        mode = char(string(geometry_opts.mode));
+        if strcmp(mode, 'legacy_fullframe')
             geometry_opts.schema_version = 'geometry_v1_legacy_fullframe';
+        elseif strcmp(mode, 'roi')
+            geometry_opts.schema_version = 'geometry_v3_roi_holes';
         else
             geometry_opts.schema_version = 'geometry_v2_core_only';
         end
     end
     if ~isfield(geometry_opts, 'include_heavy_shape_props') || isempty(geometry_opts.include_heavy_shape_props)
         geometry_opts.include_heavy_shape_props = true;
+    end
+    if ~isfield(geometry_opts, 'roi_pad') || isempty(geometry_opts.roi_pad)
+        geometry_opts.roi_pad = 1;
+    end
+    if ~isfield(geometry_opts, 'max_roi_area_fraction') || isempty(geometry_opts.max_roi_area_fraction)
+        geometry_opts.max_roi_area_fraction = 0.25;
+    end
+    if ~isfield(geometry_opts, 'max_roi_pixels') || isempty(geometry_opts.max_roi_pixels)
+        geometry_opts.max_roi_pixels = 2e6;
     end
 end
 

@@ -37,6 +37,9 @@ function test_config_exposes_safe_output_defaults(testCase)
     verifyEqual(testCase, config.geometry.object_connectivity, 8);
     verifyEqual(testCase, config.geometry.schema_version, 'geometry_v2_core_only');
     verifyTrue(testCase, config.geometry.include_heavy_shape_props);
+    verifyEqual(testCase, config.geometry.roi_pad, 1);
+    verifyEqual(testCase, config.geometry.max_roi_area_fraction, 0.25);
+    verifyEqual(testCase, config.geometry.max_roi_pixels, 2e6);
 end
 
 
@@ -81,7 +84,7 @@ function test_config_rejects_invalid_safe_output_settings(testCase)
         @() make_config('output.max_frames_per_session', 4, 'parallel.enabled', true), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() make_config('geometry.mode', 'roi'), ...
+        @() make_config('geometry.mode', 'not_a_mode'), ...
         'validate_config:badParam');
     verifyError(testCase, ...
         @() make_config('geometry.object_connectivity', 6), ...
@@ -304,7 +307,9 @@ function test_step4_pauses_on_checkpoint_boundary_and_resumes(testCase)
         sum(results3.solubilization.num_blobs_vs_time));
     verifyTrue(testCase, all(ismember( ...
         {'GeometryMode', 'GeometrySchemaVersion', 'ObjectConnectivity', ...
-         'HoleClassificationComputed', 'HoleCountSource', 'EulerHoleCount'}, ...
+         'HoleClassificationComputed', 'HoleCountSource', 'EulerHoleCount', ...
+         'RoiFallbackUsed', 'RoiFallbackReason', 'TouchesImageBorder', ...
+         'RoiAreaFraction'}, ...
         blob_detail_table.Properties.VariableNames)));
     verifyTrue(testCase, all(string(blob_detail_table.GeometryMode) == "core_only"));
     verifyTrue(testCase, all(string(blob_detail_table.GeometrySchemaVersion) == "geometry_v2_core_only"));
@@ -349,6 +354,47 @@ function test_step4_rejects_incompatible_geometry_schema_manifest(testCase)
     verifyError(testCase, ...
         @() characterize_solubilization_v2(frame_index, flow_domain, time_vector, config), ...
         'geometry:schemaMismatch');
+end
+
+
+function test_step4_roi_mode_exports_geometry_v3_schema(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    out_dir = fullfile(tempdir, ['dnapl_roi_step4_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    c1 = onCleanup(@() cleanup_tempdir(out_dir)); %#ok<NASGU>
+    mkdir(out_dir);
+
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(out_dir, 4);
+    config = make_synthetic_step4_config(out_dir, size(flow_domain));
+    config.output.save_blob_detail = true;
+    config.output.checkpoint = false;
+    config.output.max_frames_per_session = inf;
+    config.geometry.mode = 'roi';
+    config.geometry.schema_version = 'geometry_v3_roi_holes';
+    solid_mask = false(size(flow_domain));
+
+    sol = characterize_solubilization_v2(frame_index, flow_domain, time_vector, ...
+        config, struct('enabled', false), solid_mask);
+
+    verifyEqual(testCase, string(sol.pipeline_status), "completed");
+    final_blob_csv = fullfile(out_dir, 'blob_detail_all_frames.csv');
+    verifyTrue(testCase, isfile(final_blob_csv));
+    blob_detail_table = readtable(final_blob_csv, 'VariableNamingRule', 'preserve');
+    verifyGreaterThan(testCase, height(blob_detail_table), 0);
+    verifyTrue(testCase, all(string(blob_detail_table.GeometryMode) == "roi"));
+    verifyTrue(testCase, all(string(blob_detail_table.GeometrySchemaVersion) == "geometry_v3_roi_holes"));
+    verifyTrue(testCase, all(blob_detail_table.HoleClassificationComputed == 1));
+    verifyTrue(testCase, all(string(blob_detail_table.HoleCountSource) == "roi_domain_aware"));
+    verifyTrue(testCase, all(ismember( ...
+        {'RoiFallbackUsed', 'RoiFallbackReason', 'TouchesImageBorder', 'RoiAreaFraction'}, ...
+        blob_detail_table.Properties.VariableNames)));
+
+    schema_data = load(fullfile(out_dir, 'status', 'geometry_schema.mat'), 'geometry_schema');
+    verifyEqual(testCase, string(schema_data.geometry_schema.GeometryMode), "roi");
+    verifyEqual(testCase, string(schema_data.geometry_schema.GeometrySchemaVersion), "geometry_v3_roi_holes");
+    verifyTrue(testCase, schema_data.geometry_schema.HoleClassificationComputed);
+    verifyEqual(testCase, schema_data.geometry_schema.RoiPad, 1);
 end
 
 

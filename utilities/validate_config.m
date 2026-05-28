@@ -142,22 +142,34 @@ function config = validate_config(config)
     if ~isfield(config.geometry, 'include_heavy_shape_props') || isempty(config.geometry.include_heavy_shape_props)
         config.geometry.include_heavy_shape_props = true;
     end
+    if ~isfield(config.geometry, 'roi_pad') || isempty(config.geometry.roi_pad)
+        config.geometry.roi_pad = 1;
+    end
+    if ~isfield(config.geometry, 'max_roi_area_fraction') || isempty(config.geometry.max_roi_area_fraction)
+        config.geometry.max_roi_area_fraction = 0.25;
+    end
+    if ~isfield(config.geometry, 'max_roi_pixels') || isempty(config.geometry.max_roi_pixels)
+        config.geometry.max_roi_pixels = 2e6;
+    end
 
-    valid_geometry_modes = {'core_only', 'legacy_fullframe'};
+    valid_geometry_modes = {'core_only', 'roi', 'legacy_fullframe'};
     geometry_mode = char(string(config.geometry.mode));
     if ~ismember(geometry_mode, valid_geometry_modes)
         error('validate_config:badParam', ...
-            ['geometry.mode="%s" is not implemented in Phase 1. ' ...
-             'Allowed modes are: %s.'], ...
+            'geometry.mode="%s" must be one of: %s.', ...
             geometry_mode, strjoin(valid_geometry_modes, ', '));
     end
     config.geometry.mode = geometry_mode;
 
     default_core_schema = 'geometry_v2_core_only';
     default_legacy_schema = 'geometry_v1_legacy_fullframe';
+    default_roi_schema = 'geometry_v3_roi_holes';
     if strcmp(geometry_mode, 'legacy_fullframe') && ...
             strcmp(char(string(config.geometry.schema_version)), default_core_schema)
         config.geometry.schema_version = default_legacy_schema;
+    elseif strcmp(geometry_mode, 'roi') && ...
+            strcmp(char(string(config.geometry.schema_version)), default_core_schema)
+        config.geometry.schema_version = default_roi_schema;
     end
 
     if isempty(config.geometry.object_connectivity) || ~isnumeric(config.geometry.object_connectivity) || ...
@@ -176,6 +188,14 @@ function config = validate_config(config)
 
     assert_logical_scalar(config.geometry.include_heavy_shape_props, ...
         'geometry.include_heavy_shape_props');
+    assert_nonnegative_integer(config.geometry.roi_pad, 'geometry.roi_pad');
+    assert_fraction_scalar(config.geometry.max_roi_area_fraction, ...
+        'geometry.max_roi_area_fraction');
+    assert_finite_positive_scalar(config.geometry.max_roi_pixels, ...
+        'geometry.max_roi_pixels');
+    config.geometry.roi_pad = double(config.geometry.roi_pad);
+    config.geometry.max_roi_area_fraction = double(config.geometry.max_roi_area_fraction);
+    config.geometry.max_roi_pixels = double(config.geometry.max_roi_pixels);
 
     if isfinite(config.output.max_frames_per_session)
         if ~config.output.checkpoint
@@ -256,6 +276,13 @@ function assert_pos_integer(val, name)
     if isempty(val) || ~isnumeric(val) || ~isscalar(val) || val < 1 || mod(val, 1) ~= 0
         error('validate_config:badParam', ...
             '%s must be a positive integer, got %s.', name, mat2str(val));
+    end
+end
+
+function assert_nonnegative_integer(val, name)
+    if isempty(val) || ~isnumeric(val) || ~isscalar(val) || val < 0 || mod(val, 1) ~= 0
+        error('validate_config:badParam', ...
+            '%s must be a non-negative integer, got %s.', name, mat2str(val));
     end
 end
 

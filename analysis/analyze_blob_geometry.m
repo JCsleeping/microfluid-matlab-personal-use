@@ -7,9 +7,12 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size, flow_domain, solid
 %
 %   geometry_opts.mode:
 %       core_only        - scalar regionprops + EulerNumber, no domain-aware holes
+%       roi              - scalar regionprops + ROI-local domain-aware holes
 %       legacy_fullframe - original per-blob full-frame hole classification
 %
-%   ROI-local hole classification is intentionally not implemented in Phase 1.
+%   The default core_only mode remains the stable production baseline. ROI
+%   mode records per-row fallback provenance when domain-aware hole
+%   classification is unavailable or the local ROI exceeds configured limits.
 
     if nargin < 2, pixel_size = []; end
     if nargin < 3, flow_domain = []; end
@@ -18,12 +21,7 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size, flow_domain, solid
 
     geometry_opts = normalize_geometry_options(geometry_opts);
 
-    if strcmp(geometry_opts.mode, 'roi')
-        error('analyze_blob_geometry:badGeometryMode', ...
-            ['geometry.mode="roi" is not implemented in Phase 1. ' ...
-             'Use "core_only" or "legacy_fullframe".']);
-    end
-    if ~ismember(geometry_opts.mode, {'core_only', 'legacy_fullframe'})
+    if ~ismember(geometry_opts.mode, {'core_only', 'roi', 'legacy_fullframe'})
         error('analyze_blob_geometry:badGeometryMode', ...
             'Unsupported geometry mode: %s', geometry_opts.mode);
     end
@@ -62,6 +60,11 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size, flow_domain, solid
             case 'core_only'
                 hole_info = default_hole_info_core(props(i).EulerNumber);
 
+            case 'roi'
+                hole_info = classify_blob_holes_roi(cc.PixelIdxList{i}, ...
+                    size(dnapl_mask), flow_domain, solid_mask, conn, ...
+                    geometry_opts, props(i).EulerNumber);
+
             case 'legacy_fullframe'
                 blob_mask = false(size(dnapl_mask));
                 blob_mask(cc.PixelIdxList{i}) = true;
@@ -90,6 +93,10 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size, flow_domain, solid
         props(i).GeometryMode = string(geometry_opts.mode);
         props(i).GeometrySchemaVersion = string(geometry_opts.schema_version);
         props(i).ObjectConnectivity = conn;
+        props(i).RoiFallbackUsed = hole_info.RoiFallbackUsed;
+        props(i).RoiFallbackReason = hole_info.RoiFallbackReason;
+        props(i).TouchesImageBorder = hole_info.TouchesImageBorder;
+        props(i).RoiAreaFraction = hole_info.RoiAreaFraction;
 
         if ~isempty(pixel_size) && pixel_size > 0
             props(i).Area_m2          = A * pixel_size^2;
@@ -103,7 +110,7 @@ function blob = analyze_blob_geometry(dnapl_mask, pixel_size, flow_domain, solid
             props(i).EquivRadius_m    = NaN;
         end
 
-        if strcmp(geometry_opts.mode, 'legacy_fullframe') && hole_info.DomainAware
+        if hole_info.DomainAware
             if props(i).WaterHoleCount + props(i).MixedHoleCount > 0
                 props(i).TopologyType = "cluster";
             elseif props(i).Circularity > 0.5
@@ -179,6 +186,8 @@ function geometry_opts = normalize_geometry_options(geometry_opts)
     if ~isfield(geometry_opts, 'schema_version') || isempty(geometry_opts.schema_version)
         if strcmp(geometry_opts.mode, 'legacy_fullframe')
             geometry_opts.schema_version = 'geometry_v1_legacy_fullframe';
+        elseif strcmp(geometry_opts.mode, 'roi')
+            geometry_opts.schema_version = 'geometry_v3_roi_holes';
         else
             geometry_opts.schema_version = 'geometry_v2_core_only';
         end
@@ -188,6 +197,18 @@ function geometry_opts = normalize_geometry_options(geometry_opts)
     if ~isfield(geometry_opts, 'include_heavy_shape_props') || isempty(geometry_opts.include_heavy_shape_props)
         geometry_opts.include_heavy_shape_props = true;
     end
+    if ~isfield(geometry_opts, 'roi_pad') || isempty(geometry_opts.roi_pad)
+        geometry_opts.roi_pad = 1;
+    end
+    if ~isfield(geometry_opts, 'max_roi_area_fraction') || isempty(geometry_opts.max_roi_area_fraction)
+        geometry_opts.max_roi_area_fraction = 0.25;
+    end
+    if ~isfield(geometry_opts, 'max_roi_pixels') || isempty(geometry_opts.max_roi_pixels)
+        geometry_opts.max_roi_pixels = 2e6;
+    end
+    geometry_opts.roi_pad = double(geometry_opts.roi_pad);
+    geometry_opts.max_roi_area_fraction = double(geometry_opts.max_roi_area_fraction);
+    geometry_opts.max_roi_pixels = double(geometry_opts.max_roi_pixels);
 end
 
 
@@ -202,7 +223,7 @@ function props = compute_base_props(cc, label_image, geometry_opts)
     end
 
     switch geometry_opts.mode
-        case 'core_only'
+        case {'core_only', 'roi'}
             core_props = [base_props, {'EulerNumber'}];
             props = regionprops(label_image, core_props{:});
 
@@ -216,7 +237,13 @@ function props = compute_base_props(cc, label_image, geometry_opts)
 end
 
 
-function hole_info = default_hole_info_core(euler_number)
+function hole_info = default_hole_info_core(euler_number, source, fallback_used, fallback_reason, touches_border, roi_area_fraction)
+    if nargin < 2 || isempty(source), source = "euler_number"; end
+    if nargin < 3 || isempty(fallback_used), fallback_used = false; end
+    if nargin < 4 || isempty(fallback_reason), fallback_reason = "not_applicable"; end
+    if nargin < 5 || isempty(touches_border), touches_border = false; end
+    if nargin < 6 || isempty(roi_area_fraction), roi_area_fraction = NaN; end
+
     if isempty(euler_number) || isnan(euler_number)
         euler_hole_count = NaN;
     else
@@ -234,7 +261,11 @@ function hole_info = default_hole_info_core(euler_number)
         'DominantHoleType', "not_classified", ...
         'DomainAware', false, ...
         'HoleClassificationComputed', false, ...
-        'HoleCountSource', "euler_number");
+        'HoleCountSource', string(source), ...
+        'RoiFallbackUsed', logical(fallback_used), ...
+        'RoiFallbackReason', string(fallback_reason), ...
+        'TouchesImageBorder', logical(touches_border), ...
+        'RoiAreaFraction', double(roi_area_fraction));
 end
 
 
@@ -262,14 +293,7 @@ end
 
 function T = make_blob_geometry_table(props, geometry_opts)
     if isempty(props)
-        T = table(zeros(0,1), zeros(0,1), zeros(0,1), zeros(0,1), ...
-            zeros(0,1), zeros(0,1), zeros(0,1), zeros(0,1), zeros(0,1), ...
-            zeros(0,1), zeros(0,1), zeros(0,1), zeros(0,1), zeros(0,1), ...
-            zeros(0,1), zeros(0,1), zeros(0,1), strings(0,1), ...
-            zeros(0,1), zeros(0,1), strings(0,1), strings(0,1), ...
-            strings(0,1), strings(0,1), zeros(0,1), false(0,1), ...
-            strings(0,1), zeros(0,1), ...
-            'VariableNames', blob_table_variable_names());
+        T = make_empty_blob_geometry_table();
         return;
     end
 
@@ -301,6 +325,10 @@ function T = make_blob_geometry_table(props, geometry_opts)
     ObjectConnectivity = [props.ObjectConnectivity]';
     HoleClassificationComputed = logical([props.HoleClassificationComputed]');
     HoleCountSource = reshape(string({props.HoleCountSource}), [], 1);
+    RoiFallbackUsed = logical([props.RoiFallbackUsed]');
+    RoiFallbackReason = reshape(string({props.RoiFallbackReason}), [], 1);
+    TouchesImageBorder = logical([props.TouchesImageBorder]');
+    RoiAreaFraction = [props.RoiAreaFraction]';
 
     T = table(BlobID, Area, Perimeter, Circularity, ...
         AspectRatio, Eccentricity, Solidity, EquivDiameter, EquivRadius, ...
@@ -308,7 +336,8 @@ function T = make_blob_geometry_table(props, geometry_opts)
         MixedHoleCount, UnknownHoleCount, EffectiveEulerNumber, DominantHoleType, ...
         Centroid_X, Centroid_Y, GangliaType, TopologyType, ...
         GeometryMode, GeometrySchemaVersion, ObjectConnectivity, ...
-        HoleClassificationComputed, HoleCountSource, EulerHoleCount);
+        HoleClassificationComputed, HoleCountSource, EulerHoleCount, ...
+        RoiFallbackUsed, RoiFallbackReason, TouchesImageBorder, RoiAreaFraction);
 end
 
 
@@ -319,7 +348,158 @@ function names = blob_table_variable_names()
         'MixedHoleCount', 'UnknownHoleCount', 'EffectiveEulerNumber', 'DominantHoleType', ...
         'Centroid_X', 'Centroid_Y', 'GangliaType', 'TopologyType', ...
         'GeometryMode', 'GeometrySchemaVersion', 'ObjectConnectivity', ...
-        'HoleClassificationComputed', 'HoleCountSource', 'EulerHoleCount'};
+        'HoleClassificationComputed', 'HoleCountSource', 'EulerHoleCount', ...
+        'RoiFallbackUsed', 'RoiFallbackReason', 'TouchesImageBorder', ...
+        'RoiAreaFraction'};
+end
+
+
+function T = make_empty_blob_geometry_table()
+    names = blob_table_variable_names();
+    string_names = {'DominantHoleType', 'GangliaType', 'TopologyType', ...
+        'GeometryMode', 'GeometrySchemaVersion', 'HoleCountSource', ...
+        'RoiFallbackReason'};
+    logical_names = {'HoleClassificationComputed', 'RoiFallbackUsed', ...
+        'TouchesImageBorder'};
+
+    vars = cell(1, numel(names));
+    for idx = 1:numel(names)
+        if ismember(names{idx}, string_names)
+            vars{idx} = strings(0, 1);
+        elseif ismember(names{idx}, logical_names)
+            vars{idx} = false(0, 1);
+        else
+            vars{idx} = zeros(0, 1);
+        end
+    end
+
+    T = table(vars{:}, 'VariableNames', names);
+end
+
+
+function hole_info = classify_blob_holes_roi(pixel_idx, image_size, flow_domain, solid_mask, conn, geometry_opts, euler_number)
+    [local_blob, rows, cols, touches_border] = make_local_blob_mask( ...
+        pixel_idx, image_size, geometry_opts.roi_pad);
+    roi_pixels = numel(local_blob);
+    roi_area_fraction = roi_pixels / prod(double(image_size));
+
+    if roi_pixels > geometry_opts.max_roi_pixels
+        hole_info = default_hole_info_core(euler_number, ...
+            "euler_number_large_roi_fallback", true, ...
+            "max_roi_pixels_exceeded", touches_border, roi_area_fraction);
+        return;
+    end
+
+    if roi_area_fraction > geometry_opts.max_roi_area_fraction
+        hole_info = default_hole_info_core(euler_number, ...
+            "euler_number_large_roi_fallback", true, ...
+            "max_roi_area_fraction_exceeded", touches_border, roi_area_fraction);
+        return;
+    end
+
+    domain_ok = ~isempty(flow_domain) && ~isempty(solid_mask) && ...
+        isequal(size(flow_domain), image_size) && isequal(size(solid_mask), image_size);
+    if ~domain_ok
+        hole_info = default_hole_info_core(euler_number, ...
+            "euler_number_domain_unavailable", true, ...
+            "domain_masks_unavailable", touches_border, roi_area_fraction);
+        return;
+    end
+
+    local_flow = logical(flow_domain(rows, cols));
+    local_solid = logical(solid_mask(rows, cols));
+
+    padded_blob = padarray(local_blob, [1 1], false, 'both');
+    filled_blob = imfill(padded_blob, conn, 'holes');
+    hole_mask_padded = filled_blob & ~padded_blob;
+    hole_mask = hole_mask_padded(2:end-1, 2:end-1);
+    hole_cc = bwconncomp(hole_mask, conn);
+
+    hole_info = classify_hole_components_local(hole_cc, hole_mask, ...
+        local_blob, local_flow, local_solid);
+    hole_info.EulerHoleCount = max(0, 1 - euler_number);
+    hole_info.HoleClassificationComputed = true;
+    hole_info.HoleCountSource = "roi_domain_aware";
+    hole_info.RoiFallbackUsed = false;
+    hole_info.RoiFallbackReason = "none";
+    hole_info.TouchesImageBorder = logical(touches_border);
+    hole_info.RoiAreaFraction = roi_area_fraction;
+end
+
+
+function [local_mask, rows, cols, touches_border] = make_local_blob_mask(pixel_idx, image_size, pad)
+    H = image_size(1);
+    W = image_size(2);
+    [r, c] = ind2sub(image_size, pixel_idx);
+
+    rmin = min(r);
+    rmax = max(r);
+    cmin = min(c);
+    cmax = max(c);
+    touches_border = rmin == 1 || rmax == H || cmin == 1 || cmax == W;
+
+    r1 = max(rmin - pad, 1);
+    r2 = min(rmax + pad, H);
+    c1 = max(cmin - pad, 1);
+    c2 = min(cmax + pad, W);
+
+    rows = r1:r2;
+    cols = c1:c2;
+    local_mask = false(numel(rows), numel(cols));
+
+    rr = r - r1 + 1;
+    cc = c - c1 + 1;
+    local_mask(sub2ind(size(local_mask), rr, cc)) = true;
+end
+
+
+function hole_info = classify_hole_components_local(hole_cc, hole_mask, local_blob, local_flow, local_solid)
+    hole_info = struct( ...
+        'HoleCount', hole_cc.NumObjects, ...
+        'EulerHoleCount', NaN, ...
+        'WaterHoleCount', 0, ...
+        'SolidHoleCount', 0, ...
+        'MixedHoleCount', 0, ...
+        'UnknownHoleCount', 0, ...
+        'EffectiveEulerNumber', 1, ...
+        'DominantHoleType', "none", ...
+        'DomainAware', true, ...
+        'HoleClassificationComputed', true, ...
+        'HoleCountSource', "roi_domain_aware", ...
+        'RoiFallbackUsed', false, ...
+        'RoiFallbackReason', "none", ...
+        'TouchesImageBorder', false, ...
+        'RoiAreaFraction', NaN);
+
+    if hole_cc.NumObjects == 0
+        return;
+    end
+
+    water_mask = logical(local_flow) & ~logical(local_solid) & ~logical(local_blob);
+    local_solid = logical(local_solid);
+
+    for k = 1:hole_cc.NumObjects
+        hole_pixels = hole_cc.PixelIdxList{k};
+        area_px = numel(hole_pixels);
+        solid_px = sum(local_solid(hole_pixels));
+        water_px = sum(water_mask(hole_pixels));
+        unknown_px = max(0, area_px - solid_px - water_px);
+
+        if solid_px / area_px >= 0.5
+            hole_info.SolidHoleCount = hole_info.SolidHoleCount + 1;
+        elseif water_px / area_px >= 0.5
+            hole_info.WaterHoleCount = hole_info.WaterHoleCount + 1;
+        elseif solid_px > 0 && water_px > 0
+            hole_info.MixedHoleCount = hole_info.MixedHoleCount + 1;
+        elseif unknown_px > 0
+            hole_info.UnknownHoleCount = hole_info.UnknownHoleCount + 1;
+        else
+            hole_info.UnknownHoleCount = hole_info.UnknownHoleCount + 1;
+        end
+    end
+
+    hole_info.EffectiveEulerNumber = 1 - hole_info.WaterHoleCount - hole_info.MixedHoleCount;
+    hole_info.DominantHoleType = dominant_hole_type(hole_info);
 end
 
 
@@ -342,7 +522,11 @@ function hole_info = classify_blob_holes(blob_mask, dnapl_mask, flow_domain, sol
         'DominantHoleType', "none", ...
         'DomainAware', false, ...
         'HoleClassificationComputed', true, ...
-        'HoleCountSource', "legacy_domain_aware");
+        'HoleCountSource', "legacy_domain_aware", ...
+        'RoiFallbackUsed', false, ...
+        'RoiFallbackReason', "not_applicable", ...
+        'TouchesImageBorder', touches_image_border(blob_mask), ...
+        'RoiAreaFraction', NaN);
 
     if hole_cc.NumObjects == 0
         return;
@@ -384,6 +568,11 @@ function hole_info = classify_blob_holes(blob_mask, dnapl_mask, flow_domain, sol
     end
 
     hole_info.EffectiveEulerNumber = 1 - hole_info.WaterHoleCount - hole_info.MixedHoleCount;
+    hole_info.DominantHoleType = dominant_hole_type(hole_info);
+end
+
+
+function value = dominant_hole_type(hole_info)
     type_counts = [
         hole_info.WaterHoleCount, ...
         hole_info.SolidHoleCount, ...
@@ -391,16 +580,22 @@ function hole_info = classify_blob_holes(blob_mask, dnapl_mask, flow_domain, sol
         hole_info.UnknownHoleCount];
     nonzero_types = sum(type_counts > 0);
     if nonzero_types == 0
-        hole_info.DominantHoleType = "none";
+        value = "none";
     elseif nonzero_types > 1 || hole_info.MixedHoleCount > 0
-        hole_info.DominantHoleType = "mixed";
+        value = "mixed";
     elseif hole_info.WaterHoleCount > 0
-        hole_info.DominantHoleType = "water";
+        value = "water";
     elseif hole_info.SolidHoleCount > 0
-        hole_info.DominantHoleType = "solid";
+        value = "solid";
     else
-        hole_info.DominantHoleType = "unknown";
+        value = "unknown";
     end
+end
+
+
+function value = touches_image_border(blob_mask)
+    value = any(blob_mask(1, :)) || any(blob_mask(end, :)) || ...
+        any(blob_mask(:, 1)) || any(blob_mask(:, end));
 end
 
 
