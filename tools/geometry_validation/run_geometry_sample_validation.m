@@ -550,9 +550,13 @@ end
 
 function mask = segment_selected_raw_frame(tif_path, page_in_tif, context)
     rgb = imread(tif_path, max(1, round(page_in_tif)));
+    if isa(rgb, 'uint16')
+        rgb = im2uint8(rgb);
+    end
     if size(rgb, 3) == 1
         rgb = repmat(rgb, [1 1 3]);
     end
+    rgb = prepare_rgb_input_encoding(rgb, context.config);
     [rgb_rot, ~, ~] = rotate_and_crop(rgb, context.config);
     if isfield(context.config, 'illumination') && isfield(context.config.illumination, 'method')
         [rgb_corr, ~] = correct_illumination(rgb_rot, ...

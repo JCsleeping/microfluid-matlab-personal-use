@@ -320,7 +320,7 @@ end
 %  Internal: load + preprocess + segment
 %  ========================================================================
 function results_k = load_and_segment_frame_internal(results, config, fidx, frame_index)
-    rgb = load_frame(fidx, frame_index);
+    rgb = load_frame(fidx, frame_index, config);
 
     [rgb_rot, ~, ~] = rotate_and_crop(rgb, config);
     [rgb_corr, ~]   = correct_illumination(rgb_rot, ...

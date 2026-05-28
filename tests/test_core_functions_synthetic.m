@@ -241,6 +241,42 @@ function test_validate_config_rejects_bad_input_mode(testCase)
         'validate_config:badParam');
 end
 
+function test_validate_config_accepts_input_encoding_toggle(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    verifyTrue(testCase, isfield(config, 'input'));
+    verifyFalse(testCase, config.input.is_linear_rgb);
+
+    config.input.is_linear_rgb = 1;
+    config = validate_config(config);
+    verifyTrue(testCase, config.input.is_linear_rgb);
+
+    config.input.is_linear_rgb = false;
+    config = validate_config(config);
+    verifyFalse(testCase, config.input.is_linear_rgb);
+end
+
+function test_validate_config_rejects_bad_input_encoding_toggle(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.input.is_linear_rgb = 2;
+    verifyError(testCase, @() validate_config(config), 'validate_config:badParam');
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.input.is_linear_rgb = -1;
+    verifyError(testCase, @() validate_config(config), 'validate_config:badParam');
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.input.is_linear_rgb = 'linear';
+    verifyError(testCase, @() validate_config(config), 'validate_config:badParam');
+end
+
 function test_validate_config_rejects_fractional_pages(testCase)
     setup_path();
     [fixture_dir, tif_path] = create_temp_tif_fixture();
@@ -250,6 +286,60 @@ function test_validate_config_rejects_fractional_pages(testCase)
     verifyError(testCase, ...
         @() validate_config(config), ...
         'validate_config:badParam');
+end
+
+
+%% ========== input encoding ==========
+
+function test_prepare_rgb_input_encoding_srgb_noop(testCase)
+    setup_path();
+    config = struct();
+    config.input.is_linear_rgb = false;
+    rgb = uint8(randi([0 255], 5, 6, 3));
+
+    out = prepare_rgb_input_encoding(rgb, config);
+
+    verifyEqual(testCase, out, rgb);
+end
+
+function test_prepare_rgb_input_encoding_linear_transfer(testCase)
+    setup_path();
+    config = struct();
+    config.input.is_linear_rgb = true;
+
+    linear_vals = reshape([0, 0.0031308, 0.25, 1], [2 2 1]);
+    rgb_linear = repmat(linear_vals, [1 1 3]);
+
+    out = prepare_rgb_input_encoding(rgb_linear, config);
+
+    expected = zeros(size(rgb_linear));
+    branch = rgb_linear <= 0.0031308;
+    expected(branch) = 12.92 .* rgb_linear(branch);
+    expected(~branch) = 1.055 .* rgb_linear(~branch).^(1 / 2.4) - 0.055;
+    expected = im2uint8(expected);
+
+    verifyClass(testCase, out, 'uint8');
+    verifySize(testCase, out, [2 2 3]);
+    verifyEqual(testCase, out, expected);
+end
+
+function test_segment_dnapl_records_input_encoding_provenance(testCase)
+    setup_path();
+    rgb = uint8(90 * ones(12, 12, 3));
+    rgb(1:6, :, 1) = 220;
+    rgb(1:6, :, 2) = 40;
+    rgb(1:6, :, 3) = 70;
+    flow_domain = true(12, 12);
+
+    config = minimal_segmentation_config();
+    [~, ~, seg_info] = segment_DNAPL(rgb, flow_domain, config);
+    verifyFalse(testCase, seg_info.input_is_linear_rgb);
+    verifyEqual(testCase, string(seg_info.rgb_encoding_for_segmentation), "srgb");
+
+    config.input.is_linear_rgb = true;
+    [~, ~, seg_info] = segment_DNAPL(rgb, flow_domain, config);
+    verifyTrue(testCase, seg_info.input_is_linear_rgb);
+    verifyEqual(testCase, string(seg_info.rgb_encoding_for_segmentation), "srgb");
 end
 
 
@@ -628,6 +718,15 @@ function config = make_valid_test_config(fixture_dir, tif_path)
         'data_path', fixture_dir, ...
         'multipage_tif_path', {tif_path}, ...
         'output_path', fullfile(fixture_dir, 'output'));
+end
+
+function config = minimal_segmentation_config()
+    config.segmentation.method = 'otsu';
+    config.segmentation.num_components = 2;
+    config.segmentation.min_blob_area = 1;
+    config.segmentation.morph_radius = 0;
+    config.segmentation.hole_fill_radius = 0;
+    config.input.is_linear_rgb = false;
 end
 
 function default_data_path = get_config_pipeline_default_data_path()

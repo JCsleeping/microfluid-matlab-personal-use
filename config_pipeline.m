@@ -54,6 +54,7 @@ function config = config_pipeline(varargin)
     config.input_mode = 'multipage_tif';
     config.image_dir = '';
     config.image_files = {};
+    config.input.is_linear_rgb = false;  % 0 = sRGB/default, 1 = Linear RGB input
 
     % --- Output path ---
     default_output_name = ['output_' datestr(now, 'yyyymmdd_HHMMSS')];

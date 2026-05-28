@@ -57,6 +57,30 @@ function config = validate_config(config)
             strjoin(valid_modes, ', '), config.input_mode);
     end
 
+    %% Input encoding
+    if ~isfield(config, 'input') || isempty(config.input)
+        config.input = struct();
+    end
+    if ~isfield(config.input, 'is_linear_rgb') || isempty(config.input.is_linear_rgb)
+        config.input.is_linear_rgb = false;
+    end
+    if islogical(config.input.is_linear_rgb)
+        if ~isscalar(config.input.is_linear_rgb)
+            error('validate_config:badParam', ...
+                'input.is_linear_rgb must be a logical scalar or numeric 0/1.');
+        end
+    elseif isnumeric(config.input.is_linear_rgb)
+        if ~isscalar(config.input.is_linear_rgb) || ...
+                ~ismember(config.input.is_linear_rgb, [0 1])
+            error('validate_config:badParam', ...
+                'input.is_linear_rgb must be a logical scalar or numeric 0/1.');
+        end
+    else
+        error('validate_config:badParam', ...
+            'input.is_linear_rgb must be a logical scalar or numeric 0/1.');
+    end
+    config.input.is_linear_rgb = logical(config.input.is_linear_rgb);
+
     %% Output controls
     if ~isfield(config.output, 'blob_detail_chunk_size') || isempty(config.output.blob_detail_chunk_size)
         config.output.blob_detail_chunk_size = 100;
