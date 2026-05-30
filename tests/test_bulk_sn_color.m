@@ -131,6 +131,27 @@ function test_winsorized_mean_resists_single_pixel_outlier(testCase)
 end
 
 
+function test_disabled_bulk_sn_reports_not_computed_provenance(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    [~, ~, frame_rgb, flow_domain, solid_mask] = make_color_fixture();
+    config = struct();
+    config.bulk_sn = struct();
+    config.bulk_sn.enabled = false;
+    config.bulk_sn.primary_output = true;
+
+    [sn, info] = compute_bulk_sn_from_config(frame_rgb, flow_domain, ...
+        solid_mask, config, 0.25);
+
+    verifyEqual(testCase, sn, 0.25);
+    verifyFalse(testCase, info.enabled);
+    verifyEqual(testCase, info.endpoint_status, "not_computed");
+    verifyEqual(testCase, info.rgb_source, "");
+    verifyEqual(testCase, info.mask_id, "");
+end
+
+
 function test_timeseries_table_does_not_fake_missing_color_index(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
     addpath(genpath(root_dir));

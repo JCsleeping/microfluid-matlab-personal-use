@@ -1,4 +1,5 @@
 from pathlib import Path
+import colorsys
 import importlib.util
 import sys
 
@@ -101,3 +102,15 @@ def test_hysteresis_reports_seed_candidate_and_growth_ratio():
     assert result.diagnostics["candidate_fraction"] >= result.diagnostics["seed_fraction"]
     assert result.diagnostics["growth_ratio"] >= 1
     assert result.diagnostics["red_mask_area_fraction"] <= result.diagnostics["candidate_fraction"]
+
+
+def test_hsv_red_pink_scores_red_hues_across_wraparound():
+    segment = load_segment_module()
+    rgb_5 = np.array([[colorsys.hsv_to_rgb(5.0 / 360.0, 1.0, 1.0)]], dtype=np.float32)
+    rgb_355 = np.array([[colorsys.hsv_to_rgb(355.0 / 360.0, 1.0, 1.0)]], dtype=np.float32)
+
+    score_5 = segment.score_preview_rgb(rgb_5, "hsv_red_pink")[0, 0]
+    score_355 = segment.score_preview_rgb(rgb_355, "hsv_red_pink")[0, 0]
+
+    assert score_5 > 0.80
+    assert score_355 > 0.80

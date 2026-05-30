@@ -57,10 +57,10 @@ def score_preview_rgb(rgb: Array, score_mode: str) -> Array:
         return np.hypot(lab[:, :, 1], lab[:, :, 2])
     if score_mode == "hsv_red_pink":
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-        hue = hsv[:, :, 0]
+        hue = np.mod(hsv[:, :, 0], 360.0)
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
-        hue_distance = np.minimum(np.abs(hue), np.abs(hue - 360.0))
+        hue_distance = np.minimum(hue, 360.0 - hue)
         red_weight = np.clip(1.0 - hue_distance / 35.0, 0.0, 1.0)
         return red_weight * sat * val
     raise ValueError(f"Unsupported score mode: {score_mode}")

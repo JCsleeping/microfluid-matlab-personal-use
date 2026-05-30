@@ -178,6 +178,9 @@ def endpoint_eligibility(
     color_index_ok = mask_id != "none" and rgb_source == "corrected_quantitative"
 
     if status != "pass":
+        # Branch C may still produce a provisional color-index time series when
+        # the audit RGB and flow-domain mask are valid, even if the endpoint
+        # candidate is not eligible for endpoint-normalized production Sn.
         return EligibilityDecision(False, color_index_ok, True, reason_by_status.get(status, status))
     if mask_id == "none":
         return EligibilityDecision(False, False, True, "unmasked_domain")
@@ -256,6 +259,12 @@ def prepare_mask(
         resize_method = "nearest"
     used_shape = tuple(int(v) for v in mask.shape)
     count = int(np.count_nonzero(mask))
+    if count == 0:
+        raise ValueError(
+            f"Prepared mask {mask_id!r} has zero selected pixels after crop/resize; "
+            f"original_shape={original_shape}, after_crop_shape={after_crop_shape}, "
+            f"target_shape={target_shape}, mask_grid={mask_grid}"
+        )
     coverage = float(count / max(mask.size, 1))
     provenance = MaskProvenance(
         mask_id=mask_id,
@@ -402,6 +411,10 @@ def compute_score_values(
         vector = napl_endpoint - water_endpoint
         denom = max(float(np.linalg.norm(vector)), 1e-8)
         for label, lab in lab_frames.items():
+            # This Q is a linear projection, not a pre-normalized saturation.
+            # normalized_saturation() subtracts Q_water and divides by
+            # Q_napl - Q_water later, so adding water subtraction here would
+            # only change the intermediate Q units without changing S.
             projection = (lab[:, :, 1] * vector[0] + lab[:, :, 2] * vector[1]) / denom
             values[label] = {
                 region: tlf.winsorized_mean(projection[mask])
@@ -713,7 +726,14 @@ def load_mask_array(path: Path, mask_source: str, variable_name: str = "") -> tu
             from scipy.io import loadmat
         except ImportError as exc:
             raise RuntimeError("Loading .mat masks requires scipy.") from exc
-        payload = loadmat(path)
+        try:
+            payload = loadmat(path)
+        except (NotImplementedError, ValueError, OSError) as exc:
+            raise RuntimeError(
+                f"Could not load MATLAB mask file {path}. If this is a MATLAB v7.3/HDF5 "
+                "file, export the mask variable to a v7 MAT file or an image mask before "
+                "running the Python audit."
+            ) from exc
         if variable_name:
             if variable_name not in payload:
                 raise KeyError(f"Variable {variable_name!r} not found in {path}")

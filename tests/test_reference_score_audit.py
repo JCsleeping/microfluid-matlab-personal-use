@@ -3,6 +3,7 @@ import importlib.util
 import sys
 
 import numpy as np
+import pytest
 
 
 def load_audit_module():
@@ -90,6 +91,22 @@ def test_build_region_masks_partitions_only_selected_mask_pixels():
     ) <= 1
 
 
+def test_build_region_masks_handles_sparse_masks():
+    audit = load_audit_module()
+
+    base_mask = np.zeros((3, 5), dtype=bool)
+    base_mask[1, 1] = True
+    base_mask[2, 4] = True
+
+    regions = audit.build_region_masks(base_mask)
+
+    assert np.array_equal(regions["all"], base_mask)
+    assert sum(np.count_nonzero(regions[name]) for name in ("left", "center", "right")) == 2
+    assert not np.any(regions["left"] & ~base_mask)
+    assert not np.any(regions["center"] & ~base_mask)
+    assert not np.any(regions["right"] & ~base_mask)
+
+
 def test_prepare_mask_crops_native_full_mask_and_resizes_with_nearest():
     audit = load_audit_module()
 
@@ -121,6 +138,24 @@ def test_prepare_mask_crops_native_full_mask_and_resizes_with_nearest():
     assert selection.provenance.mask_shape_original == (4, 4)
     assert selection.provenance.mask_shape_used == (4, 4)
     assert selection.provenance.mask_pixel_count_all == 8
+
+
+def test_prepare_mask_rejects_empty_mask_after_crop_and_resize():
+    audit = load_audit_module()
+
+    raw_mask = np.zeros((4, 4), dtype=bool)
+
+    with pytest.raises(ValueError, match="zero selected pixels"):
+        audit.prepare_mask(
+            raw_mask,
+            target_shape=(2, 2),
+            crop=(1, 1, 4, 4),
+            mask_id="core_flow",
+            mask_source="image",
+            mask_source_path=Path("empty_mask.png"),
+            mask_variable_name="",
+            mask_grid="native_full",
+        )
 
 
 def test_endpoint_eligibility_rejects_unmasked_diagnostic_rows():
@@ -198,6 +233,54 @@ def test_lab_ab_projection_global_is_available_for_masked_audit():
 
     assert values["napl"]["all"] > values["water"]["all"]
     assert values["water"]["all"] < values["residual"]["all"] < values["high"]["all"] < values["napl"]["all"]
+
+
+def test_lab_ab_projection_global_near_zero_endpoint_delta_is_rejected():
+    audit = load_audit_module()
+
+    frame = np.full((3, 3, 3), [0.45, 0.45, 0.45], dtype=np.float32)
+    corrected = {
+        "water": frame.copy(),
+        "napl": frame.copy(),
+        "high": frame.copy(),
+        "residual": frame.copy(),
+    }
+    masks = audit.build_region_masks(np.ones((3, 3), dtype=bool))
+
+    values = audit.compute_score_values(corrected, masks, "lab_ab_projection_global")
+    endpoint_delta = values["napl"]["all"] - values["water"]["all"]
+    s_high = audit.normalized_saturation(values["high"]["all"], values["water"]["all"], endpoint_delta)
+    s_residual = audit.normalized_saturation(values["residual"]["all"], values["water"]["all"], endpoint_delta)
+
+    status = audit.classify_candidate(
+        endpoint_delta=endpoint_delta,
+        s_high=s_high,
+        s_residual=s_residual,
+        region_s_high={"left": np.nan, "center": np.nan, "right": np.nan},
+        region_s_residual={"left": np.nan, "center": np.nan, "right": np.nan},
+        min_endpoint_delta=0.05,
+        min_separation=0.35,
+        max_region_range=0.20,
+    )
+
+    assert endpoint_delta == pytest.approx(0.0)
+    assert np.isnan(s_high)
+    assert status == "bad_endpoint_delta"
+
+
+def test_load_mat_v73_error_mentions_hdf5_or_v73(monkeypatch, tmp_path):
+    scipy_io = pytest.importorskip("scipy.io")
+    audit = load_audit_module()
+    mat_path = tmp_path / "mask.mat"
+    mat_path.write_bytes(b"MATLAB 7.3 fixture placeholder")
+
+    def raise_v73_error(_path):
+        raise ValueError("Unknown mat file type, version 0, 0")
+
+    monkeypatch.setattr(scipy_io, "loadmat", raise_v73_error)
+
+    with pytest.raises(RuntimeError, match="MATLAB v7.3/HDF5"):
+        audit.load_mask_array(mat_path, "mat", "flow_domain")
 
 
 def test_candidate_provenance_row_records_endpoint_role_and_inputs():
