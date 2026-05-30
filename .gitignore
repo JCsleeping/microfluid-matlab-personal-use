@@ -8,6 +8,7 @@
 
 # Output directories
 output_*/
+outputs/
 
 # Data (too large for repo)
 01 databased/
