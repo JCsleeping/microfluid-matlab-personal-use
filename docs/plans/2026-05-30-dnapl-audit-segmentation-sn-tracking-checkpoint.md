@@ -84,3 +84,20 @@ python -m py_compile tools/color_tuning/tune_light_field.py tools/color_tuning/a
 - A trusted same-chip full-NAPL endpoint candidate, or additional high-saturation frames for independent validation.
 - A MATLAB-exported `flow_domain` / `core_flow` mask or `results_*.mat` for the audited crop.
 - A decision on when to promote provisional `S_NAPL_color(t)` into endpoint-validated saturation after masked audit passes.
+
+## Implementation Checkpoint: 2026-05-30
+
+Implemented foundation and first-pass Branch A/B/C support:
+
+- Python endpoint audit now supports `flow_domain` / `core_flow` masks, `.mat` or image mask loading, nearest mask resize, mask provenance fields, mask overlays, and x-quantile left/center/right regions.
+- Python endpoint audit now separates `lab_ab_projection_global` from `lab_ab_projection_pixelwise` and writes `eligible_for_quantitative_endpoint`, `eligible_for_color_index_timeseries`, and `failure_reason`.
+- Branch A now has `tools/color_tuning/segment_preview_napl.py` for segmentation-only red DNAPL extraction with threshold sweep, component diagnostics, growth ratio, core/edge fractions, overlays, and `red_mask_area_fraction`.
+- Branch C MATLAB color-index saturation helper now carries `endpoint_status`, `endpoint_source`, `mask_id`, and `rgb_source`; timeseries tables expose those fields without fabricating color-index values when Branch C was not computed.
+- Full MATLAB pipeline propagation of Branch C provenance remains a gated follow-up; this checkpoint keeps the staged commit focused on Python audit/segmentation tools plus MATLAB helper/table guardrails.
+
+Verification run:
+
+```powershell
+python -m pytest tests/test_reference_score_audit.py tests/test_tune_light_field.py tests/test_segment_preview_napl.py -q
+matlab -batch "cd('<worktree>'); addpath(genpath(pwd)); results = runtests({'tests/test_bulk_sn_color.m','tests/test_upscale_assisted_segmentation.m'}); assertSuccess(results);"
+```
