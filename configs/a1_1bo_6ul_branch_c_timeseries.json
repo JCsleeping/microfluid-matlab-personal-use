@@ -37,6 +37,12 @@
     "expected_timeseries_rows": null,
     "full_napl_low_threshold": 0.5
   },
+  "regional_metrics": {
+    "enabled": true,
+    "flow_direction": "left_to_right",
+    "terminal_zone_fraction": 0.1,
+    "front_thresholds": [0.2, 0.5]
+  },
   "modes": {
     "pilot": {
       "run_suffix": "pilot100",

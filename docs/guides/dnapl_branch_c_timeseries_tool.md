@@ -96,6 +96,10 @@ branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_sensitivity_B.cs
 branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_A_B_sensitivity_comparison.csv
 branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_xbins_primary_A.csv
 branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_xbins_sensitivity_B.csv
+branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_xzones_primary_A.csv
+branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_xzones_sensitivity_B.csv
+branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_xzone_A_B_sensitivity_comparison.csv
+branch_c_timeseries\a1_1bo_6ul_manual_roi_pilot100\S_NAPL_color_regional_proxy_summary.json
 ```
 
 ## Full Run
@@ -204,6 +208,54 @@ the current MATLAB bridge uses 20 x-bins with approximately equal numbers of
 flow-domain pixels per bin. To convert frame-index outputs to real time, use
 `utilities/reconstruct_timeline.m` during post-processing and join by frame/page
 order.
+
+## Regional Proxy Outputs
+
+When x-bin outputs are present, validation also derives flow-direction x-zone
+proxy metrics:
+
+```text
+S_NAPL_color_xzones_primary_A.csv
+S_NAPL_color_xzones_sensitivity_B.csv
+S_NAPL_color_xzone_A_B_sensitivity_comparison.csv
+S_NAPL_color_regional_proxy_summary.json
+```
+
+The default x-zone definition uses the first and last 10% of x-bins as terminal
+zones. With the current 20-bin bridge this means:
+
+```text
+flow_direction = left_to_right
+inlet  = x-bins 1-2
+mid    = x-bins 3-18
+outlet = x-bins 19-20
+```
+
+These fields are operational color-index proxies:
+
+```text
+S_x_inlet
+S_x_mid
+S_x_outlet
+S_x_terminal_mean
+S_x_inlet_outlet_asymmetry
+S_x_mid_minus_terminal
+napl_extent_fraction_ge_0p2
+napl_extent_fraction_ge_0p5
+active_bin_fraction_ge_0p2
+active_bin_fraction_ge_0p5
+```
+
+Breakthrough/front timing fields in the JSON summary are threshold events from
+the x-bin `S_NAPL_color_xbin` signal. They are not binary-mask fingering or blob
+statistics.
+
+This is intentionally not geometric core/edge. Literature and the existing
+MATLAB code use a pore geometry concept for core/edge: distance from
+solid/pillar/wall boundaries, typically via `bwdist(solid_mask)` and a
+`core_flow_min_dist_px` threshold. The current standalone Branch C run has only
+the user-provided ROI/measurement mask, so true geometric `core_flow` and
+`edge_flow` remain disabled until a solid/core mask is supplied.
 
 Rows labeled `full_napl` are file-level labels. If a file spans a transition,
 some later pages can be below the full-NAPL threshold; the summary records this

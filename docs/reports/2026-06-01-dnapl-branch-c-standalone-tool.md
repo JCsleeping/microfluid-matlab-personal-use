@@ -138,6 +138,38 @@ B residual median = 0.170145
 endpoint sensitivity median = 0.001722
 ```
 
+## 2026-06-02 Regional Proxy Extension
+
+The standalone validation step now derives x-zone regional proxy outputs when
+the MATLAB x-bin CSVs are present:
+
+```text
+S_NAPL_color_xzones_primary_A.csv
+S_NAPL_color_xzones_sensitivity_B.csv
+S_NAPL_color_xzone_A_B_sensitivity_comparison.csv
+S_NAPL_color_regional_proxy_summary.json
+```
+
+The default x-zone definition is flow-direction based, not geometric core/edge:
+
+```text
+flow_direction = left_to_right
+terminal_zone_fraction = 0.1
+inlet  = first 10% of x-bins
+mid    = non-terminal x-bins
+outlet = last 10% of x-bins
+```
+
+The CSVs expose operational color-index metrics including `S_x_inlet`,
+`S_x_mid`, `S_x_outlet`, terminal/mid asymmetry, thresholded extent fraction,
+and active-bin fraction. The JSON summary records first outlet/domain events at
+the configured thresholds.
+
+True geometric `core_flow` / `edge_flow` remains a later gate. It requires a
+solid/core mask and should follow the existing MATLAB convention based on
+distance from solid/pillar/wall boundaries, such as
+`core_flow = flow_domain & bwdist(solid_mask) >= core_flow_min_dist_px`.
+
 ## Usage Notes
 
 For a new ROI, rerun at least:

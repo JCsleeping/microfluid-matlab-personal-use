@@ -283,6 +283,404 @@ def metric_by_role(rows: list[dict[str, str]], column: str) -> dict[str, Any]:
     }
 
 
+def threshold_slug(value: float) -> str:
+    return str(value).replace(".", "p").replace("-", "m")
+
+
+def write_dict_csv(path_value: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path_value.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = sorted({key for row in rows for key in row})
+    with path_value.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def finite_float_or_nan(value: str) -> float:
+    number = finite_float(value)
+    return float("nan") if number is None else number
+
+
+def weighted_mean(rows: list[dict[str, str]], column: str) -> float:
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for row in rows:
+        value = finite_float(row.get(column, ""))
+        weight = finite_float(row.get("x_bin_count", ""))
+        if value is None:
+            continue
+        if weight is None or weight <= 0:
+            weight = 1.0
+        weighted_sum += value * weight
+        weight_sum += weight
+    if weight_sum <= 0:
+        return float("nan")
+    return weighted_sum / weight_sum
+
+
+def median_or_nan(values: list[float]) -> float:
+    finite = [value for value in values if math.isfinite(value)]
+    if not finite:
+        return float("nan")
+    return float(statistics.median(finite))
+
+
+def first_event(rows: list[dict[str, Any]], column: str, predicate: str) -> dict[str, Any]:
+    for row in rows:
+        value = row.get(column)
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            continue
+        if (predicate == "ge" and value >= 1.0) or (predicate == "le" and value <= 1.0):
+            return {
+                "frame_index": row.get("frame_index"),
+                "time_s": row.get("time_s"),
+                "label": row.get("label"),
+                "role": row.get("role"),
+            }
+    return {"frame_index": None, "time_s": None, "label": "", "role": ""}
+
+
+def build_xzone_definition(
+    xbin_rows: list[dict[str, str]],
+    regional_config: dict[str, Any],
+) -> dict[str, Any]:
+    x_bins = sorted(
+        {
+            int(value)
+            for value in (finite_float(row.get("x_bin", "")) for row in xbin_rows)
+            if value is not None
+        }
+    )
+    if not x_bins:
+        raise ValueError("x-bin output has no finite x_bin values.")
+    n_bins = max(x_bins)
+    terminal_fraction = float(regional_config.get("terminal_zone_fraction", 0.1))
+    terminal_count = max(1, int(round(n_bins * terminal_fraction)))
+    if terminal_count * 2 >= n_bins:
+        terminal_count = max(1, (n_bins - 1) // 2)
+    low_bins = list(range(1, terminal_count + 1))
+    high_bins = list(range(n_bins - terminal_count + 1, n_bins + 1))
+    flow_direction = str(regional_config.get("flow_direction", "left_to_right")).lower()
+    if flow_direction == "right_to_left":
+        inlet_bins = high_bins
+        outlet_bins = low_bins
+    elif flow_direction == "left_to_right":
+        inlet_bins = low_bins
+        outlet_bins = high_bins
+    else:
+        raise ValueError(
+            "regional_metrics.flow_direction must be left_to_right or right_to_left."
+        )
+    terminal_bins = sorted(set(inlet_bins + outlet_bins))
+    mid_bins = [x_bin for x_bin in range(1, n_bins + 1) if x_bin not in terminal_bins]
+    if not mid_bins:
+        raise ValueError("x-zone mid region is empty; reduce terminal_zone_fraction.")
+    return {
+        "n_bins": n_bins,
+        "terminal_zone_fraction": terminal_fraction,
+        "terminal_bin_count": terminal_count,
+        "flow_direction": flow_direction,
+        "inlet_bins": inlet_bins,
+        "mid_bins": mid_bins,
+        "outlet_bins": outlet_bins,
+        "terminal_bins": terminal_bins,
+        "definition": (
+            "x-zone proxy: inlet/outlet terminal bins plus mid bins; "
+            "not geometric pore-wall core/edge"
+        ),
+    }
+
+
+def xbin_group_key(row: dict[str, str]) -> tuple[int, str]:
+    frame = finite_float(row.get("frame_index", ""))
+    return (int(frame) if frame is not None else 0, row.get("label", ""))
+
+
+def rows_for_bins(
+    rows: list[dict[str, str]],
+    bins: list[int],
+) -> list[dict[str, str]]:
+    wanted = set(bins)
+    return [
+        row
+        for row in rows
+        if (finite_float(row.get("x_bin", "")) is not None)
+        and int(finite_float(row.get("x_bin", "")) or 0) in wanted
+    ]
+
+
+def build_xzone_rows(
+    xbin_rows: list[dict[str, str]],
+    regional_config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    definition = build_xzone_definition(xbin_rows, regional_config)
+    thresholds = [
+        float(value)
+        for value in regional_config.get("front_thresholds", [0.2, 0.5])
+    ]
+    grouped: dict[tuple[int, str], list[dict[str, str]]] = {}
+    for row in xbin_rows:
+        grouped.setdefault(xbin_group_key(row), []).append(row)
+
+    out_rows: list[dict[str, Any]] = []
+    for _, frame_rows in sorted(grouped.items(), key=lambda item: item[0]):
+        frame_rows = sorted(
+            frame_rows,
+            key=lambda row: int(finite_float(row.get("x_bin", "")) or 0),
+        )
+        first = frame_rows[0]
+        frame_index = int(finite_float(first.get("frame_index", "")) or 0)
+        inlet_value = weighted_mean(
+            rows_for_bins(frame_rows, definition["inlet_bins"]),
+            "S_NAPL_color_xbin",
+        )
+        mid_value = weighted_mean(
+            rows_for_bins(frame_rows, definition["mid_bins"]),
+            "S_NAPL_color_xbin",
+        )
+        outlet_value = weighted_mean(
+            rows_for_bins(frame_rows, definition["outlet_bins"]),
+            "S_NAPL_color_xbin",
+        )
+        terminal_value = weighted_mean(
+            rows_for_bins(frame_rows, definition["terminal_bins"]),
+            "S_NAPL_color_xbin",
+        )
+        out: dict[str, Any] = {
+            "frame_index": frame_index,
+            "time_s": finite_float_or_nan(first.get("time_s", "")),
+            "label": first.get("label", ""),
+            "role": first.get("role", ""),
+            "endpoint_id": first.get("endpoint_id", ""),
+            "endpoint_short_name": first.get("endpoint_short_name", ""),
+            "water_label": first.get("water_label", ""),
+            "napl_label": first.get("napl_label", ""),
+            "S_x_inlet": inlet_value,
+            "S_x_mid": mid_value,
+            "S_x_outlet": outlet_value,
+            "S_x_terminal_mean": terminal_value,
+            "S_x_inlet_outlet_asymmetry": inlet_value - outlet_value,
+            "S_x_mid_minus_terminal": mid_value - terminal_value,
+            "xzone_n_bins": definition["n_bins"],
+            "xzone_terminal_bin_count": definition["terminal_bin_count"],
+            "xzone_flow_direction": definition["flow_direction"],
+            "xzone_definition": definition["definition"],
+        }
+        values_by_bin = {
+            int(finite_float(row.get("x_bin", "")) or 0): finite_float(
+                row.get("S_NAPL_color_xbin", "")
+            )
+            for row in frame_rows
+        }
+        for threshold in thresholds:
+            slug = threshold_slug(threshold)
+            active = [
+                x_bin
+                for x_bin, value in values_by_bin.items()
+                if value is not None and value >= threshold
+            ]
+            if active:
+                if definition["flow_direction"] == "left_to_right":
+                    extent_bin = max(active)
+                    extent_fraction = extent_bin / definition["n_bins"]
+                else:
+                    extent_bin = min(active)
+                    extent_fraction = (
+                        definition["n_bins"] - extent_bin + 1
+                    ) / definition["n_bins"]
+            else:
+                extent_bin = float("nan")
+                extent_fraction = 0.0
+            out[f"napl_extent_xbin_ge_{slug}"] = extent_bin
+            out[f"napl_extent_fraction_ge_{slug}"] = extent_fraction
+            out[f"active_bin_fraction_ge_{slug}"] = len(active) / definition["n_bins"]
+            out[f"inlet_zone_ge_{slug}"] = int(
+                math.isfinite(inlet_value) and inlet_value >= threshold
+            )
+            out[f"outlet_zone_ge_{slug}"] = int(
+                math.isfinite(outlet_value) and outlet_value >= threshold
+            )
+            out[f"inlet_zone_le_{slug}"] = int(
+                math.isfinite(inlet_value) and inlet_value <= threshold
+            )
+            out[f"outlet_zone_le_{slug}"] = int(
+                math.isfinite(outlet_value) and outlet_value <= threshold
+            )
+        out_rows.append(out)
+    return out_rows, definition
+
+
+def summarize_xzone_rows(
+    xzone_rows: list[dict[str, Any]],
+    thresholds: list[float],
+) -> dict[str, Any]:
+    by_role: dict[str, list[dict[str, Any]]] = {}
+    for row in xzone_rows:
+        by_role.setdefault(str(row.get("role", "")), []).append(row)
+
+    summary: dict[str, Any] = {
+        "row_count": len(xzone_rows),
+        "by_role": {},
+        "events": {},
+    }
+    metric_columns = [
+        "S_x_inlet",
+        "S_x_mid",
+        "S_x_outlet",
+        "S_x_terminal_mean",
+        "S_x_inlet_outlet_asymmetry",
+        "S_x_mid_minus_terminal",
+    ]
+    for role, rows in sorted(by_role.items()):
+        summary["by_role"][role] = {
+            column: median_or_nan(
+                [
+                    float(row[column])
+                    for row in rows
+                    if isinstance(row.get(column), (int, float))
+                ]
+            )
+            for column in metric_columns
+        }
+    for threshold in thresholds:
+        slug = threshold_slug(threshold)
+        summary["events"][f"outlet_first_ge_{slug}"] = first_event(
+            xzone_rows,
+            f"outlet_zone_ge_{slug}",
+            "ge",
+        )
+        summary["events"][f"outlet_first_le_{slug}"] = first_event(
+            xzone_rows,
+            f"outlet_zone_le_{slug}",
+            "ge",
+        )
+        summary["events"][f"domain_active_fraction_ge_95pct_{slug}"] = first_event(
+            [
+                {
+                    **row,
+                    f"domain_active_fraction_ge_95pct_{slug}": int(
+                        isinstance(row.get(f"active_bin_fraction_ge_{slug}"), (int, float))
+                        and row[f"active_bin_fraction_ge_{slug}"] >= 0.95
+                    ),
+                }
+                for row in xzone_rows
+            ],
+            f"domain_active_fraction_ge_95pct_{slug}",
+            "ge",
+        )
+        summary["events"][f"domain_active_fraction_le_5pct_{slug}"] = first_event(
+            [
+                {
+                    **row,
+                    f"domain_active_fraction_le_5pct_{slug}": int(
+                        isinstance(row.get(f"active_bin_fraction_ge_{slug}"), (int, float))
+                        and row[f"active_bin_fraction_ge_{slug}"] <= 0.05
+                    ),
+                }
+                for row in xzone_rows
+            ],
+            f"domain_active_fraction_le_5pct_{slug}",
+            "ge",
+        )
+    return summary
+
+
+def compare_xzone_rows(
+    primary_rows: list[dict[str, Any]],
+    sensitivity_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if len(primary_rows) != len(sensitivity_rows):
+        raise ValueError("Primary and sensitivity x-zone row counts differ.")
+    columns = [
+        "S_x_inlet",
+        "S_x_mid",
+        "S_x_outlet",
+        "S_x_terminal_mean",
+        "S_x_inlet_outlet_asymmetry",
+        "S_x_mid_minus_terminal",
+    ]
+    comparison_rows: list[dict[str, Any]] = []
+    for row_a, row_b in zip(primary_rows, sensitivity_rows):
+        if row_a.get("label") != row_b.get("label"):
+            raise ValueError("Primary and sensitivity x-zone labels differ.")
+        out: dict[str, Any] = {
+            "frame_index": row_a["frame_index"],
+            "time_s": row_a["time_s"],
+            "label": row_a["label"],
+            "role": row_a["role"],
+        }
+        for column in columns:
+            out[f"{column}_A"] = row_a.get(column, float("nan"))
+            out[f"{column}_B"] = row_b.get(column, float("nan"))
+            out[f"{column}_B_minus_A"] = out[f"{column}_B"] - out[f"{column}_A"]
+            out[f"abs_{column}_sensitivity"] = abs(out[f"{column}_B_minus_A"])
+        comparison_rows.append(out)
+    return comparison_rows
+
+
+def write_regional_proxy_outputs(
+    config: dict[str, Any],
+    paths: dict[str, Path],
+    xbin_primary: list[dict[str, str]],
+    xbin_sensitivity: list[dict[str, str]],
+) -> dict[str, Any]:
+    regional_config = config.get("regional_metrics", {})
+    if not regional_config.get("enabled", True) or not xbin_primary:
+        return {}
+    if not xbin_sensitivity:
+        return {}
+
+    primary_rows, definition = build_xzone_rows(xbin_primary, regional_config)
+    sensitivity_rows, sensitivity_definition = build_xzone_rows(
+        xbin_sensitivity,
+        regional_config,
+    )
+    if definition["n_bins"] != sensitivity_definition["n_bins"]:
+        raise ValueError("Primary and sensitivity x-bin definitions differ.")
+    comparison_rows = compare_xzone_rows(primary_rows, sensitivity_rows)
+
+    primary_path = paths["matlab_dir"] / "S_NAPL_color_xzones_primary_A.csv"
+    sensitivity_path = paths["matlab_dir"] / "S_NAPL_color_xzones_sensitivity_B.csv"
+    comparison_path = (
+        paths["matlab_dir"] / "S_NAPL_color_xzone_A_B_sensitivity_comparison.csv"
+    )
+    summary_path = paths["matlab_dir"] / "S_NAPL_color_regional_proxy_summary.json"
+    write_dict_csv(primary_path, primary_rows)
+    write_dict_csv(sensitivity_path, sensitivity_rows)
+    write_dict_csv(comparison_path, comparison_rows)
+
+    thresholds = [
+        float(value)
+        for value in regional_config.get("front_thresholds", [0.2, 0.5])
+    ]
+    summary = {
+        "definition": definition,
+        "semantics": {
+            "x_zones": "flow-direction zones derived from x-bin color-index output",
+            "front_breakthrough": (
+                "operational proxies from thresholded x-bin S_NAPL_color; "
+                "not binary-mask fingering metrics"
+            ),
+            "core_edge_geom": (
+                "not computed here; requires solid_mask/core_flow mask and "
+                "uses bwdist(solid_mask) style geometry"
+            ),
+        },
+        "primary": summarize_xzone_rows(primary_rows, thresholds),
+        "sensitivity": summarize_xzone_rows(sensitivity_rows, thresholds),
+        "paths": {
+            "xzone_primary_csv": str(primary_path),
+            "xzone_sensitivity_csv": str(sensitivity_path),
+            "xzone_comparison_csv": str(comparison_path),
+        },
+    }
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary["paths"]["regional_proxy_summary_json"] = str(summary_path)
+    return summary
+
+
 def validate_outputs(
     config: dict[str, Any],
     paths: dict[str, Path],
@@ -366,6 +764,15 @@ def validate_outputs(
     if xbin_primary and xbin_sensitivity and len(xbin_primary) != len(xbin_sensitivity):
         failures.append("Primary and sensitivity x-bin row counts differ.")
 
+    regional_proxy: dict[str, Any] = {}
+    if xbin_primary and xbin_sensitivity and not failures:
+        regional_proxy = write_regional_proxy_outputs(
+            config,
+            paths,
+            xbin_primary,
+            xbin_sensitivity,
+        )
+
     threshold = float(config.get("validation", {}).get("full_napl_low_threshold", 0.5))
     low_full_rows = [
         row
@@ -394,6 +801,7 @@ def validate_outputs(
             "xbin_sensitivity_csv": str(xbin_sensitivity_path)
             if xbin_sensitivity_path.is_file()
             else "",
+            **regional_proxy.get("paths", {}),
         },
         "row_counts": {
             "expected_timeseries_rows": expected_rows,
@@ -431,6 +839,11 @@ def validate_outputs(
             else {},
         },
         "endpoint_sensitivity": comparison_metric,
+        "regional_proxy": {
+            key: value
+            for key, value in regional_proxy.items()
+            if key != "paths"
+        },
         "commands": commands,
     }
     paths["matlab_dir"].mkdir(parents=True, exist_ok=True)
