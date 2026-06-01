@@ -5,7 +5,7 @@ Date: 2026-06-01
 ## Purpose
 
 Create an agent-independent runner for the BasicPy HDF5 + MATLAB Branch C
-`S_NAPL_color(t)` workflow so the run can be repeated later with a different
+`S_NAPL_color` workflow so the run can be repeated later with a different
 ROI mask, output directory, or selected stage list.
 
 ## Added Entry Point
@@ -30,7 +30,7 @@ The tool orchestrates:
 
 1. manifest generation;
 2. BasicPy HDF5 cache construction;
-3. MATLAB Branch C chroma `S_NAPL_color(t)` and x-bin `S_NAPL_color(x,t)`;
+3. MATLAB Branch C chroma `S_NAPL_color(frame)` and x-bin `S_NAPL_color(x,frame)`;
 4. output validation and `run_summary.json`.
 
 ## Verification
@@ -94,15 +94,23 @@ file-level label and the file can span a transition.
 
 ## 2026-06-02 Time and X-Bin Extension
 
-The standalone tool now passes a configurable sequence time axis through the
+The standalone tool can pass a configurable sequence time axis through the
 manifest, BasicPy cache, MATLAB Branch C outputs, comparison CSV, and
-`run_summary.json`.
+`run_summary.json`. This is disabled by default because real acquisition time
+is a post-processing concern.
 
 Default config:
 
 ```text
 manifest.time_start_s = 0.0
-manifest.time_step_s = 1.0
+manifest.time_step_s = null
+```
+
+For physical elapsed time, use `utilities/reconstruct_timeline.m` on the
+downstream MATLAB result `.mat`, for example:
+
+```matlab
+T = reconstruct_timeline('D:\path\to\results_*.mat')
 ```
 
 The MATLAB bridge now also writes long-format x-bin outputs:
@@ -121,7 +129,7 @@ Updated pilot validation:
 status = pass
 rows = 102 primary / 102 sensitivity / 102 comparison
 xbin rows = 2040 primary / 2040 sensitivity
-time_s range = 0 to 101
+time_s = blank by default
 NaNs = 0
 A full median = 1.000000
 A residual median = 0.171867
