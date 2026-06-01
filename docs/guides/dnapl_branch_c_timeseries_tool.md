@@ -29,6 +29,16 @@ logic:
 4. The runner validates row counts, label alignment, NaNs, and endpoint
    sensitivity, then writes `run_summary.json`.
 
+Optional C2 segmentation/morphology stages use the same BasicPy HDF5 cache:
+
+```text
+segpilot  -> MATLAB red-mask score/threshold sweep for pilot review
+segmorph  -> MATLAB locked-threshold red-mask morphology time series
+```
+
+These stages produce segmentation-derived 2D occupancy and morphology. They do
+not replace Branch C `S_NAPL_color`.
+
 ## Default A1 1-BO 6 uL Config
 
 Template:
@@ -128,6 +138,12 @@ Validate an existing run only:
 python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate
 ```
 
+Run only the C2 segmentation pilot from an existing pilot cache:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode pilot --steps segpilot validate
+```
+
 Rebuild the cache and MATLAB outputs from an existing manifest:
 
 ```powershell
@@ -179,6 +195,8 @@ The runner creates:
 <output_root>\manifests\<run_id>
 <output_root>\basicpy_hdf5_cache\<run_id>
 <output_root>\branch_c_timeseries\<run_id>
+<output_root>\segmentation_pilot\<run_id>
+<output_root>\segmentation_morphology\<run_id>
 <output_root>\run_configs\<run_id>_effective.json
 ```
 
@@ -256,6 +274,71 @@ solid/pillar/wall boundaries, typically via `bwdist(solid_mask)` and a
 `core_flow_min_dist_px` threshold. The current standalone Branch C run has only
 the user-provided ROI/measurement mask, so true geometric `core_flow` and
 `edge_flow` remain disabled until a solid/core mask is supplied.
+
+## C2 Segmentation Pilot
+
+C2 starts with a pilot threshold sweep instead of a production full run. The
+default config evaluates fixed thresholds from pooled pilot percentiles for:
+
+```text
+lab_a
+excess_red
+chroma
+normalized_red
+```
+
+Run:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode pilot --steps segpilot validate
+```
+
+Outputs:
+
+```text
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\threshold_sweep_all.csv
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\threshold_sweep_lab_a.csv
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\threshold_sweep_excess_red.csv
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\threshold_sweep_chroma.csv
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\threshold_sweep_normalized_red.csv
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\candidate_summary.csv
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\segmentation_pilot_manifest.json
+segmentation_pilot\a1_1bo_6ul_manual_roi_pilot100\mask_qc_overlays\
+```
+
+Pilot pass/fail is not automatic because there is no ground-truth mask. Use the
+candidate summary and overlay folders to choose one production score mode and
+one locked threshold. Do not use per-frame percentile thresholds for full-run
+morphology; they force every frame toward a similar red area fraction.
+
+After selecting a threshold, edit the config:
+
+```json
+"segmentation_metrics": {
+  "production_score_mode": "lab_a",
+  "locked_threshold": 13.1720056533813,
+  "threshold_source": "pilot_locked"
+}
+```
+
+Then run production morphology:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode pilot --steps segmorph validate
+```
+
+Production C2 outputs are written separately:
+
+```text
+segmentation_morphology\<run_id>\red_mask_timeseries.csv
+segmentation_morphology\<run_id>\red_blob_summary_timeseries.csv
+segmentation_morphology\<run_id>\red_blob_detail_all_frames.csv  (optional)
+segmentation_morphology\<run_id>\segmentation_manifest.json
+segmentation_morphology\<run_id>\mask_qc_overlays_sample\
+```
+
+`segmorph` requires `segmentation_metrics.locked_threshold`. If it is `null`,
+the MATLAB stage stops and tells you to run/review `segpilot` first.
 
 Rows labeled `full_napl` are file-level labels. If a file spans a transition,
 some later pages can be below the full-NAPL threshold; the summary records this

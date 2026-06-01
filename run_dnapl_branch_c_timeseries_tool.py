@@ -14,7 +14,7 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parent
 DEFAULT_CONFIG = REPO / "configs" / "a1_1bo_6ul_branch_c_timeseries.json"
-STEPS = ("manifest", "cache", "matlab", "validate")
+STEPS = ("manifest", "cache", "matlab", "segpilot", "segmorph", "validate")
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -107,20 +107,34 @@ def build_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, P
     manifest_dir = resolve_path(args.manifest_dir) or output_root / "manifests" / run_id
     cache_dir = resolve_path(args.cache_dir) or output_root / "basicpy_hdf5_cache" / run_id
     matlab_dir = resolve_path(args.matlab_dir) or output_root / "branch_c_timeseries" / run_id
+    segmentation_pilot_dir = (
+        resolve_path(args.segmentation_pilot_dir)
+        or output_root / "segmentation_pilot" / run_id
+    )
+    segmentation_morphology_dir = (
+        resolve_path(args.segmentation_morphology_dir)
+        or output_root / "segmentation_morphology" / run_id
+    )
     run_config_dir = output_root / "run_configs"
     return {
         "output_root": output_root,
         "manifest_dir": manifest_dir,
         "cache_dir": cache_dir,
         "matlab_dir": matlab_dir,
+        "segmentation_pilot_dir": segmentation_pilot_dir,
+        "segmentation_morphology_dir": segmentation_morphology_dir,
         "run_config_dir": run_config_dir,
     }
 
 
+def effective_config_path_for(config: dict[str, Any], paths: dict[str, Path]) -> Path:
+    run_id = f'{config["run_name"]}_{config.get("run_suffix", config["mode"])}'
+    return paths["run_config_dir"] / f"{run_id}_effective.json"
+
+
 def write_effective_config(config: dict[str, Any], paths: dict[str, Path]) -> Path:
     paths["run_config_dir"].mkdir(parents=True, exist_ok=True)
-    run_id = f'{config["run_name"]}_{config.get("run_suffix", config["mode"])}'
-    config_path = paths["run_config_dir"] / f"{run_id}_effective.json"
+    config_path = effective_config_path_for(config, paths)
     serializable = deepcopy(config)
     serializable["resolved_paths"] = {key: str(value) for key, value in paths.items()}
     config_path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
@@ -207,6 +221,30 @@ def matlab_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
         f"'{matlab_quote(paths['matlab_dir'])}', "
         f"'{matlab_quote(endpoint_policy_path)}'); "
         f"disp(outputs.summary(:, {display_cols}));"
+    )
+    return [str(config.get("matlab_command", "matlab")), "-batch", expression]
+
+
+def segmentation_command(
+    config: dict[str, Any],
+    paths: dict[str, Path],
+    effective_config_path: Path,
+    run_mode: str,
+) -> list[str]:
+    if run_mode == "pilot":
+        out_dir = paths["segmentation_pilot_dir"]
+    elif run_mode == "morphology":
+        out_dir = paths["segmentation_morphology_dir"]
+    else:
+        raise ValueError(f"Unsupported segmentation run mode: {run_mode}")
+    expression = (
+        f"cd('{matlab_quote(REPO)}'); "
+        "outputs = run_a1_1bo_6ul_hdf5_cache_segmentation_morphology("
+        f"'{matlab_quote(paths['cache_dir'])}', "
+        f"'{matlab_quote(out_dir)}', "
+        f"'{matlab_quote(effective_config_path)}', "
+        f"'{run_mode}'); "
+        "disp(outputs);"
     )
     return [str(config.get("matlab_command", "matlab")), "-batch", expression]
 
@@ -686,6 +724,9 @@ def validate_outputs(
     paths: dict[str, Path],
     commands: list[str],
 ) -> dict[str, Any]:
+    selected_steps = set(config.get("steps", []))
+    segmentation_requested = bool({"segpilot", "segmorph"} & selected_steps)
+    branch_c_requested = bool({"matlab"} & selected_steps) or not segmentation_requested
     manifest_summary_path = paths["manifest_dir"] / "accepted_frames_summary.json"
     primary_path = paths["matlab_dir"] / "S_NAPL_color_primary_A.csv"
     sensitivity_path = paths["matlab_dir"] / "S_NAPL_color_sensitivity_B.csv"
@@ -696,19 +737,52 @@ def validate_outputs(
     xbin_sensitivity_path = (
         paths["matlab_dir"] / "S_NAPL_color_xbins_sensitivity_B.csv"
     )
-    required_paths = [primary_path, sensitivity_path, comparison_path]
-    missing = [str(path_value) for path_value in required_paths if not path_value.is_file()]
-    if missing:
+    segpilot_candidate_path = paths["segmentation_pilot_dir"] / "candidate_summary.csv"
+    segpilot_sweep_path = paths["segmentation_pilot_dir"] / "threshold_sweep_all.csv"
+    segmorph_timeseries_path = (
+        paths["segmentation_morphology_dir"] / "red_mask_timeseries.csv"
+    )
+    segmorph_summary_path = (
+        paths["segmentation_morphology_dir"] / "red_blob_summary_timeseries.csv"
+    )
+    branch_c_paths = [primary_path, sensitivity_path, comparison_path]
+    branch_c_available = all(path_value.is_file() for path_value in branch_c_paths)
+    missing = [
+        str(path_value)
+        for path_value in branch_c_paths
+        if not path_value.is_file()
+    ]
+    if missing and branch_c_requested:
         raise FileNotFoundError(f"Missing validation input(s): {missing}")
 
-    primary = read_csv_rows(primary_path)
-    sensitivity = read_csv_rows(sensitivity_path)
-    comparison = read_csv_rows(comparison_path)
+    primary = read_csv_rows(primary_path) if primary_path.is_file() else []
+    sensitivity = read_csv_rows(sensitivity_path) if sensitivity_path.is_file() else []
+    comparison = read_csv_rows(comparison_path) if comparison_path.is_file() else []
     xbin_primary = (
         read_csv_rows(xbin_primary_path) if xbin_primary_path.is_file() else []
     )
     xbin_sensitivity = (
         read_csv_rows(xbin_sensitivity_path) if xbin_sensitivity_path.is_file() else []
+    )
+    segpilot_candidates = (
+        read_csv_rows(segpilot_candidate_path)
+        if segpilot_candidate_path.is_file()
+        else []
+    )
+    segpilot_sweep = (
+        read_csv_rows(segpilot_sweep_path)
+        if segpilot_sweep_path.is_file()
+        else []
+    )
+    segmorph_timeseries = (
+        read_csv_rows(segmorph_timeseries_path)
+        if segmorph_timeseries_path.is_file()
+        else []
+    )
+    segmorph_summary = (
+        read_csv_rows(segmorph_summary_path)
+        if segmorph_summary_path.is_file()
+        else []
     )
     manifest_summary = (
         read_json(manifest_summary_path) if manifest_summary_path.is_file() else {}
@@ -719,31 +793,31 @@ def validate_outputs(
 
     failures: list[str] = []
     warnings: list[str] = []
-    if expected_rows is not None and len(primary) != int(expected_rows):
+    if branch_c_available and expected_rows is not None and len(primary) != int(expected_rows):
         failures.append(
             f"Primary row count {len(primary)} != expected {expected_rows}."
         )
-    if len(primary) != len(sensitivity):
+    if branch_c_available and len(primary) != len(sensitivity):
         failures.append("Primary and sensitivity row counts differ.")
-    if len(primary) != len(comparison):
+    if branch_c_available and len(primary) != len(comparison):
         failures.append("Primary and comparison row counts differ.")
 
     primary_labels = [row.get("label", "") for row in primary]
     sensitivity_labels = [row.get("label", "") for row in sensitivity]
     comparison_labels = [row.get("label", "") for row in comparison]
-    if primary_labels != sensitivity_labels:
+    if branch_c_available and primary_labels != sensitivity_labels:
         failures.append("Primary and sensitivity labels differ.")
-    if primary_labels != comparison_labels:
+    if branch_c_available and primary_labels != comparison_labels:
         failures.append("Primary and comparison labels differ.")
 
     primary_metric = metric_summary(primary, "S_NAPL_color")
     sensitivity_metric = metric_summary(sensitivity, "S_NAPL_color")
     comparison_metric = metric_summary(comparison, "abs_endpoint_sensitivity")
-    if primary_metric["nan_or_missing_count"]:
+    if branch_c_available and primary_metric["nan_or_missing_count"]:
         failures.append("Primary S_NAPL_color contains NaN or missing values.")
-    if sensitivity_metric["nan_or_missing_count"]:
+    if branch_c_available and sensitivity_metric["nan_or_missing_count"]:
         failures.append("Sensitivity S_NAPL_color contains NaN or missing values.")
-    if comparison_metric["nan_or_missing_count"]:
+    if branch_c_available and comparison_metric["nan_or_missing_count"]:
         failures.append("Comparison endpoint sensitivity contains NaN or missing values.")
     xbin_primary_metric = (
         metric_summary(xbin_primary, "S_NAPL_color_xbin") if xbin_primary else {}
@@ -773,6 +847,58 @@ def validate_outputs(
             xbin_sensitivity,
         )
 
+    if "segpilot" in selected_steps:
+        if not segpilot_candidates:
+            failures.append("Segmentation pilot candidate_summary.csv is missing or empty.")
+        if not segpilot_sweep:
+            failures.append("Segmentation pilot threshold_sweep_all.csv is missing or empty.")
+    if "segmorph" in selected_steps:
+        if not segmorph_timeseries:
+            failures.append("Segmentation morphology red_mask_timeseries.csv is missing or empty.")
+        if not segmorph_summary:
+            failures.append(
+                "Segmentation morphology red_blob_summary_timeseries.csv is missing or empty."
+            )
+        if (
+            segmorph_timeseries
+            and branch_c_available
+            and len(segmorph_timeseries) != len(primary)
+        ):
+            failures.append(
+                "Segmentation morphology row count differs from Branch C primary rows."
+            )
+        if (
+            segmorph_timeseries
+            and not branch_c_available
+            and expected_rows is not None
+            and len(segmorph_timeseries) != int(expected_rows)
+        ):
+            failures.append(
+                "Segmentation morphology row count differs from expected manifest rows."
+            )
+
+    segpilot_area_metric = (
+        metric_summary(segpilot_sweep, "red_mask_area_fraction")
+        if segpilot_sweep
+        else {}
+    )
+    segmorph_area_metric = (
+        metric_summary(segmorph_timeseries, "red_mask_area_fraction")
+        if segmorph_timeseries
+        else {}
+    )
+    segmorph_blob_metric = (
+        metric_summary(segmorph_timeseries, "num_blobs")
+        if segmorph_timeseries
+        else {}
+    )
+    if segmorph_area_metric and segmorph_area_metric["nan_or_missing_count"]:
+        failures.append(
+            "Segmentation morphology red_mask_area_fraction contains NaN or missing values."
+        )
+    if segmorph_blob_metric and segmorph_blob_metric["nan_or_missing_count"]:
+        failures.append("Segmentation morphology num_blobs contains NaN or missing values.")
+
     threshold = float(config.get("validation", {}).get("full_napl_low_threshold", 0.5))
     low_full_rows = [
         row
@@ -801,6 +927,18 @@ def validate_outputs(
             "xbin_sensitivity_csv": str(xbin_sensitivity_path)
             if xbin_sensitivity_path.is_file()
             else "",
+            "segmentation_pilot_candidate_summary_csv": str(segpilot_candidate_path)
+            if segpilot_candidate_path.is_file()
+            else "",
+            "segmentation_pilot_threshold_sweep_csv": str(segpilot_sweep_path)
+            if segpilot_sweep_path.is_file()
+            else "",
+            "segmentation_morphology_timeseries_csv": str(segmorph_timeseries_path)
+            if segmorph_timeseries_path.is_file()
+            else "",
+            "segmentation_morphology_summary_csv": str(segmorph_summary_path)
+            if segmorph_summary_path.is_file()
+            else "",
             **regional_proxy.get("paths", {}),
         },
         "row_counts": {
@@ -810,6 +948,10 @@ def validate_outputs(
             "comparison": len(comparison),
             "xbin_primary": len(xbin_primary),
             "xbin_sensitivity": len(xbin_sensitivity),
+            "segmentation_pilot_candidates": len(segpilot_candidates),
+            "segmentation_pilot_sweep": len(segpilot_sweep),
+            "segmentation_morphology_timeseries": len(segmorph_timeseries),
+            "segmentation_morphology_summary": len(segmorph_summary),
         },
         "time_s": metric_summary(primary, "time_s")
         if primary and "time_s" in primary[0]
@@ -839,6 +981,16 @@ def validate_outputs(
             else {},
         },
         "endpoint_sensitivity": comparison_metric,
+        "segmentation_pilot": {
+            "red_mask_area_fraction": segpilot_area_metric,
+        },
+        "segmentation_morphology": {
+            "red_mask_area_fraction": segmorph_area_metric,
+            "num_blobs": segmorph_blob_metric,
+            "by_role": metric_by_role(segmorph_timeseries, "red_mask_area_fraction")
+            if segmorph_timeseries
+            else {},
+        },
         "regional_proxy": {
             key: value
             for key, value in regional_proxy.items()
@@ -868,7 +1020,10 @@ def main() -> None:
         "--steps",
         nargs="+",
         default=None,
-        help="Steps to run: manifest cache matlab validate. Comma-separated values are also accepted.",
+        help=(
+            "Steps to run: manifest cache matlab segpilot segmorph validate. "
+            "Comma-separated values are also accepted."
+        ),
     )
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--roi-mask", default=None)
@@ -876,6 +1031,8 @@ def main() -> None:
     parser.add_argument("--manifest-dir", default=None)
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--matlab-dir", default=None)
+    parser.add_argument("--segmentation-pilot-dir", default=None)
+    parser.add_argument("--segmentation-morphology-dir", default=None)
     parser.add_argument("--matlab-command", default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--force-manifest", action="store_true")
@@ -891,12 +1048,22 @@ def main() -> None:
     paths = build_paths(args, config)
     commands: list[str] = []
     selected_steps = config["steps"]
+    effective_config_candidate = effective_config_path_for(config, paths)
 
     compression = str(config.get("cache", {}).get("compression", "none"))
     if "matlab" in selected_steps and compression == "lzf" and not config["allow_lzf"]:
         raise ValueError(
             "HDF5 compression 'lzf' is not MATLAB-compatible in this workflow; "
             "use compression 'none' or pass --allow-lzf only for non-MATLAB diagnostics."
+        )
+    if (
+        ("segpilot" in selected_steps or "segmorph" in selected_steps)
+        and compression == "lzf"
+        and not config["allow_lzf"]
+    ):
+        raise ValueError(
+            "HDF5 compression 'lzf' is not MATLAB-compatible for segmentation "
+            "morphology; use compression 'none'."
         )
 
     effective_config_path = None
@@ -924,6 +1091,28 @@ def main() -> None:
         run_command(cache_command(config, paths), args.dry_run, commands)
     if "matlab" in selected_steps:
         run_command(matlab_command(config, paths), args.dry_run, commands)
+    if "segpilot" in selected_steps:
+        run_command(
+            segmentation_command(
+                config,
+                paths,
+                effective_config_path or effective_config_candidate,
+                "pilot",
+            ),
+            args.dry_run,
+            commands,
+        )
+    if "segmorph" in selected_steps:
+        run_command(
+            segmentation_command(
+                config,
+                paths,
+                effective_config_path or effective_config_candidate,
+                "morphology",
+            ),
+            args.dry_run,
+            commands,
+        )
     if "validate" in selected_steps:
         if args.dry_run:
             print("VALIDATE_SKIPPED_DRY_RUN")

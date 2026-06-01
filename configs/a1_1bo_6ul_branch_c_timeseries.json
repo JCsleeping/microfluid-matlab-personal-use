@@ -43,6 +43,19 @@
     "terminal_zone_fraction": 0.1,
     "front_thresholds": [0.2, 0.5]
   },
+  "segmentation_metrics": {
+    "enabled": true,
+    "score_modes": ["lab_a", "excess_red", "chroma", "normalized_red"],
+    "production_score_mode": "lab_a",
+    "locked_threshold": null,
+    "threshold_source": "pilot_locked",
+    "threshold_percentiles": [90, 92.5, 95, 97.5, 99],
+    "threshold_sample_frame_stride": 1,
+    "min_area_px": 20,
+    "morph_radius": 1,
+    "overlay_sample_max": 12,
+    "write_blob_detail": false
+  },
   "modes": {
     "pilot": {
       "run_suffix": "pilot100",

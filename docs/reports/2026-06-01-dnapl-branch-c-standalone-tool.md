@@ -170,6 +170,59 @@ solid/core mask and should follow the existing MATLAB convention based on
 distance from solid/pillar/wall boundaries, such as
 `core_flow = flow_domain & bwdist(solid_mask) >= core_flow_min_dist_px`.
 
+## 2026-06-02 C2 Segmentation Pilot Extension
+
+Added a separate C2 MATLAB HDF5 stage:
+
+```text
+run_a1_1bo_6ul_hdf5_cache_segmentation_morphology.m
+```
+
+The standalone runner now accepts:
+
+```text
+segpilot  -> red-score threshold sweep and overlay review outputs
+segmorph  -> locked-threshold red-mask morphology outputs
+```
+
+The C2 branch is deliberately separate from Branch C. It outputs
+segmentation-derived red-mask 2D occupancy and blob morphology, not
+endpoint-normalized `Sn`.
+
+Pilot command:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode pilot --steps segpilot validate
+```
+
+Pilot result:
+
+```text
+status = pass
+threshold sweep rows = 2040
+candidate rows = 20
+overlay PNGs = 240
+score modes = lab_a / excess_red / chroma / normalized_red
+threshold percentiles = 90 / 92.5 / 95 / 97.5 / 99
+```
+
+Candidate examples from the pilot:
+
+```text
+lab_a pct 92.5:
+  full median red area fraction     = 0.387557
+  residual median red area fraction = 0.072128
+  separation                        = 0.315429
+
+excess_red pct 92.5:
+  full median red area fraction     = 0.420129
+  residual median red area fraction = 0.071271
+  separation                        = 0.348858
+```
+
+These are pilot diagnostics only. A production `segmorph` run must wait until a
+score mode and locked threshold are selected from overlay review.
+
 ## Usage Notes
 
 For a new ROI, rerun at least:
