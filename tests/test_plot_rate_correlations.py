@@ -30,6 +30,10 @@ _PRC_SPEC.loader.exec_module(plot_rate_correlations)
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+def x_axis_spec(key):
+    return next(spec for spec in plot_rate_correlations.X_AXIS_SPECS if spec["key"] == key)
+
+
 def make_synthetic_df(n=20, with_mass=True, seed=0, sn0=1.0, sn_min=0.05):
     """Build a regularly-sampled DataFrame with all required columns plus mass.
 
@@ -51,6 +55,7 @@ def make_synthetic_df(n=20, with_mass=True, seed=0, sn0=1.0, sn_min=0.05):
             "ReqMean": np.clip(13.0 - 0.05 * np.arange(n), 1.0, None),
             "ReqStd": np.clip(14.0 - 0.05 * np.arange(n), 1.0, None),
             "a_i_2D": 40000 - 100 * np.arange(n),
+            "a_i_2D_flow": (40000 - 100 * np.arange(n)) * sn,
             "fracDroplets": np.clip(0.15 + 0.01 * np.arange(n), 0, 1),
             "fracColumns": np.clip(0.25 - 0.005 * np.arange(n), 0, 1),
             "fracClusters": np.clip(0.60 - 0.005 * np.arange(n), 0, 1),
@@ -486,11 +491,37 @@ class UnitInferenceTests(unittest.TestCase):
     def test_x_label_uses_unit_info_for_interface_area(self):
         df = pd.DataFrame({"a_i_2D": [4e4], "InterfaceArea": [1000.0]})
         info = plot_rate_correlations.infer_metric_units(df, args=None, pixel_size_um=5.0)
-        spec = plot_rate_correlations.X_AXIS_SPECS[1]  # InterfaceArea
+        spec = x_axis_spec("InterfaceArea")
         label = plot_rate_correlations._x_label_for(spec, df, pixel_size_um=5.0, unit_info=info)
         self.assertIn("L_{ow}", label)
         self.assertIn("(m)", label)
         self.assertNotIn(r"m$^2$", label)
+
+    def test_a_i_2D_flow_is_sn_weighted_a_i_2D_metric(self):
+        df = pd.DataFrame(
+            {
+                "RealTime_s": [0.0, 60.0],
+                "Sn": [0.5, 0.25],
+                "a_i_2D": [40000.0, 20000.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "timeseries_realtime_ai_flow.csv"
+            df.to_csv(csv_path, index=False)
+            loaded = plot_rate_correlations.load_rate_timeseries(csv_path)
+
+        np.testing.assert_allclose(loaded["a_i_2D_flow"], [20000.0, 5000.0])
+        info = plot_rate_correlations.infer_metric_units(loaded, args=None, pixel_size_um=5.0)
+        self.assertEqual(info["a_i_2D_flow"]["plot_unit"], "1/m")
+
+    def test_a_i_2D_flow_unit_inference_uses_flow_values_when_ai_absent(self):
+        df = pd.DataFrame({"a_i_2D_flow": [20000.0, 15000.0]})
+        info = plot_rate_correlations.infer_metric_units(df, args=None, pixel_size_um=5.0)
+
+        self.assertEqual(info["a_i_2D_flow"]["input_unit"], "1/m")
+        self.assertEqual(info["a_i_2D_flow"]["plot_unit"], "1/m")
+        self.assertEqual(info["a_i_2D_flow"]["conversion"], "none")
 
 
 # --------------------------------------------------------------------------- #
@@ -523,10 +554,10 @@ class PlotDriverTests(unittest.TestCase):
                 unit_info=unit_info,
             )
             stems_png = sorted({path.stem for path in written if path.suffix == ".png"})
-            self.assertEqual(len(stems_png), 24)
-            self.assertEqual(len([p for p in written if p.suffix == ".png"]), 24)
-            self.assertEqual(len([p for p in written if p.suffix == ".svg"]), 24)
-            self.assertEqual(len([p for p in written if p.suffix == ".xlsx"]), 24)
+            self.assertEqual(len(stems_png), 27)
+            self.assertEqual(len([p for p in written if p.suffix == ".png"]), 27)
+            self.assertEqual(len([p for p in written if p.suffix == ".svg"]), 27)
+            self.assertEqual(len([p for p in written if p.suffix == ".xlsx"]), 27)
             for path in written:
                 self.assertTrue(path.exists())
                 self.assertGreater(path.stat().st_size, 200, path)
@@ -549,8 +580,8 @@ class PlotDriverTests(unittest.TestCase):
                 unit_info=unit_info,
             )
             stems_png = sorted({path.stem for path in written if path.suffix == ".png"})
-            self.assertEqual(len(stems_png), 16)
-            self.assertEqual(len([p for p in written if p.suffix == ".xlsx"]), 16)
+            self.assertEqual(len(stems_png), 18)
+            self.assertEqual(len([p for p in written if p.suffix == ".xlsx"]), 18)
             self.assertTrue(any("normalized_rate_time_lr_vs_" in s for s in stems_png))
             self.assertTrue(any(s.startswith("rate_time_lr_vs_") for s in stems_png))
 
@@ -610,6 +641,91 @@ class PlotDriverTests(unittest.TestCase):
             self.assertNotIn("fracDroplets_raw", data.columns)
             self.assertAlmostEqual(data["countFracDropletsValid_raw"].iloc[0], 0.7)
 
+    def test_default_area_fraction_plots_include_count_fraction_supplements(self):
+        df = make_synthetic_df(n=40, with_mass=True)
+        df["areaFracDropletsValid"] = np.linspace(0.1, 0.2, len(df))
+        df["countFracDropletsValid"] = np.linspace(0.7, 0.8, len(df))
+        df["areaFracColumnsValid"] = np.linspace(0.2, 0.3, len(df))
+        df["countFracColumnsValid"] = np.linspace(0.2, 0.1, len(df))
+        df["areaFracClustersValid"] = 1.0 - df["areaFracDropletsValid"] - df["areaFracColumnsValid"]
+        df["countFracClustersValid"] = 1.0 - df["countFracDropletsValid"] - df["countFracColumnsValid"]
+        unit_info = self._attach_pipeline(df, pixel_size_um=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            figures_dir = Path(tmp)
+            written, _ = plot_rate_correlations.create_all_rate_figures(
+                df,
+                figures_dir=figures_dir,
+                rate_method="time-lr",
+                dpi=80,
+                pixel_size_um=None,
+                log_x_metrics=set(),
+                plot_set=("stage",),
+                fraction_kind="Area",
+                unit_info=unit_info,
+            )
+
+            stems_png = {path.stem for path in written if path.suffix == ".png"}
+            self.assertIn("rate_time_lr_vs_frac_droplets_stage_scatter", stems_png)
+            self.assertIn("rate_time_lr_vs_count_frac_droplets_stage_scatter", stems_png)
+            self.assertIn("rate_time_lr_vs_count_frac_columns_stage_scatter", stems_png)
+            self.assertIn("rate_time_lr_vs_count_frac_clusters_stage_scatter", stems_png)
+
+            area_data = pd.read_excel(
+                figures_dir / "rate_time_lr_vs_frac_droplets_stage_scatter_data.xlsx",
+                sheet_name="data_all",
+            )
+            count_data = pd.read_excel(
+                figures_dir / "rate_time_lr_vs_count_frac_droplets_stage_scatter_data.xlsx",
+                sheet_name="data_all",
+            )
+            self.assertIn("areaFracDropletsValid_raw", area_data.columns)
+            self.assertIn("countFracDropletsValid_raw", count_data.columns)
+            self.assertAlmostEqual(area_data["areaFracDropletsValid_raw"].iloc[0], 0.1)
+            self.assertAlmostEqual(count_data["countFracDropletsValid_raw"].iloc[0], 0.7)
+
+    def test_main_recomputes_count_fraction_plots_from_blob_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = write_full_csv(output_dir, n=30)
+            blob_rows = []
+            for frame_index in range(1, 31):
+                blob_rows.extend(
+                    [
+                        {"FrameIndex": frame_index, "Area": 80.0, "TopologyType": "cluster"},
+                        {"FrameIndex": frame_index, "Area": 20.0, "TopologyType": "droplet"},
+                        {"FrameIndex": frame_index, "Area": 10.0, "TopologyType": "column"},
+                    ]
+                )
+            pd.DataFrame(blob_rows).to_csv(output_dir / "blob_detail_all_frames.csv", index=False)
+
+            figures_dir = output_dir / "figures_rate"
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = plot_rate_correlations.main(
+                    [
+                        str(output_dir),
+                        "--csv",
+                        str(csv_path),
+                        "--figures-dir",
+                        str(figures_dir),
+                        "--dpi",
+                        "80",
+                        "--plot-set",
+                        "stage",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(
+                (figures_dir / "rate_time_lr_vs_count_frac_droplets_stage_scatter.png").exists()
+            )
+            data = pd.read_excel(
+                figures_dir / "rate_time_lr_vs_count_frac_droplets_stage_scatter_data.xlsx",
+                sheet_name="data_all",
+            )
+            self.assertIn("countFracDropletsValid_raw", data.columns)
+            self.assertAlmostEqual(data["countFracDropletsValid_raw"].dropna().iloc[0], 1 / 2)
+
     def test_binned_summary_defaults_to_active_removal_only(self):
         """rate_metric_binned_summary.csv should not contain non-active stages by default."""
         df = make_synthetic_df(n=80, with_mass=True)
@@ -644,7 +760,7 @@ class PlotDriverTests(unittest.TestCase):
             if not binned.empty:
                 stages_present = set(binned["stage"].astype(str).unique())
                 self.assertEqual(stages_present, {"active_removal"})
-            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 8)
+            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 9)
 
         _ = df  # silence unused
 
@@ -674,7 +790,7 @@ class PlotDriverTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             unit_json = figures_dir / "rate_plot_unit_inference.json"
             self.assertTrue(unit_json.exists())
-            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 8)
+            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 9)
             payload = json.loads(unit_json.read_text(encoding="utf-8"))
             self.assertIn("a_i_2D", payload)
             self.assertIn("InterfaceArea", payload)
@@ -724,8 +840,8 @@ class PlotDriverTests(unittest.TestCase):
             ):
                 self.assertIn(col, rates_df.columns)
             png_files = sorted(figures_dir.glob("*.png"))
-            self.assertEqual(len(png_files), 24)
-            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 24)
+            self.assertEqual(len(png_files), 27)
+            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 27)
             self.assertTrue((figures_dir / "rate_plot_config.json").exists())
             self.assertTrue((figures_dir / "rate_plot_metric_availability.csv").exists())
 
@@ -762,13 +878,13 @@ class PlotDriverTests(unittest.TestCase):
         unit_info = self._attach_pipeline(df, pixel_size_um=4.17)
         # ReqMedian -> um
         label_for_req = plot_rate_correlations._x_label_for(
-            plot_rate_correlations.X_AXIS_SPECS[4], df,
+            x_axis_spec("ReqMedian"), df,
             pixel_size_um=4.17, unit_info=unit_info,
         )
         self.assertIn("um", label_for_req)
         # InterfaceArea -> projected length L_ow in metres (NOT m^2)
         label_for_iface = plot_rate_correlations._x_label_for(
-            plot_rate_correlations.X_AXIS_SPECS[1], df,
+            x_axis_spec("InterfaceArea"), df,
             pixel_size_um=4.17, unit_info=unit_info,
         )
         self.assertIn("L_{ow}", label_for_iface)
@@ -859,6 +975,27 @@ class PlotDriverTests(unittest.TestCase):
             d = pd.read_excel(xlsx_path, sheet_name="data")
             if not d.empty:
                 self.assertEqual(set(d["stage"].astype(str)), {"active_removal"})
+                for col in (
+                    "x_plot",
+                    "y_plot",
+                    "yerr_lower",
+                    "yerr_upper",
+                    "rate_p25",
+                    "rate_median",
+                    "rate_p75",
+                    "rate_iqr",
+                    "errorbar_definition",
+                ):
+                    self.assertIn(col, d.columns)
+                first = d.iloc[0]
+                self.assertAlmostEqual(first["x_plot"], first["x_bin_median"])
+                self.assertAlmostEqual(first["y_plot"], first["rate_median"])
+                self.assertAlmostEqual(
+                    first["yerr_lower"], first["rate_median"] - first["rate_p25"]
+                )
+                self.assertAlmostEqual(
+                    first["yerr_upper"], first["rate_p75"] - first["rate_median"]
+                )
 
     def test_trajectory_xlsx_plotted_capped_by_max_trajectory_points(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1081,7 +1218,20 @@ class StatsCsvTests(unittest.TestCase):
             for col in ("metric", "stage", "n", "spearman_rho", "pearson_r",
                          "used_for_interpretation"):
                 self.assertIn(col, assoc.columns)
-            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 8)
+            binned = pd.read_csv(binned_csv)
+            for col in (
+                "metric",
+                "stage",
+                "bin_id",
+                "x_plot",
+                "y_plot",
+                "yerr_lower",
+                "yerr_upper",
+                "errorbar_definition",
+                "n",
+            ):
+                self.assertIn(col, binned.columns)
+            self.assertEqual(len(list(figures_dir.glob("*_data.xlsx"))), 9)
 
 
 if __name__ == "__main__":

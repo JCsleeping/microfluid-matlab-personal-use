@@ -195,7 +195,25 @@ def trim_to_onset(
     if x_col not in df.columns:
         raise ValueError(f"Input workbook must contain {x_col!r}.")
     if onset_col not in df.columns:
-        raise ValueError(f"Input workbook must contain {onset_col!r} for onset detection.")
+        if "Y" in df.columns and "SeriesName" in df.columns:
+            series_names = df["SeriesName"].dropna().unique()
+            if len(series_names) == 1 and str(series_names[0]).strip() == onset_col:
+                df = df.copy()
+                df[onset_col] = df["Y"]
+            else:
+                raise ValueError(
+                    f"Input workbook does not contain {onset_col!r} for onset detection.\n"
+                    f"  Available Y series: {[str(s) for s in series_names]}\n"
+                    f"  Use --onset-col to specify which column/series to use, or ensure\n"
+                    f"  the comparison workbook was generated with --y {onset_col}."
+                )
+        elif "Y" in df.columns and "SeriesName" not in df.columns:
+            df = df.copy()
+            df[onset_col] = df["Y"]
+        else:
+            raise ValueError(
+                f"Input workbook must contain {onset_col!r} for onset detection."
+            )
     if "Y" not in df.columns:
         raise ValueError("Input workbook must contain plotted value column 'Y'.")
 
@@ -359,6 +377,7 @@ def create_onset_aligned_outputs(
     out_dir=None,
     out_stem=None,
     threshold=0.98,
+    onset_col="SnNorm",
     min_consecutive=5,
     sheet_name="data",
     dpi=300,
@@ -368,7 +387,9 @@ def create_onset_aligned_outputs(
     df, _ = read_input_workbook(workbook_path, sheet_name=sheet_name)
     out_dir = Path(out_dir) if out_dir is not None else workbook_path.parent
     out_stem = out_stem or default_out_stem(workbook_path)
-    trimmed, metadata = trim_to_onset(df, threshold=threshold, min_consecutive=min_consecutive)
+    trimmed, metadata = trim_to_onset(
+        df, threshold=threshold, min_consecutive=min_consecutive, onset_col=onset_col
+    )
     workbook_out = write_output_workbook(trimmed, metadata, out_dir, out_stem)
 
     written = [workbook_out]
@@ -386,12 +407,17 @@ def build_parser():
     parser.add_argument("workbook", help="Existing comparison *_data.xlsx workbook.")
     parser.add_argument("--out-dir", default=None, help="Output directory. Default: input workbook directory.")
     parser.add_argument("--out-stem", default=None, help="Output filename stem. Default: input stem + _onset_pv0.")
-    parser.add_argument("--threshold", type=float, default=0.98, help="Onset threshold on SnNorm.")
+    parser.add_argument("--threshold", type=float, default=0.98, help="Onset threshold on the onset signal.")
+    parser.add_argument(
+        "--onset-col",
+        default="SnNorm",
+        help="Column used for onset detection (default: SnNorm). Falls back to Y if SeriesName matches.",
+    )
     parser.add_argument(
         "--min-consecutive",
         type=int,
         default=5,
-        help="Number of consecutive SnNorm points at or below threshold required for onset.",
+        help="Number of consecutive points at or below threshold required for onset.",
     )
     parser.add_argument("--sheet", default="data", help="Input workbook sheet name. Default: data.")
     parser.add_argument("--dpi", type=int, default=300, help="PNG output DPI.")
@@ -405,6 +431,7 @@ def main(argv=None):
         out_dir=args.out_dir,
         out_stem=args.out_stem,
         threshold=args.threshold,
+        onset_col=args.onset_col,
         min_consecutive=args.min_consecutive,
         sheet_name=args.sheet,
         dpi=args.dpi,

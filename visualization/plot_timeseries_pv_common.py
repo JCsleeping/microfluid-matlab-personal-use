@@ -189,18 +189,46 @@ def write_plot_data_workbooks_pv(module, df, figures_dir):
     return paths
 
 
+def _has_count_fractions(df):
+    return any(
+        column in df.columns
+        for column in ("countFracDroplets", "countFracColumns", "countFracClusters")
+    )
+
+
+def write_supplemental_count_data_workbooks_pv(module, df, figures_dir):
+    paths = []
+    exported = {stem for stem, _ in getattr(module, "DATA_EXPORTS", ())}
+    for stem, columns in getattr(module, "SUPPLEMENTAL_COUNT_DATA_EXPORTS", ()):
+        if stem in exported:
+            continue
+        paths.append(
+            module._write_data_workbook(
+                df,
+                stem,
+                _data_columns_with_pv(columns, df),
+                figures_dir,
+            )
+        )
+    return paths
+
+
+def _req_distribution_stem(module):
+    return getattr(module, "REQ_DISTRIBUTION_STEM", "15_req_distribution")
+
+
 def _v3_qc(module, plot_df, args, output_dir):
     blob_detail = None
     blob_detail_path = module.find_blob_detail_csv(output_dir)
     if blob_detail_path is not None:
         blob_detail = pd.read_csv(blob_detail_path)
-        plot_df, qc = module.apply_blob_detail_qc(
-            plot_df,
-            blob_detail,
-            min_blob_area_px=args.min_blob_area_px,
-            min_shape_area_px=args.min_shape_area_px,
-            min_shape_perimeter_px=args.min_shape_perimeter_px,
-        )
+        qc_kwargs = {"min_blob_area_px": args.min_blob_area_px}
+        for optional in ("min_shape_area_px", "min_shape_perimeter_px"):
+            value = getattr(args, optional, None)
+            if value is not None:
+                qc_kwargs[optional] = value
+        qc_kwargs = _kwargs_for(module.apply_blob_detail_qc, qc_kwargs)
+        plot_df, qc = module.apply_blob_detail_qc(plot_df, blob_detail, **qc_kwargs)
     else:
         message = "blob_detail_all_frames.csv not found; skipped Req distribution and blob-detail audits"
         qc = {
@@ -231,6 +259,7 @@ def create_all_figures_pv(module, df, figures_dir, args, output_dir=None):
 
     pv_df = _pv_plot_df(plot_df)
     written = []
+    has_count_fractions = _has_count_fractions(plot_df)
 
     for log_scale in (False, True):
         suffix = "_log" if log_scale else ""
@@ -242,6 +271,17 @@ def create_all_figures_pv(module, df, figures_dir, args, output_dir=None):
             fig = module._create_individual_figure(pv_df, plotter, log_scale=log_scale)
             written.extend(module._save_figure(fig, f"{stem}{suffix}", figures_dir, args.dpi))
             module.plt.close(fig)
+
+        for stem, plotter in getattr(module, "SUPPLEMENTAL_METRIC_PLOTTERS", ()):
+            fig = module._create_individual_figure(pv_df, plotter, log_scale=log_scale)
+            written.extend(module._save_figure(fig, f"{stem}{suffix}", figures_dir, args.dpi))
+            module.plt.close(fig)
+
+        if has_count_fractions:
+            for stem, plotter in getattr(module, "SUPPLEMENTAL_COUNT_PLOTTERS", ()):
+                fig = module._create_individual_figure(pv_df, plotter, log_scale=log_scale)
+                written.extend(module._save_figure(fig, f"{stem}{suffix}", figures_dir, args.dpi))
+                module.plt.close(fig)
 
     if hasattr(module, "plot_rate_vs_ai_2d_stage"):
         fig = module._create_individual_figure(pv_df, module.plot_rate_vs_ai_2d_stage, log_scale=False)
@@ -257,22 +297,28 @@ def create_all_figures_pv(module, df, figures_dir, args, output_dir=None):
         )
         if not req_data.empty:
             fig = module._plot_req_distribution(req_data)
-            written.extend(module._save_figure(fig, "18_req_distribution", figures_dir, args.dpi))
+            written.extend(module._save_figure(fig, _req_distribution_stem(module), figures_dir, args.dpi))
             module.plt.close(fig)
-        supplemental_req_data = module.selected_req_distribution_data(
-            plot_df,
-            blob_detail,
-            target_times=module.REQ_SUPPLEMENTAL_TARGET_TIMES_MIN,
-            min_blob_area_px=args.min_blob_area_px,
-        )
-        if not supplemental_req_data.empty:
-            fig = module._plot_req_distribution(supplemental_req_data)
-            written.extend(
-                module._save_figure(fig, "S02_req_distribution_near_depleted", figures_dir, args.dpi)
+        supplemental_targets = getattr(module, "REQ_SUPPLEMENTAL_TARGET_TIMES_MIN", None)
+        if supplemental_targets is not None:
+            supplemental_req_data = module.selected_req_distribution_data(
+                plot_df,
+                blob_detail,
+                target_times=supplemental_targets,
+                min_blob_area_px=args.min_blob_area_px,
             )
-            module.plt.close(fig)
+            if not supplemental_req_data.empty:
+                fig = module._plot_req_distribution(supplemental_req_data)
+                written.extend(
+                    module._save_figure(
+                        fig, "S02_req_distribution_near_depleted", figures_dir, args.dpi
+                    )
+                )
+                module.plt.close(fig)
 
     written.extend(write_plot_data_workbooks_pv(module, plot_df, figures_dir))
+    if has_count_fractions:
+        written.extend(write_supplemental_count_data_workbooks_pv(module, plot_df, figures_dir))
     if qc is not None:
         written.extend(module.write_qc_workbooks(plot_df, qc, figures_dir))
     return written

@@ -57,6 +57,7 @@ _pt = _load_plot_timeseries()
 find_timeseries_csv = _pt.find_timeseries_csv
 filter_min_time = _pt.filter_min_time
 find_pixel_size_um = _pt.find_pixel_size_um
+find_blob_detail_csv = _pt.find_blob_detail_csv
 configure_nature_style = _pt.configure_nature_style
 style_axes = _pt.style_axes
 WONG_COLORS = _pt.WONG_COLORS
@@ -78,6 +79,7 @@ OPTIONAL_METRIC_COLUMNS = (
     "MaxBlobFrac",
     "ReqMedian",
     "a_i_2D",
+    "a_i_2D_flow",
     "fracDroplets",
     "fracColumns",
     "fracClusters",
@@ -98,7 +100,7 @@ OPTIONAL_METRIC_COLUMNS = (
 )
 REQUIRED_COLUMNS = CORE_REQUIRED_COLUMNS
 
-DEFAULT_LOG_X_METRICS = ("a_i_2D", "InterfaceArea", "NumBlobs")
+DEFAULT_LOG_X_METRICS = ("a_i_2D", "a_i_2D_flow", "InterfaceArea", "NumBlobs")
 FORCE_LINEAR_METRICS = {
     "MaxBlobFrac",
     "fracDroplets",
@@ -120,6 +122,7 @@ FORCE_LINEAR_METRICS = {
 LOG_X_ALLOWED_METRICS = frozenset(
     {
         "a_i_2D",
+        "a_i_2D_flow",
         "InterfaceArea",
         "MaxBlobFrac",
         "NumBlobs",
@@ -157,6 +160,28 @@ DEFAULT_RATE_WINDOW_MIN = 20.0
 DEFAULT_RATE_MIN_POINTS = 25
 DEFAULT_SN_SMOOTH_WINDOW_FRAMES = 51
 
+BINNED_SUMMARY_COLUMNS = [
+    "metric",
+    "stage",
+    "bin_id",
+    "x_bin_min",
+    "x_bin_max",
+    "x_bin_p25",
+    "x_bin_median",
+    "x_bin_p75",
+    "x_bin_iqr",
+    "rate_p25",
+    "rate_median",
+    "rate_p75",
+    "rate_iqr",
+    "x_plot",
+    "y_plot",
+    "yerr_lower",
+    "yerr_upper",
+    "errorbar_definition",
+    "n",
+]
+
 RATE_METHOD_TO_COLUMN = {
     "time-lr": "DissolutionRate_Sn_time_lr",
     "lr": "DissolutionRate_Sn_lr",
@@ -174,6 +199,11 @@ X_AXIS_SPECS = [
         "key": "a_i_2D",
         "stem": "a_i_2D",
         "label_template": r"Specific interfacial length density $a_i^{{2D}}$ ({unit})",
+    },
+    {
+        "key": "a_i_2D_flow",
+        "stem": "a_i_2D_flow",
+        "label_template": r"Flow-normalized interfacial density $L_{{ow}}/A_{{flow}}$ ({unit})",
     },
     {
         "key": "InterfaceArea",
@@ -219,6 +249,28 @@ FRACTION_SPECS = [
 ]
 
 
+COUNT_FRACTION_SPECS = [
+    {
+        "key": "countFracDroplets",
+        "stem": "count_frac_droplets",
+        "label_template": "{kind} fraction droplets (-)",
+        "label": "Droplets",
+    },
+    {
+        "key": "countFracColumns",
+        "stem": "count_frac_columns",
+        "label_template": "{kind} fraction columns (-)",
+        "label": "Columns",
+    },
+    {
+        "key": "countFracClusters",
+        "stem": "count_frac_clusters",
+        "label_template": "{kind} fraction clusters (-)",
+        "label": "Clusters",
+    },
+]
+
+
 def _first_existing_metric(df, candidates):
     columns = set(df.columns)
     for candidate in candidates:
@@ -241,8 +293,36 @@ def _resolved_fraction_specs(df, fraction_kind=None):
             selected = spec["key"]
         item = dict(spec)
         item["key"] = selected
+        item["fraction_kind"] = "Count" if kind == "count" else "Area"
         resolved.append(item)
     return resolved
+
+
+def _resolved_count_fraction_specs(df):
+    """Return supplemental count-fraction specs when count columns are available."""
+    resolved = []
+    for spec in COUNT_FRACTION_SPECS:
+        label = spec["label"]
+        selected = _first_existing_metric(df, [f"countFrac{label}Valid", f"countFrac{label}"])
+        if selected is None:
+            continue
+        item = dict(spec)
+        item["key"] = selected
+        item["fraction_kind"] = "Count"
+        resolved.append(item)
+    return resolved
+
+
+def _rate_metric_specs(df, fraction_kind=None, include_count_fractions=True):
+    """Resolve all rate-correlation X metrics for the current DataFrame."""
+    specs = list(X_AXIS_SPECS) + _resolved_fraction_specs(df, fraction_kind)
+    if include_count_fractions:
+        existing_keys = {spec["key"] for spec in specs}
+        specs.extend(
+            spec for spec in _resolved_count_fraction_specs(df)
+            if spec["key"] not in existing_keys
+        )
+    return specs
 
 
 # --------------------------------------------------------------------------- #
@@ -281,7 +361,18 @@ def load_rate_timeseries(csv_path):
         duplicates = df.loc[df["RealTime_s"].duplicated(), "RealTime_s"].tolist()
         raise ValueError(f"Duplicate RealTime_s values are not allowed: {duplicates}")
 
+    if "FrameIndex" in df.columns:
+        df["FrameIndex"] = pd.to_numeric(df["FrameIndex"], errors="coerce")
+        if df["FrameIndex"].isna().any():
+            raise ValueError("Non-numeric or missing values in column(s): FrameIndex")
+    else:
+        df["FrameIndex"] = np.arange(1, len(df) + 1)
+
     df["Time_min"] = df["RealTime_s"] / 60.0
+    if "a_i_2D" in df.columns and "Sn" in df.columns:
+        df["a_i_2D_flow"] = pd.to_numeric(df["a_i_2D"], errors="coerce") * pd.to_numeric(
+            df["Sn"], errors="coerce"
+        )
     return df
 
 
@@ -377,50 +468,60 @@ def infer_metric_units(df, args, pixel_size_um):
     a_i_2D_values = pd.to_numeric(df.get("a_i_2D"), errors="coerce") if "a_i_2D" in df.columns else pd.Series(dtype=float)
     median_a = float(np.nanmedian(a_i_2D_values)) if a_i_2D_values.notna().any() else float("nan")
 
-    if ai2d_choice == "1/m":
-        info["a_i_2D"] = {
-            "input_unit": "1/m",
-            "plot_unit": "1/m",
-            "conversion": "none",
-            "median": median_a,
-        }
-    elif ai2d_choice == "1/px":
-        if pixel_size_m:
-            info["a_i_2D"] = {
-                "input_unit": "1/px",
-                "plot_unit": "1/m",
-                "conversion": "divide_by_pixel_size_m",
-                "median": median_a,
-            }
-        else:
-            info["a_i_2D"] = {
-                "input_unit": "1/px",
-                "plot_unit": "1/px",
-                "conversion": "none",
-                "median": median_a,
-            }
-    else:  # auto
-        if np.isfinite(median_a) and median_a > 1e3:
-            info["a_i_2D"] = {
+    def _ai_density_info(median_value):
+        if ai2d_choice == "1/m":
+            return {
                 "input_unit": "1/m",
                 "plot_unit": "1/m",
                 "conversion": "none",
-                "median": median_a,
+                "median": median_value,
             }
-        elif pixel_size_m:
-            info["a_i_2D"] = {
-                "input_unit": "1/px",
-                "plot_unit": "1/m",
-                "conversion": "divide_by_pixel_size_m",
-                "median": median_a,
-            }
-        else:
-            info["a_i_2D"] = {
+        if ai2d_choice == "1/px":
+            if pixel_size_m:
+                return {
+                    "input_unit": "1/px",
+                    "plot_unit": "1/m",
+                    "conversion": "divide_by_pixel_size_m",
+                    "median": median_value,
+                }
+            return {
                 "input_unit": "1/px",
                 "plot_unit": "1/px",
                 "conversion": "none",
-                "median": median_a,
+                "median": median_value,
             }
+        if np.isfinite(median_value) and median_value > 1e3:
+            return {
+                "input_unit": "1/m",
+                "plot_unit": "1/m",
+                "conversion": "none",
+                "median": median_value,
+            }
+        if pixel_size_m:
+            return {
+                "input_unit": "1/px",
+                "plot_unit": "1/m",
+                "conversion": "divide_by_pixel_size_m",
+                "median": median_value,
+            }
+        return {
+            "input_unit": "1/px",
+            "plot_unit": "1/px",
+            "conversion": "none",
+            "median": median_value,
+        }
+
+    info["a_i_2D"] = _ai_density_info(median_a)
+
+    if "a_i_2D_flow" in df.columns:
+        flow_values = pd.to_numeric(df.get("a_i_2D_flow"), errors="coerce")
+        median_flow = float(np.nanmedian(flow_values)) if flow_values.notna().any() else float("nan")
+        if a_i_2D_values.notna().any():
+            flow_info = dict(info["a_i_2D"])
+            flow_info["median"] = median_flow
+        else:
+            flow_info = _ai_density_info(median_flow)
+        info["a_i_2D_flow"] = flow_info
 
     # ---- InterfaceArea (treated as projected length L_ow) --------------- #
     iface_choice = getattr(args, "interface_unit", "auto") if args is not None else "auto"
@@ -869,7 +970,7 @@ def _x_label_for(spec, df, pixel_size_um, unit_info=None, fraction_kind=None):
                 unit = df.attrs.get("req_unit") or ("μm" if pixel_size_um else "px")
             elif key == "InterfaceArea":
                 unit = "m" if pixel_size_um else "px"
-            elif key == "a_i_2D":
+            elif key in ("a_i_2D", "a_i_2D_flow"):
                 unit = "1/m"
             else:
                 unit = ""
@@ -1229,6 +1330,12 @@ def compute_binned_summary_rows(df, metric_key, rate_col, unit_info, pixel_size_
             yb = y[mask]
             if xb.size < min_bin_count:
                 continue
+            x_bin_median = float(np.median(xb))
+            x_bin_p25 = float(np.percentile(xb, 25))
+            x_bin_p75 = float(np.percentile(xb, 75))
+            rate_median = float(np.median(yb))
+            rate_p25 = float(np.percentile(yb, 25))
+            rate_p75 = float(np.percentile(yb, 75))
             rows.append(
                 {
                     "metric": metric_key,
@@ -1236,10 +1343,19 @@ def compute_binned_summary_rows(df, metric_key, rate_col, unit_info, pixel_size_
                     "bin_id": b,
                     "x_bin_min": float(edges[b]),
                     "x_bin_max": float(edges[b + 1]),
-                    "x_bin_median": float(np.median(xb)),
-                    "rate_median": float(np.median(yb)),
-                    "rate_p25": float(np.percentile(yb, 25)),
-                    "rate_p75": float(np.percentile(yb, 75)),
+                    "x_bin_p25": x_bin_p25,
+                    "x_bin_median": x_bin_median,
+                    "x_bin_p75": x_bin_p75,
+                    "x_bin_iqr": x_bin_p75 - x_bin_p25,
+                    "rate_p25": rate_p25,
+                    "rate_median": rate_median,
+                    "rate_p75": rate_p75,
+                    "rate_iqr": rate_p75 - rate_p25,
+                    "x_plot": x_bin_median,
+                    "y_plot": rate_median,
+                    "yerr_lower": rate_median - rate_p25,
+                    "yerr_upper": rate_p75 - rate_median,
+                    "errorbar_definition": "y_plot=rate_median; yerr_lower=rate_median-rate_p25; yerr_upper=rate_p75-rate_median",
                     "n": int(xb.size),
                 }
             )
@@ -1452,6 +1568,29 @@ def _resolve_fraction_kind(args, df):
     return "Area"
 
 
+def attach_topology_fraction_qc(df, output_dir, min_blob_area_px=20):
+    """Attach area/count topology fractions from blob_detail_all_frames.csv when present."""
+    blob_detail_path = find_blob_detail_csv(output_dir)
+    if blob_detail_path is None:
+        return df, {
+            "path": None,
+            "status": "missing blob_detail_all_frames.csv; count-fraction rate plots skipped unless count columns are already present",
+        }
+
+    blob_detail = pd.read_csv(blob_detail_path)
+    enriched, qc = _pt.apply_blob_detail_qc(
+        df,
+        blob_detail,
+        min_blob_area_px=min_blob_area_px,
+    )
+    topology = qc.get("topology", {}) if isinstance(qc, dict) else {}
+    return enriched, {
+        "path": str(blob_detail_path),
+        "status": "loaded",
+        "classification": topology.get("classification", "ambiguous"),
+    }
+
+
 def metric_availability_rows(df, specs, rate_col):
     rows = []
     y = pd.to_numeric(df[rate_col], errors="coerce").to_numpy() if rate_col in df.columns else None
@@ -1540,10 +1679,7 @@ def create_all_rate_figures(
     binned_rows_all = []
 
     fraction_kind = fraction_kind or "Area"
-    fraction_specs = _resolved_fraction_specs(df, fraction_kind)
-    all_specs = list(X_AXIS_SPECS) + fraction_specs
-    fraction_keys = {s["key"] for s in FRACTION_SPECS}
-    fraction_keys.update(s["key"] for s in fraction_specs)
+    all_specs = _rate_metric_specs(df, fraction_kind, include_count_fractions=True)
     method_stem = _rate_method_stem(rate_method)
     valid_for_scale = valid_interpretation_mask(df)
 
@@ -1558,7 +1694,7 @@ def create_all_rate_figures(
             metric = spec["key"]
             if metric not in df.columns:
                 continue
-            kind_for_label = fraction_kind if metric in fraction_keys else None
+            kind_for_label = spec.get("fraction_kind")
 
             x_raw = pd.to_numeric(df[metric], errors="coerce").to_numpy()
             x_for_log = convert_metric_for_plot(x_raw, metric, unit_info, pixel_size_um)
@@ -1633,7 +1769,9 @@ def create_all_rate_figures(
                 if save_plot_data:
                     written.append(
                         _write_rate_data_workbook(
-                            stem, {"data": pd.DataFrame(rows)}, figures_dir
+                            stem,
+                            {"data": pd.DataFrame(rows, columns=BINNED_SUMMARY_COLUMNS)},
+                            figures_dir,
                         )
                     )
                 if variant_prefix == "rate":
@@ -1769,7 +1907,7 @@ def write_rate_outputs(
     rate_method = "time-lr"
     rate_col = RATE_METHOD_TO_COLUMN[rate_method]
     fraction_kind = _resolve_fraction_kind(unit_args, df)
-    all_specs = list(X_AXIS_SPECS) + _resolved_fraction_specs(df, fraction_kind)
+    all_specs = _rate_metric_specs(df, fraction_kind, include_count_fractions=True)
     all_metric_keys = [s["key"] for s in all_specs]
 
     figure_paths = []
@@ -1817,7 +1955,9 @@ def write_rate_outputs(
         associations_csv,
         index=False,
     )
-    pd.DataFrame(binned_rows).to_csv(binned_csv, index=False)
+    pd.DataFrame(binned_rows, columns=BINNED_SUMMARY_COLUMNS).to_csv(
+        binned_csv, index=False
+    )
     with open(unit_json, "w", encoding="utf-8") as fp:
         json.dump(unit_info, fp, indent=2, ensure_ascii=False, default=_json_default)
 
@@ -1934,6 +2074,15 @@ def build_arg_parser():
         type=int,
         default=20,
         help="Minimum NumBlobs to count as valid structure (default: 20).",
+    )
+    parser.add_argument(
+        "--min-blob-area-px",
+        type=float,
+        default=20,
+        help=(
+            "Minimum blob area in pixels for topology fraction recomputation from "
+            "blob_detail_all_frames.csv (default: 20)."
+        ),
     )
     parser.add_argument(
         "--stage-mode",
@@ -2126,6 +2275,8 @@ def main(argv=None):
         raise ValueError("--min-bin-count must be >= 1")
     if args.min_blobs_valid < 0:
         raise ValueError("--min-blobs-valid must be non-negative")
+    if args.min_blob_area_px < 0:
+        raise ValueError("--min-blob-area-px must be non-negative")
     if not (0.0 <= args.min_sn_norm_valid <= 1.0):
         raise ValueError("--min-sn-norm-valid must be in [0, 1]")
 
@@ -2133,6 +2284,11 @@ def main(argv=None):
         df,
         min_sn_norm_valid=args.min_sn_norm_valid,
         min_blobs_valid=args.min_blobs_valid,
+    )
+    df, topology_qc = attach_topology_fraction_qc(
+        df,
+        output_dir,
+        min_blob_area_px=args.min_blob_area_px,
     )
 
     unit_info = infer_metric_units(df, args, pixel_size_um)
@@ -2192,7 +2348,7 @@ def main(argv=None):
     with open(unit_json_path, "w", encoding="utf-8") as fp:
         json.dump(unit_info, fp, indent=2, ensure_ascii=False, default=_json_default)
 
-    all_specs = list(X_AXIS_SPECS) + _resolved_fraction_specs(df, fraction_kind)
+    all_specs = _rate_metric_specs(df, fraction_kind, include_count_fractions=True)
     all_metric_keys = [s["key"] for s in all_specs]
     rate_col = RATE_METHOD_TO_COLUMN[args.rate_method]
     availability_path = figures_dir / "rate_plot_metric_availability.csv"
@@ -2207,7 +2363,9 @@ def main(argv=None):
         associations_path = figures_dir / "rate_metric_associations.csv"
         pd.DataFrame(assoc_rows).to_csv(associations_path, index=False)
         binned_csv_path = figures_dir / "rate_metric_binned_summary.csv"
-        pd.DataFrame(binned_rows).to_csv(binned_csv_path, index=False)
+        pd.DataFrame(binned_rows, columns=BINNED_SUMMARY_COLUMNS).to_csv(
+            binned_csv_path, index=False
+        )
 
     rates_csv_path = None
     if args.save_rates_csv:
@@ -2243,6 +2401,8 @@ def main(argv=None):
         "monotone_sn_for_rate": bool(args.monotone_sn_for_rate),
         "min_sn_norm_valid": args.min_sn_norm_valid,
         "min_blobs_valid": args.min_blobs_valid,
+        "min_blob_area_px": args.min_blob_area_px,
+        "topology_fraction_qc": topology_qc,
         "stage_thresholds": {
             "near_depleted": f"SnNorm < {args.min_sn_norm_valid:g}",
             "tail": f"{args.min_sn_norm_valid:g} <= SnNorm < 0.10",

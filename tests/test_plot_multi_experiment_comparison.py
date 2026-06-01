@@ -103,6 +103,19 @@ class MultiExperimentComparisonTests(unittest.TestCase):
         )
         write_workbook(figures_dir / "rate_time_lr_vs_a_i_2D_binned_active_data.xlsx", {"data": df})
 
+    def write_ai_2d(self, figures_dir, include_valid=True):
+        df = pd.DataFrame(
+            {
+                "RealTime_s": [0.0, 60.0, 120.0],
+                "Time_min": [0.0, 1.0, 2.0],
+                "PV": [0.0, 10.0, 20.0],
+                "a_i_2D": [50000.0, 51000.0, 52000.0],
+            }
+        )
+        if include_valid:
+            df["a_i_2D_valid"] = [50000.0, 51000.0, np.nan]
+        write_workbook(figures_dir / "08_a_i_2D_data.xlsx", {"data": df})
+
     def test_load_manifest_handles_unicode_paths_and_optional_styles(self):
         first = self.figures_dir("实验 数据 A")
         second = self.figures_dir("experiment with spaces")
@@ -145,9 +158,21 @@ class MultiExperimentComparisonTests(unittest.TestCase):
             ),
             ("08_a_i_2D", pd.DataFrame({"a_i_2D": [1.0], "a_i_2D_valid": [1.0]}), ["a_i_2D_valid"]),
             (
+                "S13_a_i_2D_flow",
+                pd.DataFrame({"a_i_2D": [1.0], "a_i_2D_flow": [0.7]}),
+                ["a_i_2D_flow"],
+            ),
+            (
                 "09_mean_circularity",
-                pd.DataFrame({"MeanCircularity": [0.8], "MeanCircularity_valid": [0.7]}),
-                ["MeanCircularity_valid"],
+                pd.DataFrame(
+                    {
+                        "MeanCircularity": [0.8],
+                        "MeanCircularity_valid": [0.7],
+                        "MedianCircularity_valid": [0.72],
+                        "AreaWeightedCircularity_valid": [0.75],
+                    }
+                ),
+                ["AreaWeightedCircularity_valid"],
             ),
             (
                 "10_fraction_droplets",
@@ -280,6 +305,33 @@ class MultiExperimentComparisonTests(unittest.TestCase):
         self.assertEqual(set(combined["SeriesName"]), {"rate_median"})
         self.assertEqual(combined["X"].dropna().tolist(), [15.0, 25.0, 15.0, 25.0])
         self.assertEqual(combined["Y"].dropna().tolist(), [0.001, 0.003, 0.001, 0.003])
+
+    def test_auto_metric_selection_falls_back_to_common_ai_2d_column(self):
+        with_valid = self.figures_dir("with_valid")
+        raw_only = self.figures_dir("raw_only")
+        self.write_ai_2d(with_valid, include_valid=True)
+        self.write_ai_2d(raw_only, include_valid=False)
+        manifest = self.write_manifest(
+            [
+                {"label": "4 uL", "figures_dir": str(with_valid)},
+                {"label": "5 uL", "figures_dir": str(raw_only)},
+            ]
+        )
+        out_dir = self.root / "ai_out"
+
+        written = comparison.create_comparison(
+            comparison.load_manifest(manifest),
+            "08_a_i_2D",
+            out_dir,
+            x="PV",
+            dpi=80,
+        )
+
+        self.assertIn(out_dir / "comparison_08_a_i_2D_data.xlsx", written)
+        combined = pd.read_excel(out_dir / "comparison_08_a_i_2D_data.xlsx", sheet_name="data")
+        self.assertEqual(set(combined["ExperimentLabel"]), {"4 uL", "5 uL"})
+        self.assertEqual(set(combined["SeriesName"]), {"a_i_2D"})
+        self.assertEqual(len(combined), 6)
 
     def test_missing_workbook_behavior(self):
         present = self.figures_dir("present")

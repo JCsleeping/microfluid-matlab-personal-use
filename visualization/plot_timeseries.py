@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -134,17 +137,36 @@ def load_timeseries(csv_path):
     return df
 
 
-def filter_min_time(df, min_time_min):
-    """Keep rows at or after a minimum Time_min threshold."""
+def filter_min_time(df, min_time_min, rebase=True):
+    """Keep rows at or after min_time_min minutes, optionally rebasing time to start at 0.
+
+    Filtering is always done against Time_min (= RealTime_s / 60). The CSV's raw
+    "Time" column is a frame/nominal-time index from the MATLAB pipeline and is
+    NOT in minutes; it must not be used as the filter axis.
+    """
     if min_time_min is None:
         return df
 
     threshold = float(min_time_min)
-    filtered = df.loc[df["Time_min"] >= threshold].reset_index(drop=True)
+    if "Time_min" not in df.columns:
+        if "RealTime_s" not in df.columns:
+            raise KeyError("filter_min_time requires Time_min or RealTime_s in the dataframe")
+        df = df.copy()
+        df["Time_min"] = pd.to_numeric(df["RealTime_s"], errors="coerce") / 60.0
+
+    mask = pd.to_numeric(df["Time_min"], errors="coerce") >= threshold
+    filtered = df.loc[mask].copy().reset_index(drop=True)
     if len(filtered) < 2:
         raise ValueError(
             f"--min-time-min {threshold:g} would leave fewer than 2 rows out of {len(df)}"
         )
+
+    if rebase:
+        filtered["Time_min"] = pd.to_numeric(filtered["Time_min"], errors="coerce") - threshold
+        if "RealTime_s" in filtered.columns:
+            filtered["RealTime_s"] = (
+                pd.to_numeric(filtered["RealTime_s"], errors="coerce") - threshold * 60.0
+            )
     return filtered
 
 
@@ -458,8 +480,22 @@ def plot_ai_2d(ax, df, log_scale=False):
     _finalize_time_axis(ax, r"Specific interfacial area, $a_i^{2D}$", log_scale)
 
 
+def plot_ai_2d_flow(ax, df, log_scale=False):
+    _plot_line(
+        ax,
+        df,
+        "a_i_2D_flow",
+        r"$L_{ow}/A_{flow}$",
+        WONG_COLORS["blue"],
+        log_scale,
+    )
+    _plot_invalid_points(ax, df, "a_i_2D_flow", log_scale)
+    _finalize_time_axis(ax, r"Flow-normalized interfacial density, $L_{ow}/A_{flow}$", log_scale)
+
+
 def plot_mean_circularity(ax, df, log_scale=False):
     if "MeanCircularity_valid" in df.columns and df["MeanCircularity_valid"].notna().any():
+        plotted = 0
         _plot_line(
             ax,
             df,
@@ -468,15 +504,37 @@ def plot_mean_circularity(ax, df, log_scale=False):
             "#A0A0A0",
             log_scale,
         )
+        plotted += 1
         _plot_line(
             ax,
             df,
             "MeanCircularity_valid",
-            "Valid",
+            "Valid mean",
             WONG_COLORS["orange"],
             log_scale,
         )
-        ax.legend(loc="best", frameon=False)
+        plotted += 1
+        if "MedianCircularity_valid" in df.columns and df["MedianCircularity_valid"].notna().any():
+            _plot_line(
+                ax,
+                df,
+                "MedianCircularity_valid",
+                "Valid median",
+                WONG_COLORS["blue"],
+                log_scale,
+            )
+            plotted += 1
+        if "AreaWeightedCircularity_valid" in df.columns and df["AreaWeightedCircularity_valid"].notna().any():
+            _plot_line(
+                ax,
+                df,
+                "AreaWeightedCircularity_valid",
+                "Valid area-weighted",
+                WONG_COLORS["bluish_green"],
+                log_scale,
+            )
+            plotted += 1
+        _legend_above(ax, ncol=min(plotted, 4))
     else:
         _plot_line(
             ax,
@@ -707,6 +765,10 @@ SUPPLEMENTAL_COUNT_PLOTTERS = [
     ("S12_count_fraction_clusters", plot_count_frac_clusters),
 ]
 
+SUPPLEMENTAL_METRIC_PLOTTERS = [
+    ("S13_a_i_2D_flow", plot_ai_2d_flow),
+]
+
 DATA_EXPORTS = [
     (
         "timeseries_6panel",
@@ -727,10 +789,15 @@ DATA_EXPORTS = [
             "ReqStd",
             "InterfaceArea",
             "MaxBlobFlowFrac",
+            "a_i_2D_raw",
             "a_i_2D",
+            "a_i_2D_valid",
+            "a_i_2D_flow",
             "MeanCircularity",
             "MeanCircularity_raw",
             "MeanCircularity_valid",
+            "MedianCircularity_valid",
+            "AreaWeightedCircularity_valid",
             "fracDroplets",
             "fracColumns",
             "fracClusters",
@@ -766,10 +833,22 @@ DATA_EXPORTS = [
         "07_largest_blob_flow_fraction",
         ["RealTime_s", "Time_min", "Sn", "MaxBlobFrac", "MaxBlobFlowFrac"],
     ),
-    ("08_a_i_2D", ["RealTime_s", "Time_min", "a_i_2D"]),
+    (
+        "08_a_i_2D",
+        ["RealTime_s", "Time_min", "a_i_2D_raw", "a_i_2D", "a_i_2D_valid", "ValidStructure", "DissolutionStage"],
+    ),
+    ("S13_a_i_2D_flow", ["RealTime_s", "Time_min", "Sn", "a_i_2D", "a_i_2D_valid", "a_i_2D_flow"]),
     (
         "09_mean_circularity",
-        ["RealTime_s", "Time_min", "MeanCircularity", "MeanCircularity_raw", "MeanCircularity_valid"],
+        [
+            "RealTime_s",
+            "Time_min",
+            "MeanCircularity",
+            "MeanCircularity_raw",
+            "MeanCircularity_valid",
+            "MedianCircularity_valid",
+            "AreaWeightedCircularity_valid",
+        ],
     ),
     (
         "10_fraction_droplets",
@@ -810,7 +889,16 @@ DATA_EXPORTS = [
     ("13_sn_norm_ai_2D_overlay", ["RealTime_s", "Time_min", "Sn", "SnNorm", "a_i_2D"]),
     (
         "14_rate_vs_ai_2D_stage",
-        ["RealTime_s", "Time_min", "a_i_2D", "DissolutionRate_per_min", "DissolutionStage", "ValidStructure"],
+        [
+            "RealTime_s",
+            "Time_min",
+            "a_i_2D_raw",
+            "a_i_2D",
+            "a_i_2D_valid",
+            "DissolutionRate_per_min",
+            "DissolutionStage",
+            "ValidStructure",
+        ],
     ),
 ]
 
@@ -819,6 +907,22 @@ SUPPLEMENTAL_COUNT_DATA_EXPORTS = [
     ("S11_count_fraction_columns", ["RealTime_s", "Time_min", "countFracColumns", "countFracColumnsValid"]),
     ("S12_count_fraction_clusters", ["RealTime_s", "Time_min", "countFracClusters", "countFracClustersValid"]),
 ]
+
+
+def _apply_tight_layout(fig, **kwargs):
+    """Run tight_layout and silently ignore the harmless 'cannot accommodate' warning.
+
+    savefig.bbox='tight' (set in rcParams) still crops the saved PNG/SVG correctly
+    when interactive layout cannot reduce margins to the requested pad; the warning
+    is purely cosmetic.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Tight layout not applied.*",
+            category=UserWarning,
+        )
+        fig.tight_layout(**kwargs)
 
 
 def _save_figure(fig, stem, figures_dir, dpi):
@@ -832,6 +936,35 @@ def _save_figure(fig, stem, figures_dir, dpi):
     return [png_path, svg_path]
 
 
+def _write_excel_atomically(path, write_fn, *, retries=5, retry_delay_s=0.4):
+    """Write Excel via a temp file, then replace (retries when Windows holds a lock)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
+    try:
+        write_fn(tmp_path)
+        last_err = None
+        for attempt in range(retries):
+            try:
+                os.replace(tmp_path, path)
+                return path
+            except PermissionError as exc:
+                last_err = exc
+                if attempt + 1 >= retries:
+                    break
+                time.sleep(retry_delay_s)
+        raise PermissionError(
+            f"Cannot write '{path}'. Close it if open in Excel (or another app), "
+            "check the folder is not read-only, then re-run."
+        ) from last_err
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def _write_data_workbook(df, stem, columns, figures_dir):
     """Write the data used by one linear plot to an Excel workbook."""
     figures_dir = Path(figures_dir)
@@ -839,15 +972,19 @@ def _write_data_workbook(df, stem, columns, figures_dir):
     xlsx_path = figures_dir / f"{stem}_data.xlsx"
     available_columns = [column for column in columns if column in df.columns]
     data = df.loc[:, available_columns].copy()
-    with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
-        data.to_excel(writer, sheet_name="data", index=False)
-        worksheet = writer.sheets["data"]
-        worksheet.freeze_panes(1, 0)
-        if len(available_columns):
-            worksheet.autofilter(0, 0, len(data), len(available_columns) - 1)
-        for index, column in enumerate(available_columns):
-            width = min(max(len(column) + 2, 12), 28)
-            worksheet.set_column(index, index, width)
+
+    def _write(target):
+        with pd.ExcelWriter(target, engine="xlsxwriter") as writer:
+            data.to_excel(writer, sheet_name="data", index=False)
+            worksheet = writer.sheets["data"]
+            worksheet.freeze_panes(1, 0)
+            if len(available_columns):
+                worksheet.autofilter(0, 0, len(data), len(available_columns) - 1)
+            for index, column in enumerate(available_columns):
+                width = min(max(len(column) + 2, 12), 28)
+                worksheet.set_column(index, index, width)
+
+    _write_excel_atomically(xlsx_path, _write)
     return xlsx_path
 
 
@@ -913,6 +1050,17 @@ def _prepare_plot_df(
         plot_df["MeanCircularity"] = np.nan
     if "MeanCircularity_valid" not in plot_df.columns:
         plot_df["MeanCircularity_valid"] = np.nan
+    if "MedianCircularity_valid" not in plot_df.columns:
+        plot_df["MedianCircularity_valid"] = np.nan
+    if "AreaWeightedCircularity_valid" not in plot_df.columns:
+        plot_df["AreaWeightedCircularity_valid"] = np.nan
+    if "a_i_2D" in plot_df.columns and "Sn" in plot_df.columns:
+        plot_df["a_i_2D_flow"] = (
+            pd.to_numeric(plot_df["a_i_2D"], errors="coerce")
+            * pd.to_numeric(plot_df["Sn"], errors="coerce")
+        )
+    elif "a_i_2D_flow" not in plot_df.columns:
+        plot_df["a_i_2D_flow"] = np.nan
 
     sn_ok = plot_df["SnNorm"] >= float(valid_sn_threshold)
     if "NumBlobs" in plot_df.columns:
@@ -925,6 +1073,12 @@ def _prepare_plot_df(
         area_ok = pd.Series(True, index=plot_df.index)
     plot_df["ValidStructure"] = (sn_ok & blob_ok & area_ok).astype(bool)
     plot_df["DissolutionStage"] = plot_df["SnNorm"].map(_stage_from_sn_norm)
+    if "a_i_2D" in plot_df.columns:
+        plot_df["a_i_2D_raw"] = pd.to_numeric(plot_df["a_i_2D"], errors="coerce")
+        plot_df["a_i_2D_valid"] = plot_df["a_i_2D_raw"].where(plot_df["ValidStructure"], np.nan)
+    else:
+        plot_df["a_i_2D_raw"] = np.nan
+        plot_df["a_i_2D_valid"] = np.nan
     return plot_df
 
 
@@ -1046,6 +1200,8 @@ def apply_blob_detail_qc(timeseries, blob_detail, min_blob_area_px=20):
     elif "MeanCircularity_raw" not in enriched.columns:
         enriched["MeanCircularity_raw"] = np.nan
     enriched["MeanCircularity_valid"] = np.nan
+    enriched["MedianCircularity_valid"] = np.nan
+    enriched["AreaWeightedCircularity_valid"] = np.nan
 
     blobs = blob_detail.copy()
     if "FrameIndex" not in blobs.columns:
@@ -1075,8 +1231,19 @@ def apply_blob_detail_qc(timeseries, blob_detail, min_blob_area_px=20):
     valid_circularity &= blobs.get("Perimeter", pd.Series(np.nan, index=blobs.index)) > 0
     valid_circularity &= blobs.get("Circularity", pd.Series(np.nan, index=blobs.index)) <= 1.05
     valid_circularity &= blobs["SnNorm"] > VALID_SN_THRESHOLD
-    valid_means = blobs.loc[valid_circularity].groupby("FrameIndex")["Circularity"].mean()
-    enriched["MeanCircularity_valid"] = enriched["FrameIndex"].map(valid_means)
+    valid_blobs = blobs.loc[valid_circularity].copy()
+    if not valid_blobs.empty:
+        grouped = valid_blobs.groupby("FrameIndex")
+        valid_means = grouped["Circularity"].mean()
+        valid_medians = grouped["Circularity"].median()
+
+        valid_blobs["_CircularityAreaProduct"] = valid_blobs["Area"] * valid_blobs["Circularity"]
+        area_sum = grouped["Area"].sum()
+        weighted_sum = grouped["_CircularityAreaProduct"].sum()
+        valid_area_weighted = (weighted_sum / area_sum).where(area_sum > 0, np.nan)
+        enriched["MeanCircularity_valid"] = enriched["FrameIndex"].map(valid_means)
+        enriched["MedianCircularity_valid"] = enriched["FrameIndex"].map(valid_medians)
+        enriched["AreaWeightedCircularity_valid"] = enriched["FrameIndex"].map(valid_area_weighted)
 
     gt1_mask = blobs.get("Circularity", pd.Series(np.nan, index=blobs.index)) > 1.0
     if "Area" in blobs.columns:
@@ -1200,7 +1367,7 @@ def _plot_req_distribution(req_data):
     ax.set_xlabel("Target time (min)")
     ax.set_ylabel("Equivalent radius")
     style_axes(ax)
-    fig.tight_layout(pad=0.6)
+    _apply_tight_layout(fig, pad=0.6)
     return fig
 
 
@@ -1257,6 +1424,12 @@ def create_summary_metrics(plot_df):
     add("Initial_a_i_2D", float(initial.get("a_i_2D", np.nan)))
     add("Peak_a_i_2D", float(plot_df["a_i_2D"].max()) if "a_i_2D" in plot_df.columns else np.nan)
     add("ReliablePeak_a_i_2D", float(valid["a_i_2D"].max()) if not valid.empty and "a_i_2D" in valid else np.nan)
+    add("Initial_a_i_2D_flow", float(initial.get("a_i_2D_flow", np.nan)))
+    add("Peak_a_i_2D_flow", float(plot_df["a_i_2D_flow"].max()) if "a_i_2D_flow" in plot_df.columns else np.nan)
+    add(
+        "ReliablePeak_a_i_2D_flow",
+        float(valid["a_i_2D_flow"].max()) if not valid.empty and "a_i_2D_flow" in valid else np.nan,
+    )
     add("InitialReqMedian", float(initial.get("ReqMedian", np.nan)))
     add("PeakReqMedian", float(plot_df["ReqMedian"].max()) if "ReqMedian" in plot_df.columns else np.nan)
     add("MinimumReqMedian_valid", float(valid["ReqMedian"].min()) if not valid.empty and "ReqMedian" in valid else np.nan)
@@ -1266,10 +1439,28 @@ def create_summary_metrics(plot_df):
         float(plot_df["MeanCircularity_raw"].max()) if "MeanCircularity_raw" in plot_df.columns else np.nan,
     )
     add("InitialMeanCircularity_valid", float(initial.get("MeanCircularity_valid", np.nan)))
+    add("InitialMedianCircularity_valid", float(initial.get("MedianCircularity_valid", np.nan)))
+    add("InitialAreaWeightedCircularity_valid", float(initial.get("AreaWeightedCircularity_valid", np.nan)))
     add(
         "PeakMeanCircularity_valid",
         float(valid["MeanCircularity_valid"].max())
         if not valid.empty and valid["MeanCircularity_valid"].notna().any()
+        else np.nan,
+    )
+    add(
+        "PeakMedianCircularity_valid",
+        float(valid["MedianCircularity_valid"].max())
+        if not valid.empty and "MedianCircularity_valid" in valid and valid["MedianCircularity_valid"].notna().any()
+        else np.nan,
+    )
+    add(
+        "PeakAreaWeightedCircularity_valid",
+        float(valid["AreaWeightedCircularity_valid"].max())
+        if (
+            not valid.empty
+            and "AreaWeightedCircularity_valid" in valid
+            and valid["AreaWeightedCircularity_valid"].notna().any()
+        )
         else np.nan,
     )
     add("InitialAreaFracDroplets", float(initial.get("fracDroplets", np.nan)))
@@ -1286,16 +1477,19 @@ def create_summary_metrics(plot_df):
 
 
 def _write_excel_sheets(path, sheets):
-    with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
-        for sheet_name, data in sheets.items():
-            data = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
-            data.to_excel(writer, sheet_name=sheet_name[:31], index=False)
-            worksheet = writer.sheets[sheet_name[:31]]
-            if len(data.columns):
-                worksheet.autofilter(0, 0, len(data), len(data.columns) - 1)
-            for index, column in enumerate(data.columns):
-                width = min(max(len(str(column)) + 2, 12), 32)
-                worksheet.set_column(index, index, width)
+    def _write(target):
+        with pd.ExcelWriter(target, engine="xlsxwriter") as writer:
+            for sheet_name, data in sheets.items():
+                data = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
+                data.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+                worksheet = writer.sheets[sheet_name[:31]]
+                if len(data.columns):
+                    worksheet.autofilter(0, 0, len(data), len(data.columns) - 1)
+                for index, column in enumerate(data.columns):
+                    width = min(max(len(str(column)) + 2, 12), 32)
+                    worksheet.set_column(index, index, width)
+
+    _write_excel_atomically(path, _write)
 
 
 def write_qc_workbooks(plot_df, qc, figures_dir):
@@ -1321,6 +1515,8 @@ def write_qc_workbooks(plot_df, qc, figures_dir):
             "MaxBlobFlowFrac",
             "MeanCircularity_raw",
             "MeanCircularity_valid",
+            "MedianCircularity_valid",
+            "AreaWeightedCircularity_valid",
         ]
         if column in plot_df.columns
     ]
@@ -1368,14 +1564,14 @@ def _create_combined_figure(df, log_scale=False):
         plotter(ax, df, log_scale=log_scale)
     for ax in axes[len(PLOTTERS):]:
         ax.set_visible(False)
-    fig.tight_layout(pad=0.8, w_pad=1.0, h_pad=1.8)
+    _apply_tight_layout(fig, pad=0.8, w_pad=1.0, h_pad=1.8)
     return fig
 
 
 def _create_individual_figure(df, plotter, log_scale=False):
     fig, ax = plt.subplots(figsize=INDIVIDUAL_SIZE)
     plotter(ax, df, log_scale=log_scale)
-    fig.tight_layout(pad=0.6)
+    _apply_tight_layout(fig, pad=0.6)
     return fig
 
 
@@ -1439,6 +1635,11 @@ def create_all_figures(
         plt.close(fig)
 
         for stem, plotter in PLOTTERS:
+            fig = _create_individual_figure(plot_df, plotter, log_scale=log_scale)
+            written.extend(_save_figure(fig, f"{stem}{suffix}", figures_dir, dpi))
+            plt.close(fig)
+
+        for stem, plotter in SUPPLEMENTAL_METRIC_PLOTTERS:
             fig = _create_individual_figure(plot_df, plotter, log_scale=log_scale)
             written.extend(_save_figure(fig, f"{stem}{suffix}", figures_dir, dpi))
             plt.close(fig)
@@ -1510,7 +1711,16 @@ def build_arg_parser():
         "--min-time-min",
         type=float,
         default=None,
-        help="Minimum Time_min to include after skipped frames (e.g. 1 to start plots at 1 min).",
+        help=(
+            "Drop rows before this time (minutes). Uses CSV column Time when present "
+            "(pipeline minute index), else RealTime_s/60. Rebases the time axis to 0 "
+            "at the cutoff so plots start at the selected minute."
+        ),
+    )
+    parser.add_argument(
+        "--no-rebase-time",
+        action="store_true",
+        help="Keep absolute time axes after --min-time-min (default: rebase to t=0 at cutoff).",
     )
     parser.add_argument(
         "--pixel-size-um",
@@ -1545,7 +1755,18 @@ def main(argv=None):
                 f"--skip-frames {skip} would leave fewer than 2 rows out of {len(df)}"
             )
         df = df.iloc[skip:].reset_index(drop=True)
-    df = filter_min_time(df, args.min_time_min)
+    rows_before_time_filter = len(df)
+    rebase_time = not args.no_rebase_time
+    df = filter_min_time(df, args.min_time_min, rebase=rebase_time)
+    if args.min_time_min is not None:
+        t0 = float(df["Time_min"].iloc[0]) if len(df) else float("nan")
+        t1 = float(df["Time_min"].iloc[-1]) if len(df) else float("nan")
+        print(
+            f"Time filter: Time_min >= {float(args.min_time_min):g} min "
+            f"({rows_before_time_filter} -> {len(df)} rows); "
+            f"plot range Time_min {t0:g}..{t1:g} min"
+            + (" (rebased)" if rebase_time else " (absolute time)")
+        )
 
     pixel_size_um = args.pixel_size_um
     pixel_size_source = "user-provided"

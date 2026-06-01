@@ -80,7 +80,13 @@ PRIMARY_Y_BY_STEM = {
     "06_interface_area": ("InterfaceArea",),
     "07_largest_blob_flow_fraction": ("MaxBlobFlowFrac_valid", "MaxBlobFlowFrac"),
     "08_a_i_2D": ("a_i_2D_valid", "a_i_2D"),
-    "09_mean_circularity": ("MeanCircularity_valid", "MeanCircularity"),
+    "S13_a_i_2D_flow": ("a_i_2D_flow",),
+    "09_mean_circularity": (
+        "AreaWeightedCircularity_valid",
+        "MedianCircularity_valid",
+        "MeanCircularity_valid",
+        "MeanCircularity",
+    ),
     "10_fraction_droplets": ("areaFracDropletsValid", "fracDroplets"),
     "11_fraction_columns": ("areaFracColumnsValid", "fracColumns"),
     "12_fraction_clusters": ("areaFracClustersValid", "fracClusters"),
@@ -118,8 +124,11 @@ Y_LABELS = {
     "MaxBlobFlowFrac_valid": "Amax / Aflow",
     "a_i_2D": r"$a_i^{2D}$",
     "a_i_2D_valid": r"$a_i^{2D}$",
+    "a_i_2D_flow": r"$L_{ow}/A_{flow}$",
     "MeanCircularity": "Mean circularity",
     "MeanCircularity_valid": "Mean circularity",
+    "MedianCircularity_valid": "Median circularity",
+    "AreaWeightedCircularity_valid": "Area-weighted circularity",
     "areaFracDropletsValid": "Droplet fraction",
     "areaFracColumnsValid": "Column fraction",
     "areaFracClustersValid": "Cluster fraction",
@@ -278,7 +287,31 @@ def load_manifest(manifest_path):
                 "often use '4UL' / '8UL' (no space before UL), not '4 UL' / '8 UL'."
             )
         raise FileNotFoundError(msg)
-    df = pd.read_csv(manifest_path, encoding="utf-8-sig")
+    suffix = manifest_path.suffix.lower()
+    if suffix in {".xlsx", ".xls", ".xlsm"}:
+        raise ValueError(
+            f"--manifest must be a CSV (columns: label + figures_dir or workbook), "
+            f"not an Excel data workbook: {manifest_path}\n"
+            "  If this is a comparison *_data.xlsx output, create compare_manifest.csv "
+            "listing each experiment's figure_PV folder instead."
+        )
+    df = None
+    last_decode_error = None
+    for encoding in ("utf-8-sig", "utf-8", "gbk", "cp936"):
+        try:
+            df = pd.read_csv(manifest_path, encoding=encoding)
+            break
+        except UnicodeDecodeError as exc:
+            last_decode_error = exc
+    if df is None:
+        raise UnicodeDecodeError(
+            last_decode_error.encoding,
+            last_decode_error.object,
+            last_decode_error.start,
+            last_decode_error.end,
+            f"Could not decode manifest as UTF-8 or GBK: {manifest_path}. "
+            "Re-save the CSV as UTF-8 (Excel: Save As → CSV UTF-8).",
+        ) from last_decode_error
     required = {"label"}
     missing = required - set(df.columns)
     if missing:
@@ -379,6 +412,15 @@ def _first_existing(columns, candidates):
     return None
 
 
+def _common_columns(workbooks):
+    if not workbooks:
+        return set()
+    common = set(workbooks[0].data.columns)
+    for workbook in workbooks[1:]:
+        common &= set(workbook.data.columns)
+    return common
+
+
 def _metric_from_rate_stem(stem):
     text = stem
     if "_vs_" not in text:
@@ -396,6 +438,7 @@ def _metric_from_rate_stem(stem):
         "projected_interface_length": ("InterfaceArea", "InterfaceArea_plot"),
         "interface_area": ("InterfaceArea", "InterfaceArea_plot"),
         "a_i_2D": ("a_i_2D_plot", "a_i_2D_valid", "a_i_2D"),
+        "a_i_2D_flow": ("a_i_2D_flow_plot", "a_i_2D_flow"),
         "max_blob_fraction": ("MaxBlobFrac_valid", "MaxBlobFrac", "MaxBlobFrac_plot"),
         "num_blobs": ("NumBlobs", "NumBlobs_plot"),
         "req_median": ("ReqMedian", "ReqMedian_plot"),
@@ -482,6 +525,71 @@ def select_y_columns(stem, df, requested="auto", all_series=False):
     if numeric_cols:
         return [numeric_cols[0]]
     raise ValueError(f"Could not infer y column for stem '{stem}'")
+
+
+def select_x_column_for_workbooks(stem, workbooks, requested="auto"):
+    reference = workbooks[0].data
+    selected = select_x_column(stem, reference, requested=requested)
+    if requested != "auto" or all(selected in workbook.data.columns for workbook in workbooks):
+        return selected
+
+    common = _common_columns(workbooks)
+    if is_binned_table(reference) and "x_bin_median" in common:
+        return "x_bin_median"
+    mapped = _first_existing(common, PRIMARY_X_BY_STEM.get(stem, ()))
+    if mapped is not None:
+        return mapped
+    inferred = _metric_from_rate_stem(stem)
+    if inferred:
+        mapped = _first_existing(common, inferred)
+        if mapped is not None:
+            return mapped
+    plot_cols = [col for col in reference.columns if str(col).endswith("_plot") and col in common]
+    if len(plot_cols) == 1:
+        return plot_cols[0]
+    if "Time_min" in common:
+        return "Time_min"
+    raise ValueError(f"Could not infer common x column for stem '{stem}'")
+
+
+def select_y_columns_for_workbooks(stem, workbooks, requested="auto", all_series=False):
+    reference = workbooks[0].data
+    selected = select_y_columns(stem, reference, requested=requested, all_series=all_series)
+    if requested != "auto" or all(all(col in workbook.data.columns for col in selected) for workbook in workbooks):
+        return selected
+
+    common = _common_columns(workbooks)
+    if is_binned_table(reference) and "rate_median" in common:
+        return ["rate_median"]
+    if all_series:
+        numeric_cols = [
+            col
+            for col in reference.columns
+            if col in common and col not in META_COLUMNS and pd.api.types.is_numeric_dtype(reference[col])
+        ]
+        if numeric_cols:
+            return numeric_cols
+    mapped = _first_existing(common, PRIMARY_Y_BY_STEM.get(stem, ()))
+    if mapped is not None:
+        return [mapped]
+    rate_cols = [
+        col
+        for col in reference.columns
+        if col in common and str(col).startswith(("DissolutionRate_", "NormalizedDissolutionRate_"))
+    ]
+    if rate_cols:
+        return [rate_cols[0]]
+    numeric_cols = [
+        col
+        for col in reference.columns
+        if col in common
+        and col not in META_COLUMNS
+        and not str(col).endswith("_raw")
+        and pd.api.types.is_numeric_dtype(reference[col])
+    ]
+    if numeric_cols:
+        return [numeric_cols[0]]
+    raise ValueError(f"Could not infer common y column for stem '{stem}'")
 
 
 def infer_kind(stem, df):
@@ -740,8 +848,8 @@ def create_comparison(
     workbooks = load_workbooks(experiments, stem, sheet=sheet, allow_missing=allow_missing)
     reference = workbooks[0].data
     kind = infer_kind(stem, reference)
-    x_col = select_x_column(stem, reference, requested=x)
-    y_cols = select_y_columns(stem, reference, requested=y, all_series=all_series)
+    x_col = select_x_column_for_workbooks(stem, workbooks, requested=x)
+    y_cols = select_y_columns_for_workbooks(stem, workbooks, requested=y, all_series=all_series)
 
     for wb in workbooks[1:]:
         missing = [col for col in [x_col, *y_cols] if col not in wb.data.columns]
