@@ -1,6 +1,6 @@
 # G21 Blob Morphology Handoff
 
-Last updated: 2026-05-21
+Last updated: 2026-06-01
 
 This handoff is for cross-agent coordination. It records the current state of
 the G21 blob morphology pipeline, the frozen data products, the accepted scope,
@@ -9,12 +9,27 @@ and the next planned work. It is not a results interpretation document.
 ## Repository State
 
 ```text
-repo: D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\residual-structure-metrics-20260424
+current main-route worktree: D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\Matlab 2 Stage Analsysis
 branch: feat/residual-structure-metrics-20260424
-latest pipeline commit before this handoff: 526db3a Add blob structure data figure bundle builder
-tracked worktree state at handoff creation: clean before adding this handoff
+latest reusable-pipeline commits:
+  f220178 Stabilize per-blob geometry core-only mode
+  247c57c Add Linear RGB input normalization toggle
+  5673377 Add reusable ROI hole geometry mode
+tracked worktree state at 2026-06-01 update: one local config_pipeline.m edit exists
+local config edit observed: config.physical.channel_width_um 400 -> 10000
 latest regenerated data/figure bundle after validation hardening: g21_blob_structure_data_figure_bundle_20260521_203432
 ```
+
+The worktree directory was renamed on 2026-06-01 to make its role explicit.
+Use this path as the current active route for MATLAB two-stage analysis work:
+
+```text
+D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\Matlab 2 Stage Analsysis
+```
+
+The spelling `Analsysis` is intentional because it matches the current
+filesystem path. Do not silently switch agents back to the old
+`residual-structure-metrics-20260424` path.
 
 Known local scratch file moved out of the repo:
 
@@ -52,9 +67,107 @@ C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418
 
 ## Current Pipeline Capabilities
 
-The current worktree can reproduce the accepted G21 blob morphology data chain
-from already completed pipeline outputs. It does not need to rerun the raw
-segmentation pipeline for the current G21 products.
+The current worktree has two roles:
+
+```text
+1. It can reproduce the accepted G21 blob morphology data chain from already
+   completed G21 pipeline outputs.
+2. It is now also the reusable raw-TIF pipeline route for new experiments that
+   need full-frame per-blob detail output.
+```
+
+It does not need to rerun the raw segmentation pipeline for the frozen G21
+products. For new experiments, use the two-stage geometry route below.
+
+### Reusable Two-Stage Geometry Route
+
+Current code supports these reusable geometry modes:
+
+```text
+Phase 1:
+  geometry.mode = 'core_only'
+  geometry.schema_version = 'geometry_v2_core_only'
+  purpose = stable full-frame per-blob scalar export
+  hole semantics = Euler-based only, no domain-aware hole classification
+
+Phase 2:
+  geometry.mode = 'roi'
+  geometry.schema_version = 'geometry_v3_roi_holes'
+  purpose = ROI-local domain-aware hole classification
+  hole semantics = ROI imfill/bwconncomp with flow/solid domain labels
+
+Debug/regression only:
+  geometry.mode = 'legacy_fullframe'
+  purpose = old per-blob full-frame hole path for small tests
+```
+
+Do not switch Phase 1 and Phase 2 inside the same output directory. The schema
+manifest under `status/geometry_schema.mat` is intended to fail fast on
+incompatible resume or mixed-schema writes.
+
+Default run settings for full per-blob output:
+
+```text
+config.output.save_blob_detail = true
+config.parallel.enabled = false
+config.visualization.show_figures = false
+config.visualization.save_figures = false
+```
+
+Input encoding support:
+
+```text
+config.input.is_linear_rgb = false  % default, existing sRGB behavior
+config.input.is_linear_rgb = true   % convert Linear RGB to sRGB before segmentation
+```
+
+Linear RGB support is a forward-looking input normalization option. Existing
+outputs are not migrated.
+
+### G18 Phase 1/2 Validation Run
+
+Recent G18 raw-pipeline runs demonstrate that the two-stage route is usable
+outside the frozen G21 product chain.
+
+```text
+Experiment path:
+G:\Microfluid\18 1-BO 4UL 5% TWEEM 80 4UL WATER DISPLACE\01 Tween 80
+
+Phase 1 completed output:
+G:\Microfluid\18 1-BO 4UL 5% TWEEM 80 4UL WATER DISPLACE\01 Tween 80\output_core_only_20260528_104228
+
+Phase 2 completed output:
+G:\Microfluid\18 1-BO 4UL 5% TWEEM 80 4UL WATER DISPLACE\01 Tween 80\output_roi_phase2_20260528_140506
+```
+
+Phase 2 output check:
+
+```text
+pipeline completed = true
+frames = 5852 / 5852
+blob_detail_all_frames.csv rows = 1,322,608
+timeseries NumBlobs sum = 1,322,608
+blob detail chunks = 82
+chunk coverage = 1-5852 with no gaps
+GeometryMode = roi for all rows
+GeometrySchemaVersion = geometry_v3_roi_holes for all rows
+HoleClassificationComputed = true for all rows
+HoleCountSource = roi_domain_aware for all rows
+RoiFallbackUsed = false for all rows
+```
+
+Phase 2 caution:
+
+```text
+HoleCount total = 111,956
+EulerHoleCount total = 123,985
+rows where EulerHoleCount exceeds ROI HoleCount = 11,875
+```
+
+This is not a pipeline-completion failure, but hole statistics should receive a
+small Phase 2.1 QC before any scientific interpretation of hole counts. The
+likely issue is a definition/connectivity difference between Euler topology and
+ROI imfill/domain-aware component classification.
 
 ### Level A Postprocess And QC
 
@@ -227,7 +340,6 @@ Fig_RepresentativeBlobAtlas
 Do not assume the current pipeline can produce accepted results for:
 
 ```text
-full-duration Level B geometry interpretation
 full-duration corrected boundary trend
 tracking trajectories
 split/merge lineage
@@ -240,6 +352,10 @@ transport dimensionless-number interpretation
 mechanism or causal claims
 ```
 
+Full-frame per-blob detail export is now implemented for new raw pipeline runs
+through `core_only` and `roi`. That is still a data product, not an accepted
+scientific interpretation layer.
+
 ## Current Accepted Status
 
 ```text
@@ -248,6 +364,9 @@ FRAME_COVERAGE_ACCEPTED
 SHAPE_CLASS_V1_ACCEPTED
 DATA_FIGURE_BUNDLE_GENERATED
 PIPELINE_ACCEPTED_WITH_DOCUMENTED_WARNINGS
+MATLAB_TWO_STAGE_ANALYSIS_WORKTREE_REGISTERED
+G18_PHASE1_CORE_ONLY_COMPLETED
+G18_PHASE2_ROI_COMPLETED
 ```
 
 Current acceptance numbers:
@@ -368,7 +487,7 @@ python visualization\build_blob_structure_data_figure_bundle.py `
   --shape-class-v1-dir "C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_shape_class_v1_formal_package_20260521_105739" `
   --structure-statistics-dir "C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_blob_structure_statistics_v1_20260521_113634" `
   --acceptance-dir "C:\tmp\g21_output_20260515_190825\postprocess_residual_structure_20260518_231418\g21_blob_morphology_data_product_20260520_124541\g21_blob_pipeline_acceptance_20260521_144653" `
-  --repo-root "D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\residual-structure-metrics-20260424"
+  --repo-root "D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\Matlab 2 Stage Analsysis"
 ```
 
 This command creates a new timestamped bundle directory by default. To refresh
@@ -384,7 +503,16 @@ then updating this handoff if it becomes the official frozen version.
 
 ## Next Short-Term Work
 
-The next recommended work is figure and table polish only.
+The next recommended work is to keep the two routes separate:
+
+```text
+G21 frozen product route:
+  figure and table polish only
+
+Reusable raw-pipeline route:
+  Phase 2.1 hole-count QC before interpreting hole statistics
+  then build neutral data/figure bundles from Phase 2 outputs
+```
 
 Possible tasks:
 
@@ -393,7 +521,9 @@ Possible tasks:
 2. Improve layout, class order, colors, labels, and legend placement.
 3. Add Chinese/English label variants if needed.
 4. Keep all captions neutral and non-interpretive.
-5. Regenerate the bundle and update inventories.
+5. Regenerate the G21 bundle and update inventories if the frozen bundle changes.
+6. For G18 Phase 2, run a focused HoleCount vs EulerHoleCount QC.
+7. Build neutral G18 blob-structure tables and figures only after the QC passes.
 ```
 
 Priority figures to inspect:
@@ -417,6 +547,9 @@ Make the current workflow experiment-agnostic:
 2. Apply the same package chain to G18/G20/G21.
 3. Emit identical data/figure bundle schemas for each experiment.
 4. Maintain one release registry per experiment.
+5. Record geometry mode and schema version in every release registry entry.
+6. Keep Phase 1 and Phase 2 outputs as separate releases unless an explicit
+   migration/merge tool is written.
 ```
 
 Engineering cleanup to keep on the medium-term list:
@@ -480,3 +613,6 @@ true fluid-fluid interfacial area
 4. Do not commit generated `C:\tmp` data products.
 5. Do not reintroduce the old Level B interpretation draft without a new plan and tests.
 6. Keep scope language strict: this is projected 2D blob morphology data and figures.
+7. Use `D:\00 Claude Code\01 MATLAB CODE\01 Microfluid\.worktrees\Matlab 2 Stage Analsysis` as the active two-stage MATLAB analysis worktree.
+8. Do not mix `geometry_v2_core_only` and `geometry_v3_roi_holes` rows without explicit schema labeling.
+9. Treat the current `config_pipeline.m` local change as run-specific until the user approves committing it.
