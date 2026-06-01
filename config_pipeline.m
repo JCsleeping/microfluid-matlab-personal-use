@@ -87,6 +87,7 @@ function config = config_pipeline(varargin)
     config.flow_domain.white_pillar_min_circularity = 0.15;
     config.flow_domain.solid_mask_path = '';
     config.flow_domain.flow_domain_mask_path = '';
+    config.flow_domain.mask_grid = 'target';
     config.flow_domain.mask_resize_method = 'nearest';
     config.flow_domain.dxf_boundary_mode = 'smallest_containing_circles';
     config.flow_domain.dxf_alignment_mode = 'control_points';

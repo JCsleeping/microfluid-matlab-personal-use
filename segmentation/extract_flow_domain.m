@@ -409,6 +409,13 @@ function [mask, source_format, info] = read_mask_override(mask_path, ...
                 'Unsupported flow-domain mask format "%s".', ext);
     end
 
+    mask_grid = char(string(read_flow_domain_param(config, ...
+        'mask_grid', 'target')));
+    if strcmp(mask_grid, 'native_full') && ~strcmp(source_format, 'dxf')
+        [mask, crop_rect] = crop_native_full_mask(mask, config);
+        info.mask_crop_rect = crop_rect;
+    end
+
     input_size = size(mask);
     if numel(input_size) > 2
         input_size = input_size(1:2);
@@ -422,6 +429,44 @@ function [mask, source_format, info] = read_mask_override(mask_path, ...
 
     info.input_size = input_size;
     info.resized = resized;
+    info.mask_grid = mask_grid;
+end
+
+
+function [mask, crop_rect] = crop_native_full_mask(mask, config)
+    crop_rect = [];
+    if isstruct(config) && isfield(config, 'preprocess') && ...
+            isstruct(config.preprocess)
+        if isfield(config.preprocess, 'saved_crop_rect') && ...
+                isnumeric(config.preprocess.saved_crop_rect) && ...
+                numel(config.preprocess.saved_crop_rect) == 4
+            crop_rect = config.preprocess.saved_crop_rect;
+        elseif isfield(config.preprocess, 'manual_crop_rect') && ...
+                isnumeric(config.preprocess.manual_crop_rect) && ...
+                numel(config.preprocess.manual_crop_rect) == 4
+            crop_rect = config.preprocess.manual_crop_rect;
+        end
+    end
+    if isempty(crop_rect)
+        error('extract_flow_domain:missingMaskCropRect', ...
+            ['flow_domain.mask_grid="native_full" requires ' ...
+             'preprocess.saved_crop_rect or preprocess.manual_crop_rect.']);
+    end
+    crop_rect = clip_mask_crop_rect(crop_rect, size(mask));
+    mask = imcrop(mask, crop_rect) > 0;
+end
+
+
+function crop_rect = clip_mask_crop_rect(crop_rect, mask_size)
+    x = max(1, round(crop_rect(1)));
+    y = max(1, round(crop_rect(2)));
+    w = max(1, round(crop_rect(3)));
+    h = max(1, round(crop_rect(4)));
+    x = min(x, mask_size(2));
+    y = min(y, mask_size(1));
+    w = min(w, mask_size(2) - x + 1);
+    h = min(h, mask_size(1) - y + 1);
+    crop_rect = [x, y, w, h];
 end
 
 
@@ -679,7 +724,7 @@ function [mask, info] = rasterize_dxf_bbox_mode(circles, polylines, target_size,
         c0 = max(1, floor(cx - rx - 1));  c1 = min(W, ceil(cx + rx + 1));
         r0 = max(1, floor(cy - ry - 1));  r1 = min(H, ceil(cy + ry + 1));
         if c0 > c1 || r0 > r1, continue; end
-        [yy, xx] = ndgrid(r0:r1, c0:c1); %#ok<ASGLU>
+        [yy, xx] = ndgrid(r0:r1, c0:c1);
         disk = ((xx - cx) ./ rx).^2 + ((yy - cy) ./ ry).^2 <= 1;
         sub = mask(r0:r1, c0:c1); sub(disk) = true;
         mask(r0:r1, c0:c1) = sub;
