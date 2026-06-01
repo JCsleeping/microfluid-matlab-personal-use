@@ -1,4 +1,4 @@
-function summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir)
+function summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir, endpoint_policy_path)
 % RUN_A1_1BO_6UL_BRIDGE_HDF5_CHROMA  Validate MATLAB Branch C on Python BasicPy cache.
 %
 % This bridge intentionally bypasses segmentation. It reads Python BasicPy
@@ -16,6 +16,9 @@ function summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir)
         out_dir = fullfile(repo_root, 'outputs', ...
             'bridge_hdf5_chroma_20260601', 'A1_1BO_6UL_manual_roi_page1');
     end
+    if nargin < 3
+        endpoint_policy_path = '';
+    end
     if ~isfolder(out_dir)
         mkdir(out_dir);
     end
@@ -31,9 +34,13 @@ function summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir)
     flow_domain = read_hdf5_mask(mask_path);
     solid_mask = false(size(flow_domain));
 
-    endpoints = endpoint_specs();
+    endpoints = endpoint_specs(endpoint_policy_path);
     summary_rows = repmat(empty_summary_row(), numel(endpoints), 1);
-    python_summary = readtable(python_summary_path, 'TextType', 'string');
+    if isfile(python_summary_path)
+        python_summary = readtable(python_summary_path, 'TextType', 'string');
+    else
+        python_summary = table();
+    end
 
     for idx = 1:numel(endpoints)
         spec = endpoints(idx);
@@ -52,28 +59,71 @@ function summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir)
 end
 
 
-function specs = endpoint_specs()
-    specs = repmat(struct( ...
+function specs = endpoint_specs(endpoint_policy_path)
+    template = struct( ...
         'id', "", ...
         'short_name', "", ...
         'water_label', "", ...
-        'napl_label', ""), 2, 1);
-    specs(1).id = "A_full_consistency_primary";
-    specs(1).short_name = "A";
-    specs(1).water_label = "water_ep_00_napl_00_3s_1";
-    specs(1).napl_label = "full_01_water_1s_3";
-    specs(2).id = "B_residual_separation_primary";
-    specs(2).short_name = "B";
-    specs(2).water_label = "water_ep_00_napl_01_1s";
-    specs(2).napl_label = "full_00_water_3s_2";
+        'napl_label', "");
+    if nargin < 1 || isempty(endpoint_policy_path)
+        specs = repmat(template, 2, 1);
+        specs(1).id = "A_full_consistency_primary";
+        specs(1).short_name = "A";
+        specs(1).water_label = "water_ep_00_napl_00_3s_1";
+        specs(1).napl_label = "full_01_water_1s_3";
+        specs(2).id = "B_residual_separation_primary";
+        specs(2).short_name = "B";
+        specs(2).water_label = "water_ep_00_napl_01_1s";
+        specs(2).napl_label = "full_00_water_3s_2";
+        return;
+    end
+
+    policy = jsondecode(fileread(char(endpoint_policy_path)));
+    entries = {};
+    if isfield(policy, 'primary')
+        entries{end + 1} = policy.primary;
+    end
+    if isfield(policy, 'sensitivity')
+        entries{end + 1} = policy.sensitivity;
+    end
+    if isempty(entries)
+        error('bridge_hdf5_chroma:badEndpointPolicy', ...
+            'Endpoint policy must contain primary and/or sensitivity entries.');
+    end
+
+    specs = repmat(template, numel(entries), 1);
+    for idx = 1:numel(entries)
+        entry = entries{idx};
+        required = ["id", "short_name", "water_label", "napl_label"];
+        for field_idx = 1:numel(required)
+            field_name = char(required(field_idx));
+            if ~isfield(entry, field_name)
+                error('bridge_hdf5_chroma:badEndpointPolicy', ...
+                    'Endpoint entry is missing field %s.', field_name);
+            end
+        end
+        specs(idx).id = string(entry.id);
+        specs(idx).short_name = string(entry.short_name);
+        specs(idx).water_label = string(entry.water_label);
+        specs(idx).napl_label = string(entry.napl_label);
+    end
 end
 
 
 function rows = run_endpoint_bridge(spec, manifest, flow_domain, solid_mask)
     water_rgb = read_label_rgb(manifest, spec.water_label);
     napl_rgb = read_label_rgb(manifest, spec.napl_label);
-    frame_rows = manifest(ismember(manifest.role, ["full_napl", "residual"]), :);
-    frame_rows = sortrows(frame_rows, "frame_order");
+    frame_rows = manifest(ismember(manifest.role, ...
+        ["full_napl", "residual", "production"]), :);
+    if ismember('include_in_timeseries', manifest.Properties.VariableNames)
+        frame_rows = frame_rows(truthy_vector(frame_rows.include_in_timeseries), :);
+    end
+    if ismember('timeseries_order', frame_rows.Properties.VariableNames) && ...
+            any(~ismissing(frame_rows.timeseries_order))
+        frame_rows = sortrows(frame_rows, "timeseries_order");
+    else
+        frame_rows = sortrows(frame_rows, "frame_order");
+    end
 
     config = bridge_config(spec);
     rows = repmat(empty_timeseries_row(), height(frame_rows), 1);
@@ -162,13 +212,17 @@ function row = summarize_endpoint(spec, rows, python_summary, out_csv)
     table_rows = struct2table(rows);
     full_values = table_rows.S_NAPL_color(table_rows.role == "full_napl");
     residual_values = table_rows.S_NAPL_color(table_rows.role == "residual");
-    py_row = python_summary(python_summary.shortlist_id == spec.id, :);
-    if height(py_row) ~= 1
-        error('bridge_hdf5_chroma:missingPythonSummary', ...
-            'Expected one Python summary row for %s.', spec.id);
+    py_row = table();
+    if ~isempty(python_summary) && ismember('shortlist_id', python_summary.Properties.VariableNames)
+        py_row = python_summary(python_summary.shortlist_id == spec.id, :);
     end
-    py_full_median = py_row.median_S_full_validation(1);
-    py_residual_median = py_row.median_S_residual(1);
+    if height(py_row) == 1
+        py_full_median = py_row.median_S_full_validation(1);
+        py_residual_median = py_row.median_S_residual(1);
+    else
+        py_full_median = NaN;
+        py_residual_median = NaN;
+    end
     full_diff = median(full_values, 'omitnan') - py_full_median;
     residual_diff = median(residual_values, 'omitnan') - py_residual_median;
 
@@ -189,8 +243,10 @@ function row = summarize_endpoint(spec, rows, python_summary, out_csv)
     row.residual_median_diff = residual_diff;
     row.abs_full_median_diff = abs(full_diff);
     row.abs_residual_median_diff = abs(residual_diff);
-    row.pass_full_tolerance = row.abs_full_median_diff <= 0.01;
-    row.pass_residual_tolerance = row.abs_residual_median_diff <= 0.01;
+    row.pass_full_tolerance = isfinite(row.abs_full_median_diff) && ...
+        row.abs_full_median_diff <= 0.01;
+    row.pass_residual_tolerance = isfinite(row.abs_residual_median_diff) && ...
+        row.abs_residual_median_diff <= 0.01;
     row.bridge_pass = row.pass_full_tolerance && row.pass_residual_tolerance;
     row.timeseries_csv = string(out_csv);
 end
@@ -244,6 +300,20 @@ end
 function mask = read_hdf5_mask(path_value)
     raw = h5read(char(path_value), '/flow_domain_mask');
     mask = logical(raw');
+end
+
+
+function values = truthy_vector(raw_values)
+    if islogical(raw_values)
+        values = raw_values;
+        return;
+    end
+    if isnumeric(raw_values)
+        values = raw_values ~= 0;
+        return;
+    end
+    text_values = lower(strtrim(string(raw_values)));
+    values = ismember(text_values, ["1", "true", "yes", "y"]);
 end
 
 

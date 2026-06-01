@@ -101,17 +101,29 @@ def mask_bbox(mask_path: Path) -> tuple[np.ndarray, tuple[int, int, int, int]]:
     return full_mask[y0:y1, x0:x1], (x0, y0, x1 - x0, y1 - y0)
 
 
-def read_rgb_page(path: str, bbox: tuple[int, int, int, int]) -> np.ndarray:
+def read_rgb_page(path: str, page: int, bbox: tuple[int, int, int, int]) -> np.ndarray:
     x0, y0, width, height = bbox
-    image = tifffile.imread(path, key=PAGE - 1)
+    image = tifffile.imread(path, key=page - 1)
     image = image[y0 : y0 + height, x0 : x0 + width, :3]
     return np.clip(image.astype(np.float32) / 255.0, 0.0, 1.0)
 
 
-def frame_specs() -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
+def default_frame_specs() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
     for order, (label, path) in enumerate(WATER, 1):
-        rows.append({"label": label, "role": "water_endpoint", "path": path, "frame_order": order})
+        rows.append(
+            {
+                "label": label,
+                "role": "water_endpoint",
+                "path": path,
+                "source_page": PAGE,
+                "frame_order": order,
+                "timeseries_order": "",
+                "time_s": "",
+                "include_in_timeseries": 0,
+                "fit_sample": 1,
+            }
+        )
     offset = len(rows)
     for order, (label, path) in enumerate(FULL_NAPL, 1):
         rows.append(
@@ -119,7 +131,12 @@ def frame_specs() -> list[dict[str, str]]:
                 "label": label,
                 "role": "full_napl",
                 "path": path,
+                "source_page": PAGE,
                 "frame_order": offset + order,
+                "timeseries_order": order,
+                "time_s": "",
+                "include_in_timeseries": 1,
+                "fit_sample": 1,
             }
         )
     offset = len(rows)
@@ -129,18 +146,89 @@ def frame_specs() -> list[dict[str, str]]:
                 "label": label,
                 "role": "residual",
                 "path": path,
+                "source_page": PAGE,
                 "frame_order": offset + order,
+                "timeseries_order": len(FULL_NAPL) + order,
+                "time_s": "",
+                "include_in_timeseries": 1,
+                "fit_sample": 1,
             }
         )
     return rows
 
 
-def write_rgb_h5(path: Path, label: str, rgb: np.ndarray, attrs: dict[str, object]) -> None:
+def normalize_bool(value: object, default: bool) -> bool:
+    if pd.isna(value):
+        return default
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer, float, np.floating)):
+        return bool(int(value))
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y"}:
+        return True
+    if text in {"0", "false", "no", "n"}:
+        return False
+    return default
+
+
+def load_frame_specs(manifest_path: Path | None) -> list[dict[str, object]]:
+    if manifest_path is None:
+        return default_frame_specs()
+
+    table = pd.read_csv(manifest_path)
+    required = {"label", "role", "frame_order", "source_path", "source_page"}
+    missing = sorted(required - set(table.columns))
+    if missing:
+        raise ValueError(f"Manifest is missing required columns: {missing}")
+
+    if table["label"].duplicated().any():
+        duplicated = sorted(table.loc[table["label"].duplicated(), "label"].astype(str))
+        raise ValueError(f"Manifest labels must be unique. Duplicates: {duplicated}")
+
+    specs: list[dict[str, object]] = []
+    for row in table.to_dict(orient="records"):
+        source_path = Path(str(row["source_path"]))
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Manifest source_path does not exist: {source_path}")
+        source_page = int(row["source_page"])
+        if source_page < 1:
+            raise ValueError(f"source_page must be 1-based for {source_path}")
+        specs.append(
+            {
+                "label": str(row["label"]),
+                "role": str(row["role"]),
+                "path": str(source_path),
+                "source_page": source_page,
+                "frame_order": int(row["frame_order"]),
+                "timeseries_order": row.get("timeseries_order", ""),
+                "time_s": row.get("time_s", ""),
+                "include_in_timeseries": int(
+                    normalize_bool(row.get("include_in_timeseries", True), True)
+                ),
+                "fit_sample": int(normalize_bool(row.get("fit_sample", True), True)),
+            }
+        )
+
+    fit_count = sum(int(spec["fit_sample"]) for spec in specs)
+    if fit_count == 0:
+        raise ValueError("Manifest must mark at least one row fit_sample=1.")
+    return specs
+
+
+def write_rgb_h5(
+    path: Path,
+    label: str,
+    rgb: np.ndarray,
+    attrs: dict[str, object],
+    compression: str | None,
+) -> None:
     with h5py.File(path, "w") as handle:
         data = handle.create_dataset(
             "/rgb_corrected",
             data=np.asarray(rgb, dtype=np.float32),
             dtype="float32",
+            compression=compression,
         )
         data.attrs["storage_order"] = "python_hwc"
         data.attrs["matlab_h5read_permute"] = "permute(raw, [3 2 1])"
@@ -162,28 +250,84 @@ def write_mask_h5(path: Path, mask: np.ndarray, attrs: dict[str, object]) -> Non
             handle.attrs[key] = value
 
 
-def build_cache(out_dir: Path, force: bool) -> None:
+def apply_basicpy_rgb_for_specs(
+    frames: dict[str, np.ndarray],
+    specs: list[dict[str, object]],
+) -> dict[str, np.ndarray]:
+    labels = [str(spec["label"]) for spec in specs]
+    fit_labels = [str(spec["label"]) for spec in specs if int(spec["fit_sample"])]
+    if len(fit_labels) == len(labels):
+        return tlf.apply_basicpy_rgb(
+            frames,
+            BASICPY_WORKING_SIZE,
+            BASICPY_MAX_ITERATIONS,
+        )
+
+    try:
+        from basicpy import BaSiC
+    except ImportError as exc:
+        raise RuntimeError(
+            "BaSiCPy is not installed. Install it with: python -m pip install BaSiCPy"
+        ) from exc
+
+    height, width = frames[labels[0]].shape[:2]
+    corrected = {
+        label: np.zeros((height, width, 3), dtype=np.float32)
+        for label in labels
+    }
+    for channel in range(3):
+        fit_stack = np.stack(
+            [frames[label][:, :, channel] for label in fit_labels],
+            axis=0,
+        ).astype(np.float32)
+        all_stack = np.stack(
+            [frames[label][:, :, channel] for label in labels],
+            axis=0,
+        ).astype(np.float32)
+        model = BaSiC(
+            get_darkfield=False,
+            sort_intensity=True,
+            working_size=BASICPY_WORKING_SIZE,
+            max_iterations=BASICPY_MAX_ITERATIONS,
+        )
+        model.fit(fit_stack, skip_shape_warning=True)
+        corrected_stack = model.transform(all_stack, use_tqdm=False)
+        if isinstance(corrected_stack, tuple):
+            corrected_stack = corrected_stack[0]
+        corrected_stack = np.asarray(corrected_stack, dtype=np.float32)
+        for index, label in enumerate(labels):
+            corrected[label][:, :, channel] = corrected_stack[index]
+    return {label: np.clip(rgb, 0.0, 1.0) for label, rgb in corrected.items()}
+
+
+def build_cache(
+    out_dir: Path,
+    force: bool,
+    manifest_path: Path | None,
+    mask_path: Path,
+    compression: str | None,
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = out_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
 
-    mask, bbox = mask_bbox(MASK_PATH)
+    mask, bbox = mask_bbox(mask_path)
     x0, y0, width, height = bbox
     bbox_text = f"{x0} {y0} {width} {height}"
     matlab_crop_text = " ".join(str(value) for value in MATLAB_CROP_RECT)
 
-    specs = frame_specs()
+    specs = load_frame_specs(manifest_path)
     frames: dict[str, np.ndarray] = {}
     for index, spec in enumerate(specs, 1):
         print(f"READ {index:03d}/{len(specs):03d} {spec['label']}", flush=True)
-        frames[spec["label"]] = read_rgb_page(spec["path"], bbox)
+        frames[str(spec["label"])] = read_rgb_page(
+            str(spec["path"]),
+            int(spec["source_page"]),
+            bbox,
+        )
 
     print("BASICPY_START", flush=True)
-    corrected = tlf.apply_basicpy_rgb(
-        frames,
-        BASICPY_WORKING_SIZE,
-        BASICPY_MAX_ITERATIONS,
-    )
+    corrected = apply_basicpy_rgb_for_specs(frames, specs)
     del frames
     gc.collect()
     print("BASICPY_DONE", flush=True)
@@ -195,7 +339,7 @@ def build_cache(out_dir: Path, force: bool) -> None:
         mask_h5,
         mask,
         {
-            "mask_source_path": str(MASK_PATH),
+            "mask_source_path": str(mask_path),
             "bbox_zero_based_xywh": bbox_text,
             "matlab_crop_rect_xywh": matlab_crop_text,
             "mask_pixel_count": int(mask.sum()),
@@ -204,7 +348,7 @@ def build_cache(out_dir: Path, force: bool) -> None:
 
     manifest_rows = []
     for index, spec in enumerate(specs, 1):
-        label = spec["label"]
+        label = str(spec["label"])
         rgb = corrected[label]
         h5_name = f"{index:03d}_{label}.h5"
         h5_path = frames_dir / h5_name
@@ -217,8 +361,12 @@ def build_cache(out_dir: Path, force: bool) -> None:
             rgb,
             {
                 "source_path": spec["path"],
-                "source_page": PAGE,
+                "source_page": int(spec["source_page"]),
                 "role": spec["role"],
+                "timeseries_order": str(spec["timeseries_order"]),
+                "time_s": str(spec["time_s"]),
+                "include_in_timeseries": int(spec["include_in_timeseries"]),
+                "fit_sample": int(spec["fit_sample"]),
                 "bbox_zero_based_xywh": bbox_text,
                 "matlab_crop_rect_xywh": matlab_crop_text,
                 "correction": "basicpy_rgb_all",
@@ -229,14 +377,19 @@ def build_cache(out_dir: Path, force: bool) -> None:
                 "no_per_frame_contrast": True,
                 "no_per_frame_rescale": True,
             },
+            compression,
         )
         manifest_rows.append(
             {
                 "label": label,
                 "role": spec["role"],
                 "frame_order": spec["frame_order"],
+                "timeseries_order": spec["timeseries_order"],
                 "source_path": spec["path"],
-                "source_page": PAGE,
+                "source_page": int(spec["source_page"]),
+                "time_s": spec["time_s"],
+                "include_in_timeseries": int(spec["include_in_timeseries"]),
+                "fit_sample": int(spec["fit_sample"]),
                 "h5_path": str(h5_path),
                 "dataset": "/rgb_corrected",
                 "shape_h": rgb.shape[0],
@@ -252,22 +405,26 @@ def build_cache(out_dir: Path, force: bool) -> None:
                 "basicpy_max_iterations": BASICPY_MAX_ITERATIONS,
                 "storage_order": "python_hwc",
                 "matlab_h5read_permute": "3 2 1",
+                "hdf5_compression": compression or "",
                 "no_per_frame_contrast": True,
                 "no_per_frame_rescale": True,
             }
         )
 
     manifest = pd.DataFrame(manifest_rows)
-    manifest_path = out_dir / "manifest.csv"
-    manifest.to_csv(manifest_path, index=False)
+    cache_manifest_csv = out_dir / "manifest.csv"
+    manifest.to_csv(cache_manifest_csv, index=False)
 
     run_manifest = {
         "cache_contract": "basicpy_hdf5_float32_hwc",
         "output_dir": str(out_dir),
-        "manifest_csv": str(manifest_path),
+        "manifest_csv": str(cache_manifest_csv),
+        "input_manifest_csv": str(manifest_path) if manifest_path else "",
         "mask_h5": str(mask_h5),
         "frame_count": len(manifest_rows),
         "roles": manifest["role"].value_counts().to_dict(),
+        "timeseries_frame_count": int(manifest["include_in_timeseries"].sum()),
+        "fit_sample_frame_count": int(manifest["fit_sample"].sum()),
         "dataset": "/rgb_corrected",
         "dtype": "float32",
         "shape": "H x W x 3",
@@ -277,6 +434,7 @@ def build_cache(out_dir: Path, force: bool) -> None:
         "basicpy_max_iterations": BASICPY_MAX_ITERATIONS,
         "bbox_zero_based_xywh": [x0, y0, width, height],
         "matlab_crop_rect_xywh": MATLAB_CROP_RECT,
+        "hdf5_compression": compression or "",
         "no_per_frame_contrast": True,
         "no_per_frame_rescale": True,
     }
@@ -287,9 +445,23 @@ def build_cache(out_dir: Path, force: bool) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=OUT_DEFAULT)
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Accepted-frame CSV. If omitted, use the built-in 53-frame validation set.",
+    )
+    parser.add_argument("--mask", type=Path, default=MASK_PATH)
+    parser.add_argument(
+        "--compression",
+        choices=["gzip", "lzf", "none"],
+        default="none",
+        help="Optional HDF5 compression for /rgb_corrected datasets.",
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    build_cache(args.out, args.force)
+    compression = None if args.compression == "none" else args.compression
+    build_cache(args.out, args.force, args.manifest, args.mask, compression)
 
 
 if __name__ == "__main__":

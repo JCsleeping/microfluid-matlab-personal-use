@@ -1,4 +1,4 @@
-function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_dir)
+function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_dir, endpoint_policy_path)
 % RUN_A1_1BO_6UL_HDF5_CACHE_BRANCH_C_PIPELINE  Cache-fed Branch C Sn(t) pipeline.
 %
 % The primary quantitative input is the Python BasicPy HDF5 cache. This
@@ -17,12 +17,16 @@ function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_di
             'hdf5_cache_branch_c_pipeline_20260601', ...
             'A1_1BO_6UL_manual_roi_page1');
     end
+    if nargin < 3
+        endpoint_policy_path = '';
+    end
     if ~isfolder(out_dir)
         mkdir(out_dir);
     end
 
     assert_cache_ready(cache_dir);
-    summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir);
+    summary = run_a1_1bo_6ul_bridge_hdf5_chroma( ...
+        cache_dir, out_dir, endpoint_policy_path);
 
     row_A = single_summary_row(summary, "A");
     row_B = single_summary_row(summary, "B");
@@ -48,8 +52,9 @@ function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_di
     writetable(sensitivity_B, sensitivity_path);
     writetable(comparison, comparison_path);
     writetable(summary, summary_path);
-    write_pipeline_manifest(manifest_path, cache_dir, out_dir, summary, ...
-        primary_path, sensitivity_path, comparison_path, plot_path);
+    write_pipeline_manifest(manifest_path, cache_dir, out_dir, ...
+        endpoint_policy_path, summary, primary_path, sensitivity_path, ...
+        comparison_path, plot_path);
     plot_sensitivity(primary_A, sensitivity_B, plot_path);
 
     outputs = struct();
@@ -123,13 +128,15 @@ function comparison = build_sensitivity_comparison(primary_A, sensitivity_B)
 end
 
 
-function write_pipeline_manifest(path_value, cache_dir, out_dir, summary, ...
-        primary_path, sensitivity_path, comparison_path, plot_path)
+function write_pipeline_manifest(path_value, cache_dir, out_dir, ...
+        endpoint_policy_path, summary, primary_path, sensitivity_path, ...
+        comparison_path, plot_path)
     manifest = struct();
     manifest.pipeline = 'A1_1BO_6UL_HDF5_cache_Branch_C_chroma';
     manifest.created_at = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
     manifest.cache_dir = cache_dir;
     manifest.output_dir = out_dir;
+    manifest.endpoint_policy_path = endpoint_policy_path;
     manifest.cache_contract = 'basicpy_hdf5_float32_hwc';
     manifest.primary_output = 'S_NAPL_color';
     manifest.primary_output_semantics = ...
