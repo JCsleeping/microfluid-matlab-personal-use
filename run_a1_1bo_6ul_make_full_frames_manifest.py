@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+import tifffile
+
 
 REPO = Path(__file__).resolve().parent
 OUT_DEFAULT = (
@@ -43,6 +45,14 @@ ENDPOINT_POLICY = {
 }
 
 
+def endpoint_policy(expand_pages: bool) -> dict[str, dict[str, str]]:
+    policy = json.loads(json.dumps(ENDPOINT_POLICY))
+    if expand_pages:
+        policy["primary"]["napl_label"] = f'{policy["primary"]["napl_label"]}_p001'
+        policy["sensitivity"]["napl_label"] = f'{policy["sensitivity"]["napl_label"]}_p001'
+    return policy
+
+
 def natural_sort_key(path_value: Path) -> tuple:
     parts = re.split(r"(\d+)", path_value.stem.lower())
     key: list[object] = []
@@ -70,12 +80,54 @@ def label_for_production(path_value: Path) -> tuple[str, str]:
     return f"{prefix}_{normalized}", role
 
 
+def page_label(base_label: str, page: int) -> str:
+    return f"{base_label}_p{page:03d}"
+
+
+def tif_page_count(path_value: Path) -> int:
+    with tifffile.TiffFile(path_value) as tif:
+        return len(tif.pages)
+
+
+def select_page_indices(total_count: int, max_pages: int | None, mode: str) -> set[int]:
+    if max_pages is None or max_pages >= total_count:
+        return set(range(total_count))
+    if max_pages <= 0:
+        raise ValueError("--max-pages must be positive when provided.")
+    if mode == "first":
+        return set(range(max_pages))
+    if mode != "uniform":
+        raise ValueError(f"Unsupported page selection mode: {mode}")
+    if max_pages == 1:
+        return {0}
+    selected = {
+        round(index * (total_count - 1) / (max_pages - 1))
+        for index in range(max_pages)
+    }
+    cursor = 0
+    while len(selected) < max_pages:
+        selected.add(cursor)
+        cursor += 1
+    return selected
+
+
 def require_file(path_value: Path) -> None:
     if not path_value.is_file():
         raise FileNotFoundError(f"Missing required file: {path_value}")
 
 
-def build_rows(water_endpoint_dir: Path, production_dir: Path) -> list[dict[str, object]]:
+def build_rows(
+    water_endpoint_dir: Path,
+    production_dir: Path,
+    expand_pages: bool,
+    max_pages: int | None,
+    page_selection: str,
+    fit_sample_stride: int,
+) -> tuple[list[dict[str, object]], dict[str, dict[str, str]]]:
+    if fit_sample_stride < 1:
+        raise ValueError("--fit-sample-stride must be >= 1.")
+
+    policy = endpoint_policy(expand_pages)
     rows: list[dict[str, object]] = []
     for index, (label, name) in enumerate(WATER_ENDPOINTS, 1):
         path_value = water_endpoint_dir / name
@@ -98,39 +150,83 @@ def build_rows(water_endpoint_dir: Path, production_dir: Path) -> list[dict[str,
     if not tif_paths:
         raise FileNotFoundError(f"No .tif files found in: {production_dir}")
 
+    production_candidates: list[dict[str, object]] = []
+    for path_value in tif_paths:
+        base_label, role = label_for_production(path_value)
+        page_count = tif_page_count(path_value) if expand_pages else 1
+        for page in range(1, page_count + 1):
+            label = page_label(base_label, page) if expand_pages else base_label
+            production_candidates.append(
+                {
+                    "label": label,
+                    "role": role,
+                    "source_path": str(path_value),
+                    "source_page": page,
+                }
+            )
+
+    selected_indices = select_page_indices(
+        len(production_candidates),
+        max_pages,
+        page_selection,
+    )
+    endpoint_labels = {
+        policy["primary"]["napl_label"],
+        policy["sensitivity"]["napl_label"],
+    }
+    for index, candidate in enumerate(production_candidates):
+        if candidate["label"] in endpoint_labels:
+            selected_indices.add(index)
+
     seen_labels = {row["label"] for row in rows}
-    for order, path_value in enumerate(tif_paths, 1):
-        label, role = label_for_production(path_value)
+    timeseries_order = 0
+    for index, candidate in enumerate(production_candidates):
+        label = str(candidate["label"])
+        include = index in selected_indices
+        if not include and label not in endpoint_labels:
+            continue
         if label in seen_labels:
             raise ValueError(f"Duplicate generated label: {label}")
         seen_labels.add(label)
+        if include:
+            timeseries_order += 1
+        is_endpoint = label in endpoint_labels
+        fit_sample = int(
+            is_endpoint
+            or (include and ((max(timeseries_order, 1) - 1) % fit_sample_stride == 0))
+        )
         rows.append(
             {
                 "label": label,
-                "role": role,
-                "frame_order": len(WATER_ENDPOINTS) + order,
-                "timeseries_order": order,
-                "source_path": str(path_value),
-                "source_page": 1,
+                "role": candidate["role"],
+                "frame_order": len(rows) + 1,
+                "timeseries_order": timeseries_order if include else "",
+                "source_path": candidate["source_path"],
+                "source_page": int(candidate["source_page"]),
                 "time_s": "",
-                "include_in_timeseries": 1,
-                "fit_sample": 1,
+                "include_in_timeseries": int(include),
+                "fit_sample": fit_sample,
             }
         )
 
     endpoint_labels = {
-        ENDPOINT_POLICY["primary"]["water_label"],
-        ENDPOINT_POLICY["primary"]["napl_label"],
-        ENDPOINT_POLICY["sensitivity"]["water_label"],
-        ENDPOINT_POLICY["sensitivity"]["napl_label"],
+        policy["primary"]["water_label"],
+        policy["primary"]["napl_label"],
+        policy["sensitivity"]["water_label"],
+        policy["sensitivity"]["napl_label"],
     }
     missing = sorted(endpoint_labels - seen_labels)
     if missing:
         raise ValueError(f"Endpoint policy refers to missing labels: {missing}")
-    return rows
+    return rows, policy
 
 
-def write_manifest(rows: list[dict[str, object]], out_dir: Path, force: bool) -> None:
+def write_manifest(
+    rows: list[dict[str, object]],
+    policy: dict[str, dict[str, str]],
+    out_dir: Path,
+    force: bool,
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "accepted_frames.csv"
     endpoint_path = out_dir / "endpoint_policy.json"
@@ -156,7 +252,7 @@ def write_manifest(rows: list[dict[str, object]], out_dir: Path, force: bool) ->
         writer.writerows(rows)
 
     endpoint_path.write_text(
-        json.dumps(ENDPOINT_POLICY, indent=2),
+        json.dumps(policy, indent=2),
         encoding="utf-8",
     )
     role_counts: dict[str, int] = {}
@@ -171,6 +267,7 @@ def write_manifest(rows: list[dict[str, object]], out_dir: Path, force: bool) ->
         "timeseries_frame_count": sum(
             int(row["include_in_timeseries"]) for row in rows
         ),
+        "fit_sample_frame_count": sum(int(row["fit_sample"]) for row in rows),
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"MANIFEST_DONE {manifest_path}")
@@ -182,10 +279,25 @@ def main() -> None:
     parser.add_argument("--water-endpoint-dir", type=Path, default=WATER_ENDPOINT_DIR)
     parser.add_argument("--production-dir", type=Path, default=PRODUCTION_DIR)
     parser.add_argument("--out-dir", type=Path, default=OUT_DEFAULT)
+    parser.add_argument("--expand-pages", action="store_true")
+    parser.add_argument("--max-pages", type=int, default=None)
+    parser.add_argument(
+        "--page-selection",
+        choices=["first", "uniform"],
+        default="first",
+    )
+    parser.add_argument("--fit-sample-stride", type=int, default=1)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    rows = build_rows(args.water_endpoint_dir, args.production_dir)
-    write_manifest(rows, args.out_dir, args.force)
+    rows, policy = build_rows(
+        args.water_endpoint_dir,
+        args.production_dir,
+        args.expand_pages,
+        args.max_pages,
+        args.page_selection,
+        args.fit_sample_stride,
+    )
+    write_manifest(rows, policy, args.out_dir, args.force)
 
 
 if __name__ == "__main__":

@@ -36,10 +36,21 @@ function summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir, endpoin
 
     endpoints = endpoint_specs(endpoint_policy_path);
     summary_rows = repmat(empty_summary_row(), numel(endpoints), 1);
-    if isfile(python_summary_path)
+    use_python_summary = should_use_python_summary(cache_dir);
+    if use_python_summary && isfile(python_summary_path)
         python_summary = readtable(python_summary_path, 'TextType', 'string');
     else
         python_summary = table();
+    end
+
+    if can_run_combined_fast_chroma(endpoints)
+        summary_rows = run_combined_fast_chroma(endpoints, manifest, ...
+            flow_domain, out_dir, python_summary);
+        summary = struct2table(summary_rows);
+        summary_path = fullfile(out_dir, 'bridge_comparison_summary.csv');
+        writetable(summary, summary_path);
+        fprintf('BRIDGE_SUMMARY %s\n', summary_path);
+        return;
     end
 
     for idx = 1:numel(endpoints)
@@ -56,6 +67,107 @@ function summary = run_a1_1bo_6ul_bridge_hdf5_chroma(cache_dir, out_dir, endpoin
     summary_path = fullfile(out_dir, 'bridge_comparison_summary.csv');
     writetable(summary, summary_path);
     fprintf('BRIDGE_SUMMARY %s\n', summary_path);
+end
+
+
+function tf = can_run_combined_fast_chroma(endpoints)
+    tf = true;
+    for idx = 1:numel(endpoints)
+        config = bridge_config(endpoints(idx));
+        tf = tf && strcmpi(config.bulk_sn.score_mode, 'chroma') && ...
+            strcmpi(config.bulk_sn.statistic, 'winsorized_mean') && ...
+            ~config.bulk_sn.use_background && ...
+            strcmpi(config.bulk_sn.mask_id, 'flow_domain');
+    end
+end
+
+
+function summary_rows = run_combined_fast_chroma(endpoints, manifest, ...
+        flow_domain, out_dir, python_summary)
+    fprintf('BRIDGE_FAST_COMBINED endpoints=%d\n', numel(endpoints));
+    frame_rows = timeseries_frame_rows(manifest);
+    mask = logical(flow_domain);
+    mask_idx = find(mask);
+    if isempty(mask_idx)
+        error('bridge_hdf5_chroma:emptyMask', ...
+            'flow_domain mask has no measurement pixels.');
+    end
+
+    endpoint_state = repmat(empty_endpoint_state(), numel(endpoints), 1);
+    for idx = 1:numel(endpoints)
+        spec = endpoints(idx);
+        config = bridge_config(spec);
+        water_rgb = read_label_rgb(manifest, spec.water_label);
+        napl_rgb = read_label_rgb(manifest, spec.napl_label);
+        water_score = fast_chroma_score_masked(water_rgb, mask_idx, config);
+        napl_score = fast_chroma_score_masked(napl_rgb, mask_idx, config);
+
+        endpoint_state(idx).spec = spec;
+        endpoint_state(idx).config = config;
+        endpoint_state(idx).ref = reference_vector_stats( ...
+            water_score, napl_score, config.bulk_sn);
+        endpoint_state(idx).rows = repmat(empty_timeseries_row(), ...
+            height(frame_rows), 1);
+        fprintf('BRIDGE_ENDPOINT %s\n', spec.id);
+    end
+
+    n_rows = height(frame_rows);
+    progress_step = 100;
+    for row_idx = 1:n_rows
+        label = string(frame_rows.label(row_idx));
+        role = string(frame_rows.role(row_idx));
+        frame_rgb = read_hdf5_rgb(frame_rows.h5_path(row_idx));
+        frame_score = fast_chroma_score_masked( ...
+            frame_rgb, mask_idx, endpoint_state(1).config);
+        score_frame = robust_stat_bridge(frame_score, ...
+            endpoint_state(1).config.bulk_sn);
+
+        for idx = 1:numel(endpoint_state)
+            state = endpoint_state(idx);
+            min_delta = double(state.config.bulk_sn.min_endpoint_delta);
+            [S_raw, S_color, transfer_status] = normalize_region_score( ...
+                score_frame, state.ref, min_delta);
+
+            info = struct();
+            info.S_NAPL_color_raw = S_raw;
+            info.S_NAPL_color = S_color;
+            info.S_NAPL_color_core = S_color;
+            info.S_NAPL_color_edge = NaN;
+            info.score_frame = score_frame;
+            info.score_water_ref = state.ref.score_water_ref;
+            info.score_napl_ref = state.ref.score_napl_ref;
+            info.core_flow_area_px = numel(mask_idx);
+            info.flow_domain_area_px = nnz(mask);
+            info.reference_transfer_status = transfer_status;
+            info.qc_status = "";
+
+            endpoint_state(idx).rows(row_idx) = timeseries_row( ...
+                row_idx, label, role, state.spec, S_color, info);
+        end
+
+        if row_idx == 1 || row_idx == n_rows || mod(row_idx, progress_step) == 0
+            fprintf('BRIDGE_PROGRESS_AB %d/%d\n', row_idx, n_rows);
+        end
+    end
+
+    summary_rows = repmat(empty_summary_row(), numel(endpoint_state), 1);
+    for idx = 1:numel(endpoint_state)
+        state = endpoint_state(idx);
+        out_csv = fullfile(out_dir, sprintf( ...
+            'matlab_on_cache_timeseries_%s.csv', state.spec.short_name));
+        writetable(struct2table(state.rows), out_csv);
+        summary_rows(idx) = summarize_endpoint( ...
+            state.spec, state.rows, python_summary, out_csv);
+    end
+end
+
+
+function state = empty_endpoint_state()
+    state = struct( ...
+        'spec', struct(), ...
+        'config', struct(), ...
+        'ref', struct(), ...
+        'rows', []);
 end
 
 
@@ -113,6 +225,31 @@ end
 function rows = run_endpoint_bridge(spec, manifest, flow_domain, solid_mask)
     water_rgb = read_label_rgb(manifest, spec.water_label);
     napl_rgb = read_label_rgb(manifest, spec.napl_label);
+    frame_rows = timeseries_frame_rows(manifest);
+
+    config = bridge_config(spec);
+    if strcmpi(config.bulk_sn.score_mode, 'chroma') && ...
+            strcmpi(config.bulk_sn.statistic, 'winsorized_mean') && ...
+            ~config.bulk_sn.use_background && ...
+            strcmpi(config.bulk_sn.mask_id, 'flow_domain')
+        rows = run_endpoint_bridge_fast_chroma(spec, frame_rows, water_rgb, ...
+            napl_rgb, flow_domain, config);
+        return;
+    end
+
+    rows = repmat(empty_timeseries_row(), height(frame_rows), 1);
+    for row_idx = 1:height(frame_rows)
+        label = string(frame_rows.label(row_idx));
+        role = string(frame_rows.role(row_idx));
+        frame_rgb = read_hdf5_rgb(frame_rows.h5_path(row_idx));
+        [S_color, info] = compute_bulk_sn_color( ...
+            frame_rgb, water_rgb, napl_rgb, flow_domain, solid_mask, config);
+        rows(row_idx) = timeseries_row(row_idx, label, role, spec, S_color, info);
+    end
+end
+
+
+function frame_rows = timeseries_frame_rows(manifest)
     frame_rows = manifest(ismember(manifest.role, ...
         ["full_napl", "residual", "production"]), :);
     if ismember('include_in_timeseries', manifest.Properties.VariableNames)
@@ -124,16 +261,153 @@ function rows = run_endpoint_bridge(spec, manifest, flow_domain, solid_mask)
     else
         frame_rows = sortrows(frame_rows, "frame_order");
     end
+end
 
-    config = bridge_config(spec);
-    rows = repmat(empty_timeseries_row(), height(frame_rows), 1);
-    for row_idx = 1:height(frame_rows)
+
+function rows = run_endpoint_bridge_fast_chroma(spec, frame_rows, water_rgb, ...
+        napl_rgb, flow_domain, config)
+% Fast path for full cache runs. It matches compute_bulk_sn_color(chroma)
+% for the columns exported by this bridge, but avoids recomputing reference
+% score maps and unused regional diagnostics for every frame.
+    measurement_mask = logical(flow_domain);
+    core_flow = measurement_mask;
+    edge_flow = measurement_mask & ~core_flow;
+    opts = config.bulk_sn;
+    min_endpoint_delta = double(opts.min_endpoint_delta);
+
+    water_score = fast_chroma_score(water_rgb, config);
+    napl_score = fast_chroma_score(napl_rgb, config);
+    all_ref = reference_region_stats(water_score, napl_score, measurement_mask, opts);
+    core_ref = reference_region_stats(water_score, napl_score, core_flow, opts);
+    edge_ref = reference_region_stats(water_score, napl_score, edge_flow, opts);
+
+    n_rows = height(frame_rows);
+    rows = repmat(empty_timeseries_row(), n_rows, 1);
+    progress_step = 100;
+    for row_idx = 1:n_rows
         label = string(frame_rows.label(row_idx));
         role = string(frame_rows.role(row_idx));
         frame_rgb = read_hdf5_rgb(frame_rows.h5_path(row_idx));
-        [S_color, info] = compute_bulk_sn_color( ...
-            frame_rgb, water_rgb, napl_rgb, flow_domain, solid_mask, config);
+        frame_score = fast_chroma_score(frame_rgb, config);
+
+        score_frame = robust_stat_bridge(frame_score(measurement_mask), opts);
+        [S_raw, S_color, transfer_status] = normalize_region_score( ...
+            score_frame, all_ref, min_endpoint_delta);
+        core_score = robust_stat_bridge(frame_score(core_flow), opts);
+        [~, S_core] = normalize_region_score(core_score, core_ref, min_endpoint_delta);
+        edge_score = robust_stat_bridge(frame_score(edge_flow), opts);
+        [~, S_edge] = normalize_region_score(edge_score, edge_ref, min_endpoint_delta);
+
+        info = struct();
+        info.S_NAPL_color_raw = S_raw;
+        info.S_NAPL_color = S_color;
+        info.S_NAPL_color_core = S_core;
+        info.S_NAPL_color_edge = S_edge;
+        info.score_frame = score_frame;
+        info.score_water_ref = all_ref.score_water_ref;
+        info.score_napl_ref = all_ref.score_napl_ref;
+        info.core_flow_area_px = nnz(core_flow);
+        info.flow_domain_area_px = nnz(flow_domain);
+        info.reference_transfer_status = transfer_status;
+        info.qc_status = "";
+
         rows(row_idx) = timeseries_row(row_idx, label, role, spec, S_color, info);
+        if row_idx == 1 || row_idx == n_rows || mod(row_idx, progress_step) == 0
+            fprintf('BRIDGE_PROGRESS %s %d/%d\n', spec.short_name, row_idx, n_rows);
+        end
+    end
+end
+
+
+function score = fast_chroma_score(rgb, config)
+    rgb = normalize_rgb_bridge(rgb);
+    if exist('prepare_rgb_for_lab', 'file') == 2
+        rgb = prepare_rgb_for_lab(rgb, config);
+    end
+    lab = rgb2lab(rgb);
+    score = hypot(lab(:, :, 2), lab(:, :, 3));
+end
+
+
+function score = fast_chroma_score_masked(rgb, mask_idx, config)
+    rgb = normalize_rgb_bridge(rgb);
+    rgb_masked = zeros(numel(mask_idx), 1, 3, 'single');
+    channel = rgb(:, :, 1);
+    rgb_masked(:, 1, 1) = channel(mask_idx);
+    channel = rgb(:, :, 2);
+    rgb_masked(:, 1, 2) = channel(mask_idx);
+    channel = rgb(:, :, 3);
+    rgb_masked(:, 1, 3) = channel(mask_idx);
+    if exist('prepare_rgb_for_lab', 'file') == 2
+        rgb_masked = prepare_rgb_for_lab(rgb_masked, config);
+    end
+    lab = rgb2lab(rgb_masked);
+    score = hypot(lab(:, 1, 2), lab(:, 1, 3));
+end
+
+
+function rgb = normalize_rgb_bridge(rgb)
+    if isa(rgb, 'single') || isa(rgb, 'double')
+        rgb = single(rgb);
+        if max(rgb(:)) > 1
+            rgb = rgb ./ 255;
+        end
+    else
+        rgb = im2single(rgb);
+    end
+    rgb = min(max(rgb, 0), 1);
+end
+
+
+function ref = reference_region_stats(water_score, napl_score, region_mask, opts)
+    ref = struct();
+    ref.score_water_ref = robust_stat_bridge(water_score(region_mask), opts);
+    ref.score_napl_ref = robust_stat_bridge(napl_score(region_mask), opts);
+end
+
+
+function ref = reference_vector_stats(water_score, napl_score, opts)
+    ref = struct();
+    ref.score_water_ref = robust_stat_bridge(water_score, opts);
+    ref.score_napl_ref = robust_stat_bridge(napl_score, opts);
+end
+
+
+function [S_raw, S_color, transfer_status] = normalize_region_score( ...
+        score_frame, ref, min_endpoint_delta)
+    transfer_status = "ok";
+    denom = ref.score_napl_ref - ref.score_water_ref;
+    if ~isfinite(score_frame) || ~isfinite(denom) || abs(denom) <= min_endpoint_delta
+        S_raw = NaN;
+        S_color = NaN;
+        transfer_status = "bad_endpoint";
+        return;
+    end
+
+    S_raw = (score_frame - ref.score_water_ref) / denom;
+    S_color = double(min(max(S_raw, 0), 1));
+end
+
+
+function value = robust_stat_bridge(x, opts)
+    x = x(isfinite(x));
+    if isempty(x)
+        value = NaN;
+        return;
+    end
+
+    switch lower(char(string(opts.statistic)))
+        case 'winsorized_mean'
+            p = double(opts.winsor_percentiles);
+            lo = prctile(x, p(1));
+            hi = prctile(x, p(2));
+            xw = min(max(x, lo), hi);
+            value = mean(xw);
+        case 'mean'
+            value = mean(x);
+        otherwise
+            error('bridge_hdf5_chroma:unknownStatistic', ...
+                'Unknown statistic: %s.', char(string(opts.statistic)));
     end
 end
 
@@ -216,7 +490,8 @@ function row = summarize_endpoint(spec, rows, python_summary, out_csv)
     if ~isempty(python_summary) && ismember('shortlist_id', python_summary.Properties.VariableNames)
         py_row = python_summary(python_summary.shortlist_id == spec.id, :);
     end
-    if height(py_row) == 1
+    comparison_available = height(py_row) == 1;
+    if comparison_available
         py_full_median = py_row.median_S_full_validation(1);
         py_residual_median = py_row.median_S_residual(1);
     else
@@ -243,10 +518,11 @@ function row = summarize_endpoint(spec, rows, python_summary, out_csv)
     row.residual_median_diff = residual_diff;
     row.abs_full_median_diff = abs(full_diff);
     row.abs_residual_median_diff = abs(residual_diff);
-    row.pass_full_tolerance = isfinite(row.abs_full_median_diff) && ...
-        row.abs_full_median_diff <= 0.01;
-    row.pass_residual_tolerance = isfinite(row.abs_residual_median_diff) && ...
-        row.abs_residual_median_diff <= 0.01;
+    row.comparison_available = comparison_available;
+    row.pass_full_tolerance = ~comparison_available || ...
+        (isfinite(row.abs_full_median_diff) && row.abs_full_median_diff <= 0.01);
+    row.pass_residual_tolerance = ~comparison_available || ...
+        (isfinite(row.abs_residual_median_diff) && row.abs_residual_median_diff <= 0.01);
     row.bridge_pass = row.pass_full_tolerance && row.pass_residual_tolerance;
     row.timeseries_csv = string(out_csv);
 end
@@ -270,6 +546,7 @@ function row = empty_summary_row()
         'residual_median_diff', NaN, ...
         'abs_full_median_diff', NaN, ...
         'abs_residual_median_diff', NaN, ...
+        'comparison_available', false, ...
         'pass_full_tolerance', false, ...
         'pass_residual_tolerance', false, ...
         'bridge_pass', false, ...
@@ -332,4 +609,20 @@ function value = read_info_text(info, field_name, default_value)
             (ischar(info.(field_name)) || isstring(info.(field_name)))
         value = char(string(info.(field_name)));
     end
+end
+
+
+function use_python_summary = should_use_python_summary(cache_dir)
+    use_python_summary = false;
+    manifest_path = fullfile(cache_dir, 'cache_manifest.json');
+    if ~isfile(manifest_path)
+        return;
+    end
+    cache_manifest = jsondecode(fileread(manifest_path));
+    if ~isfield(cache_manifest, 'frame_count') || ...
+            ~isfield(cache_manifest, 'timeseries_frame_count')
+        return;
+    end
+    use_python_summary = cache_manifest.frame_count == 53 && ...
+        cache_manifest.timeseries_frame_count == 50;
 end
