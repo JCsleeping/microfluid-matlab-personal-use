@@ -45,11 +45,27 @@ ENDPOINT_POLICY = {
 }
 
 
-def endpoint_policy(expand_pages: bool) -> dict[str, dict[str, str]]:
-    policy = json.loads(json.dumps(ENDPOINT_POLICY))
+def endpoint_policy(
+    expand_pages: bool,
+    endpoint_policy_path: Path | None = None,
+) -> dict[str, dict[str, str]]:
+    if endpoint_policy_path is None:
+        policy = json.loads(json.dumps(ENDPOINT_POLICY))
+    else:
+        policy = json.loads(endpoint_policy_path.read_text(encoding="utf-8"))
+    for key in ["primary", "sensitivity"]:
+        if key not in policy:
+            raise ValueError(f"Endpoint policy is missing required key: {key}")
+        for field in ["id", "short_name", "water_label", "napl_label"]:
+            if field not in policy[key]:
+                raise ValueError(
+                    f"Endpoint policy {key!r} is missing required field: {field}"
+                )
     if expand_pages:
-        policy["primary"]["napl_label"] = f'{policy["primary"]["napl_label"]}_p001'
-        policy["sensitivity"]["napl_label"] = f'{policy["sensitivity"]["napl_label"]}_p001'
+        for endpoint in policy.values():
+            napl_label = str(endpoint["napl_label"])
+            if not re.search(r"_p\d{3}$", napl_label):
+                endpoint["napl_label"] = f"{napl_label}_p001"
     return policy
 
 
@@ -123,11 +139,12 @@ def build_rows(
     max_pages: int | None,
     page_selection: str,
     fit_sample_stride: int,
+    endpoint_policy_path: Path | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, dict[str, str]]]:
     if fit_sample_stride < 1:
         raise ValueError("--fit-sample-stride must be >= 1.")
 
-    policy = endpoint_policy(expand_pages)
+    policy = endpoint_policy(expand_pages, endpoint_policy_path)
     rows: list[dict[str, object]] = []
     for index, (label, name) in enumerate(WATER_ENDPOINTS, 1):
         path_value = water_endpoint_dir / name
@@ -287,6 +304,12 @@ def main() -> None:
         default="first",
     )
     parser.add_argument("--fit-sample-stride", type=int, default=1)
+    parser.add_argument(
+        "--endpoint-policy",
+        type=Path,
+        default=None,
+        help="Optional endpoint policy JSON. Production NAPL labels are suffixed with _p001 when --expand-pages is used.",
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     rows, policy = build_rows(
@@ -296,6 +319,7 @@ def main() -> None:
         args.max_pages,
         args.page_selection,
         args.fit_sample_stride,
+        args.endpoint_policy,
     )
     write_manifest(rows, policy, args.out_dir, args.force)
 

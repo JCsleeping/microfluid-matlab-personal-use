@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "run_name": "a1_1bo_6ul_manual_roi",
+  "water_endpoint_dir": "G:\\Microfluid\\00 A1 1-BO 6 UL WATER DISPLACEMENT\\00 NAPL",
+  "production_dir": "G:\\Microfluid\\00 A1 1-BO 6 UL WATER DISPLACEMENT\\01 WATER",
+  "roi_mask": "outputs/roi_templates_20260601/A1_1BO_6UL/Mask.tif",
+  "output_root": "outputs/standalone_branch_c_runs_20260601/A1_1BO_6UL_manual_roi",
+  "matlab_command": "matlab",
+  "endpoint_policy": {
+    "primary": {
+      "id": "A_full_consistency_primary",
+      "short_name": "A",
+      "water_label": "water_ep_00_napl_00_3s_1",
+      "napl_label": "full_01_water_1s_3"
+    },
+    "sensitivity": {
+      "id": "B_residual_separation_primary",
+      "short_name": "B",
+      "water_label": "water_ep_00_napl_01_1s",
+      "napl_label": "full_00_water_3s_2"
+    }
+  },
+  "manifest": {
+    "expand_pages": true,
+    "max_pages": null,
+    "page_selection": "first",
+    "fit_sample_stride": 50
+  },
+  "cache": {
+    "batch_size": 20,
+    "compression": "none",
+    "resume": true
+  },
+  "validation": {
+    "expected_timeseries_rows": null,
+    "full_napl_low_threshold": 0.5
+  },
+  "modes": {
+    "pilot": {
+      "run_suffix": "pilot100",
+      "manifest": {
+        "max_pages": 100,
+        "page_selection": "uniform",
+        "fit_sample_stride": 10
+      }
+    },
+    "full": {
+      "run_suffix": "full3585",
+      "manifest": {
+        "max_pages": null,
+        "page_selection": "first",
+        "fit_sample_stride": 50
+      }
+    }
+  }
+}
