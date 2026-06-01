@@ -24,7 +24,9 @@
     "expand_pages": true,
     "max_pages": null,
     "page_selection": "first",
-    "fit_sample_stride": 50
+    "fit_sample_stride": 50,
+    "time_start_s": 0.0,
+    "time_step_s": 1.0
   },
   "cache": {
     "batch_size": 20,

@@ -30,7 +30,7 @@ The tool orchestrates:
 
 1. manifest generation;
 2. BasicPy HDF5 cache construction;
-3. MATLAB Branch C chroma `S_NAPL_color(t)`;
+3. MATLAB Branch C chroma `S_NAPL_color(t)` and x-bin `S_NAPL_color(x,t)`;
 4. output validation and `run_summary.json`.
 
 ## Verification
@@ -91,6 +91,44 @@ endpoint sensitivity median = 0.001722
 The pilot reports one `full_napl` row below 0.5
 (`full_01_water_1s_3_p043`). This is treated as a warning because the role is a
 file-level label and the file can span a transition.
+
+## 2026-06-02 Time and X-Bin Extension
+
+The standalone tool now passes a configurable sequence time axis through the
+manifest, BasicPy cache, MATLAB Branch C outputs, comparison CSV, and
+`run_summary.json`.
+
+Default config:
+
+```text
+manifest.time_start_s = 0.0
+manifest.time_step_s = 1.0
+```
+
+The MATLAB bridge now also writes long-format x-bin outputs:
+
+```text
+S_NAPL_color_xbins_primary_A.csv
+S_NAPL_color_xbins_sensitivity_B.csv
+```
+
+The x-bins are computed from flow-domain mask pixels sorted by x coordinate.
+The current setting uses 20 bins with approximately equal pixel counts per bin.
+
+Updated pilot validation:
+
+```text
+status = pass
+rows = 102 primary / 102 sensitivity / 102 comparison
+xbin rows = 2040 primary / 2040 sensitivity
+time_s range = 0 to 101
+NaNs = 0
+A full median = 1.000000
+A residual median = 0.171867
+B full median = 0.998511
+B residual median = 0.170145
+endpoint sensitivity median = 0.001722
+```
 
 ## Usage Notes
 

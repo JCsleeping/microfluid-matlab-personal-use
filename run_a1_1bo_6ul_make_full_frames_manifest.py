@@ -127,6 +127,10 @@ def select_page_indices(total_count: int, max_pages: int | None, mode: str) -> s
     return selected
 
 
+def format_time_s(value: float) -> str:
+    return f"{value:.9f}".rstrip("0").rstrip(".")
+
+
 def require_file(path_value: Path) -> None:
     if not path_value.is_file():
         raise FileNotFoundError(f"Missing required file: {path_value}")
@@ -140,9 +144,13 @@ def build_rows(
     page_selection: str,
     fit_sample_stride: int,
     endpoint_policy_path: Path | None = None,
+    time_step_s: float | None = None,
+    time_start_s: float = 0.0,
 ) -> tuple[list[dict[str, object]], dict[str, dict[str, str]]]:
     if fit_sample_stride < 1:
         raise ValueError("--fit-sample-stride must be >= 1.")
+    if time_step_s is not None and time_step_s <= 0:
+        raise ValueError("--time-step-s must be positive when provided.")
 
     policy = endpoint_policy(expand_pages, endpoint_policy_path)
     rows: list[dict[str, object]] = []
@@ -207,6 +215,9 @@ def build_rows(
         seen_labels.add(label)
         if include:
             timeseries_order += 1
+        time_s = ""
+        if include and time_step_s is not None:
+            time_s = format_time_s(time_start_s + (timeseries_order - 1) * time_step_s)
         is_endpoint = label in endpoint_labels
         fit_sample = int(
             is_endpoint
@@ -220,7 +231,7 @@ def build_rows(
                 "timeseries_order": timeseries_order if include else "",
                 "source_path": candidate["source_path"],
                 "source_page": int(candidate["source_page"]),
-                "time_s": "",
+                "time_s": time_s,
                 "include_in_timeseries": int(include),
                 "fit_sample": fit_sample,
             }
@@ -243,6 +254,8 @@ def write_manifest(
     policy: dict[str, dict[str, str]],
     out_dir: Path,
     force: bool,
+    time_step_s: float | None = None,
+    time_start_s: float = 0.0,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "accepted_frames.csv"
@@ -285,6 +298,9 @@ def write_manifest(
             int(row["include_in_timeseries"]) for row in rows
         ),
         "fit_sample_frame_count": sum(int(row["fit_sample"]) for row in rows),
+        "time_model": "sequence" if time_step_s is not None else "blank",
+        "time_start_s": time_start_s if time_step_s is not None else "",
+        "time_step_s": time_step_s if time_step_s is not None else "",
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"MANIFEST_DONE {manifest_path}")
@@ -305,6 +321,18 @@ def main() -> None:
     )
     parser.add_argument("--fit-sample-stride", type=int, default=1)
     parser.add_argument(
+        "--time-step-s",
+        type=float,
+        default=None,
+        help="Optional constant time increment for included timeseries rows.",
+    )
+    parser.add_argument(
+        "--time-start-s",
+        type=float,
+        default=0.0,
+        help="Start time used with --time-step-s.",
+    )
+    parser.add_argument(
         "--endpoint-policy",
         type=Path,
         default=None,
@@ -320,8 +348,17 @@ def main() -> None:
         args.page_selection,
         args.fit_sample_stride,
         args.endpoint_policy,
+        args.time_step_s,
+        args.time_start_s,
     )
-    write_manifest(rows, policy, args.out_dir, args.force)
+    write_manifest(
+        rows,
+        policy,
+        args.out_dir,
+        args.force,
+        args.time_step_s,
+        args.time_start_s,
+    )
 
 
 if __name__ == "__main__":

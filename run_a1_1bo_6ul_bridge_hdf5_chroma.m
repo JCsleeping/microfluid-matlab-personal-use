@@ -92,6 +92,8 @@ function summary_rows = run_combined_fast_chroma(endpoints, manifest, ...
         error('bridge_hdf5_chroma:emptyMask', ...
             'flow_domain mask has no measurement pixels.');
     end
+    n_x_bins = double(bridge_config(endpoints(1)).bulk_sn.n_x_bins);
+    x_bins = build_xbin_vectors(mask, mask_idx, n_x_bins);
 
     endpoint_state = repmat(empty_endpoint_state(), numel(endpoints), 1);
     for idx = 1:numel(endpoints)
@@ -101,11 +103,16 @@ function summary_rows = run_combined_fast_chroma(endpoints, manifest, ...
         napl_rgb = read_label_rgb(manifest, spec.napl_label);
         water_score = fast_chroma_score_masked(water_rgb, mask_idx, config);
         napl_score = fast_chroma_score_masked(napl_rgb, mask_idx, config);
+        xbin_refs = reference_xbin_vector_stats( ...
+            water_score, napl_score, x_bins, config.bulk_sn);
 
         endpoint_state(idx).spec = spec;
         endpoint_state(idx).config = config;
         endpoint_state(idx).ref = reference_vector_stats( ...
             water_score, napl_score, config.bulk_sn);
+        endpoint_state(idx).xbin_refs = xbin_refs;
+        endpoint_state(idx).xbin_rows = repmat(empty_xbin_row(), ...
+            height(frame_rows) * numel(x_bins), 1);
         endpoint_state(idx).rows = repmat(empty_timeseries_row(), ...
             height(frame_rows), 1);
         fprintf('BRIDGE_ENDPOINT %s\n', spec.id);
@@ -116,6 +123,7 @@ function summary_rows = run_combined_fast_chroma(endpoints, manifest, ...
     for row_idx = 1:n_rows
         label = string(frame_rows.label(row_idx));
         role = string(frame_rows.role(row_idx));
+        time_s = frame_time_s(frame_rows, row_idx);
         frame_rgb = read_hdf5_rgb(frame_rows.h5_path(row_idx));
         frame_score = fast_chroma_score_masked( ...
             frame_rgb, mask_idx, endpoint_state(1).config);
@@ -142,7 +150,11 @@ function summary_rows = run_combined_fast_chroma(endpoints, manifest, ...
             info.qc_status = "";
 
             endpoint_state(idx).rows(row_idx) = timeseries_row( ...
-                row_idx, label, role, state.spec, S_color, info);
+                row_idx, time_s, label, role, state.spec, S_color, info);
+            endpoint_state(idx).xbin_rows = write_xbin_rows( ...
+                endpoint_state(idx).xbin_rows, row_idx, time_s, label, role, ...
+                state.spec, frame_score, x_bins, state.xbin_refs, ...
+                state.config.bulk_sn);
         end
 
         if row_idx == 1 || row_idx == n_rows || mod(row_idx, progress_step) == 0
@@ -155,7 +167,10 @@ function summary_rows = run_combined_fast_chroma(endpoints, manifest, ...
         state = endpoint_state(idx);
         out_csv = fullfile(out_dir, sprintf( ...
             'matlab_on_cache_timeseries_%s.csv', state.spec.short_name));
+        xbin_csv = fullfile(out_dir, sprintf( ...
+            'matlab_on_cache_xbin_timeseries_%s.csv', state.spec.short_name));
         writetable(struct2table(state.rows), out_csv);
+        writetable(struct2table(state.xbin_rows), xbin_csv);
         summary_rows(idx) = summarize_endpoint( ...
             state.spec, state.rows, python_summary, out_csv);
     end
@@ -167,6 +182,8 @@ function state = empty_endpoint_state()
         'spec', struct(), ...
         'config', struct(), ...
         'ref', struct(), ...
+        'xbin_refs', [], ...
+        'xbin_rows', [], ...
         'rows', []);
 end
 
@@ -241,10 +258,12 @@ function rows = run_endpoint_bridge(spec, manifest, flow_domain, solid_mask)
     for row_idx = 1:height(frame_rows)
         label = string(frame_rows.label(row_idx));
         role = string(frame_rows.role(row_idx));
+        time_s = frame_time_s(frame_rows, row_idx);
         frame_rgb = read_hdf5_rgb(frame_rows.h5_path(row_idx));
         [S_color, info] = compute_bulk_sn_color( ...
             frame_rgb, water_rgb, napl_rgb, flow_domain, solid_mask, config);
-        rows(row_idx) = timeseries_row(row_idx, label, role, spec, S_color, info);
+        rows(row_idx) = timeseries_row(row_idx, time_s, label, role, spec, ...
+            S_color, info);
     end
 end
 
@@ -260,6 +279,27 @@ function frame_rows = timeseries_frame_rows(manifest)
         frame_rows = sortrows(frame_rows, "timeseries_order");
     else
         frame_rows = sortrows(frame_rows, "frame_order");
+    end
+end
+
+
+function value = frame_time_s(frame_rows, row_idx)
+    value = NaN;
+    if ~ismember('time_s', frame_rows.Properties.VariableNames)
+        return;
+    end
+    raw = frame_rows.time_s(row_idx);
+    if isnumeric(raw)
+        value = double(raw);
+        return;
+    end
+    text_value = strtrim(string(raw));
+    if ismissing(text_value) || text_value == ""
+        return;
+    end
+    parsed = str2double(text_value);
+    if isfinite(parsed)
+        value = parsed;
     end
 end
 
@@ -287,6 +327,7 @@ function rows = run_endpoint_bridge_fast_chroma(spec, frame_rows, water_rgb, ...
     for row_idx = 1:n_rows
         label = string(frame_rows.label(row_idx));
         role = string(frame_rows.role(row_idx));
+        time_s = frame_time_s(frame_rows, row_idx);
         frame_rgb = read_hdf5_rgb(frame_rows.h5_path(row_idx));
         frame_score = fast_chroma_score(frame_rgb, config);
 
@@ -311,7 +352,8 @@ function rows = run_endpoint_bridge_fast_chroma(spec, frame_rows, water_rgb, ...
         info.reference_transfer_status = transfer_status;
         info.qc_status = "";
 
-        rows(row_idx) = timeseries_row(row_idx, label, role, spec, S_color, info);
+        rows(row_idx) = timeseries_row(row_idx, time_s, label, role, spec, ...
+            S_color, info);
         if row_idx == 1 || row_idx == n_rows || mod(row_idx, progress_step) == 0
             fprintf('BRIDGE_PROGRESS %s %d/%d\n', spec.short_name, row_idx, n_rows);
         end
@@ -370,6 +412,64 @@ function ref = reference_vector_stats(water_score, napl_score, opts)
     ref = struct();
     ref.score_water_ref = robust_stat_bridge(water_score, opts);
     ref.score_napl_ref = robust_stat_bridge(napl_score, opts);
+end
+
+
+function x_bins = build_xbin_vectors(mask, mask_idx, n_x_bins)
+    n_x_bins = max(1, round(n_x_bins));
+    [~, xs] = ind2sub(size(mask), mask_idx);
+    [xs_sorted, order] = sort(xs);
+    n_pixels = numel(mask_idx);
+    x_bins = repmat(empty_xbin_spec(), n_x_bins, 1);
+    for bin_idx = 1:n_x_bins
+        start_idx = floor((bin_idx - 1) * n_pixels / n_x_bins) + 1;
+        stop_idx = floor(bin_idx * n_pixels / n_x_bins);
+        vector_idx = order(start_idx:stop_idx);
+        x_values = xs_sorted(start_idx:stop_idx);
+        x_bins(bin_idx).x_bin = bin_idx;
+        x_bins(bin_idx).x_bin_count = numel(vector_idx);
+        x_bins(bin_idx).x_min_col = min(x_values);
+        x_bins(bin_idx).x_max_col = max(x_values);
+        x_bins(bin_idx).vector_idx = vector_idx(:);
+    end
+end
+
+
+function spec = empty_xbin_spec()
+    spec = struct( ...
+        'x_bin', NaN, ...
+        'x_bin_count', NaN, ...
+        'x_min_col', NaN, ...
+        'x_max_col', NaN, ...
+        'vector_idx', []);
+end
+
+
+function refs = reference_xbin_vector_stats(water_score, napl_score, x_bins, opts)
+    refs = repmat(struct('score_water_ref', NaN, 'score_napl_ref', NaN), ...
+        numel(x_bins), 1);
+    for bin_idx = 1:numel(x_bins)
+        vector_idx = x_bins(bin_idx).vector_idx;
+        refs(bin_idx) = reference_vector_stats( ...
+            water_score(vector_idx), napl_score(vector_idx), opts);
+    end
+end
+
+
+function rows = write_xbin_rows(rows, frame_index, time_s, label, role, spec, ...
+        frame_score, x_bins, xbin_refs, opts)
+    min_endpoint_delta = double(opts.min_endpoint_delta);
+    n_bins = numel(x_bins);
+    for bin_idx = 1:n_bins
+        output_idx = (frame_index - 1) * n_bins + bin_idx;
+        vector_idx = x_bins(bin_idx).vector_idx;
+        score_frame = robust_stat_bridge(frame_score(vector_idx), opts);
+        [S_raw, S_color, transfer_status] = normalize_region_score( ...
+            score_frame, xbin_refs(bin_idx), min_endpoint_delta);
+        rows(output_idx) = xbin_row(frame_index, time_s, label, role, ...
+            spec, x_bins(bin_idx), S_raw, S_color, score_frame, ...
+            xbin_refs(bin_idx), transfer_status);
+    end
 end
 
 
@@ -433,9 +533,10 @@ function config = bridge_config(spec)
 end
 
 
-function row = timeseries_row(frame_index, label, role, spec, S_color, info)
+function row = timeseries_row(frame_index, time_s, label, role, spec, S_color, info)
     row = empty_timeseries_row();
     row.frame_index = frame_index;
+    row.time_s = time_s;
     row.label = string(label);
     row.role = string(role);
     row.endpoint_id = string(spec.id);
@@ -461,6 +562,7 @@ end
 function row = empty_timeseries_row()
     row = struct( ...
         'frame_index', NaN, ...
+        'time_s', NaN, ...
         'label', "", ...
         'role', "", ...
         'endpoint_id', "", ...
@@ -479,6 +581,55 @@ function row = empty_timeseries_row()
         'flow_domain_area_px', NaN, ...
         'reference_transfer_status', "", ...
         'qc_status', "");
+end
+
+
+function row = xbin_row(frame_index, time_s, label, role, spec, xbin_spec, ...
+        S_raw, S_color, score_frame, ref, transfer_status)
+    row = empty_xbin_row();
+    row.frame_index = frame_index;
+    row.time_s = time_s;
+    row.label = string(label);
+    row.role = string(role);
+    row.endpoint_id = string(spec.id);
+    row.endpoint_short_name = string(spec.short_name);
+    row.water_label = string(spec.water_label);
+    row.napl_label = string(spec.napl_label);
+    row.x_bin = xbin_spec.x_bin;
+    row.x_bin_count = xbin_spec.x_bin_count;
+    row.x_min_col = xbin_spec.x_min_col;
+    row.x_max_col = xbin_spec.x_max_col;
+    row.S_NAPL_color_xbin = S_color;
+    row.S_NAPL_color_xbin_raw = S_raw;
+    row.score_frame_xbin = score_frame;
+    row.score_water_ref_xbin = ref.score_water_ref;
+    row.score_napl_ref_xbin = ref.score_napl_ref;
+    row.endpoint_delta_xbin = row.score_napl_ref_xbin - row.score_water_ref_xbin;
+    row.reference_transfer_status = string(transfer_status);
+end
+
+
+function row = empty_xbin_row()
+    row = struct( ...
+        'frame_index', NaN, ...
+        'time_s', NaN, ...
+        'label', "", ...
+        'role', "", ...
+        'endpoint_id', "", ...
+        'endpoint_short_name', "", ...
+        'water_label', "", ...
+        'napl_label', "", ...
+        'x_bin', NaN, ...
+        'x_bin_count', NaN, ...
+        'x_min_col', NaN, ...
+        'x_max_col', NaN, ...
+        'S_NAPL_color_xbin', NaN, ...
+        'S_NAPL_color_xbin_raw', NaN, ...
+        'score_frame_xbin', NaN, ...
+        'score_water_ref_xbin', NaN, ...
+        'score_napl_ref_xbin', NaN, ...
+        'endpoint_delta_xbin', NaN, ...
+        'reference_transfer_status', "");
 end
 
 

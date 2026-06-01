@@ -32,6 +32,8 @@ function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_di
     row_B = single_summary_row(summary, "B");
     ts_A = readtable(char(row_A.timeseries_csv(1)), 'TextType', 'string');
     ts_B = readtable(char(row_B.timeseries_csv(1)), 'TextType', 'string');
+    xbin_A = read_xbin_table_if_available(out_dir, "A");
+    xbin_B = read_xbin_table_if_available(out_dir, "B");
 
     primary_A = add_output_semantics(ts_A, "primary", ...
         "S_NAPL_color operational color-index saturation", ...
@@ -40,10 +42,18 @@ function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_di
         "S_NAPL_color endpoint sensitivity check", ...
         "B_residual_separation_primary");
     comparison = build_sensitivity_comparison(primary_A, sensitivity_B);
+    xbin_primary_A = add_xbin_output_semantics(xbin_A, "primary", ...
+        "S_NAPL_color_xbin operational regional color-index saturation", ...
+        "A_full_consistency_primary");
+    xbin_sensitivity_B = add_xbin_output_semantics(xbin_B, "sensitivity", ...
+        "S_NAPL_color_xbin endpoint sensitivity check", ...
+        "B_residual_separation_primary");
 
     primary_path = fullfile(out_dir, 'S_NAPL_color_primary_A.csv');
     sensitivity_path = fullfile(out_dir, 'S_NAPL_color_sensitivity_B.csv');
     comparison_path = fullfile(out_dir, 'S_NAPL_color_A_B_sensitivity_comparison.csv');
+    xbin_primary_path = fullfile(out_dir, 'S_NAPL_color_xbins_primary_A.csv');
+    xbin_sensitivity_path = fullfile(out_dir, 'S_NAPL_color_xbins_sensitivity_B.csv');
     summary_path = fullfile(out_dir, 'branch_c_cache_pipeline_summary.csv');
     manifest_path = fullfile(out_dir, 'cache_branch_c_manifest.json');
     plot_path = fullfile(out_dir, 'S_NAPL_color_A_B_sensitivity.png');
@@ -51,10 +61,20 @@ function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_di
     writetable(primary_A, primary_path);
     writetable(sensitivity_B, sensitivity_path);
     writetable(comparison, comparison_path);
+    if ~isempty(xbin_primary_A)
+        writetable(xbin_primary_A, xbin_primary_path);
+    else
+        xbin_primary_path = '';
+    end
+    if ~isempty(xbin_sensitivity_B)
+        writetable(xbin_sensitivity_B, xbin_sensitivity_path);
+    else
+        xbin_sensitivity_path = '';
+    end
     writetable(summary, summary_path);
     write_pipeline_manifest(manifest_path, cache_dir, out_dir, ...
         endpoint_policy_path, summary, primary_path, sensitivity_path, ...
-        comparison_path, plot_path);
+        comparison_path, plot_path, xbin_primary_path, xbin_sensitivity_path);
     plot_sensitivity(primary_A, sensitivity_B, plot_path);
 
     outputs = struct();
@@ -63,11 +83,24 @@ function outputs = run_a1_1bo_6ul_hdf5_cache_branch_c_pipeline(cache_dir, out_di
     outputs.primary_csv = primary_path;
     outputs.sensitivity_csv = sensitivity_path;
     outputs.comparison_csv = comparison_path;
+    outputs.xbin_primary_csv = xbin_primary_path;
+    outputs.xbin_sensitivity_csv = xbin_sensitivity_path;
     outputs.summary_csv = summary_path;
     outputs.manifest_json = manifest_path;
     outputs.plot_png = plot_path;
 
     fprintf('CACHE_BRANCH_C_PIPELINE %s\n', out_dir);
+end
+
+
+function table_out = read_xbin_table_if_available(out_dir, short_name)
+    path_value = fullfile(out_dir, sprintf( ...
+        'matlab_on_cache_xbin_timeseries_%s.csv', short_name));
+    if isfile(path_value)
+        table_out = readtable(path_value, 'TextType', 'string');
+    else
+        table_out = table();
+    end
 end
 
 
@@ -96,6 +129,21 @@ function row = single_summary_row(summary, short_name)
 end
 
 
+function table_out = add_xbin_output_semantics(table_in, output_role, ...
+        semantics, endpoint_id)
+    table_out = table_in;
+    if isempty(table_out)
+        return;
+    end
+    table_out.output_role = repmat(string(output_role), height(table_out), 1);
+    table_out.output_name = repmat("S_NAPL_color_xbin", height(table_out), 1);
+    table_out.output_semantics = repmat(string(semantics), height(table_out), 1);
+    table_out.endpoint_policy = repmat(string(endpoint_id), height(table_out), 1);
+    table_out.segmentation_mask_role = repmat("not_used_for_primary_sn", ...
+        height(table_out), 1);
+end
+
+
 function table_out = add_output_semantics(table_in, output_role, semantics, endpoint_id)
     table_out = table_in;
     table_out.output_role = repmat(string(output_role), height(table_out), 1);
@@ -118,6 +166,9 @@ function comparison = build_sensitivity_comparison(primary_A, sensitivity_B)
 
     comparison = table();
     comparison.frame_index = primary_A.frame_index;
+    if ismember('time_s', primary_A.Properties.VariableNames)
+        comparison.time_s = primary_A.time_s;
+    end
     comparison.label = primary_A.label;
     comparison.role = primary_A.role;
     comparison.S_NAPL_color_A = primary_A.S_NAPL_color;
@@ -130,7 +181,7 @@ end
 
 function write_pipeline_manifest(path_value, cache_dir, out_dir, ...
         endpoint_policy_path, summary, primary_path, sensitivity_path, ...
-        comparison_path, plot_path)
+        comparison_path, plot_path, xbin_primary_path, xbin_sensitivity_path)
     manifest = struct();
     manifest.pipeline = 'A1_1BO_6UL_HDF5_cache_Branch_C_chroma';
     manifest.created_at = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
@@ -139,6 +190,8 @@ function write_pipeline_manifest(path_value, cache_dir, out_dir, ...
     manifest.endpoint_policy_path = endpoint_policy_path;
     manifest.cache_contract = 'basicpy_hdf5_float32_hwc';
     manifest.primary_output = 'S_NAPL_color';
+    manifest.regional_output = 'S_NAPL_color_xbin';
+    manifest.x_bins = 20;
     manifest.primary_output_semantics = ...
         'operational color-index saturation from BasicPy corrected RGB';
     manifest.primary_endpoint = 'A_full_consistency_primary';
@@ -161,6 +214,8 @@ function write_pipeline_manifest(path_value, cache_dir, out_dir, ...
         'primary_csv', primary_path, ...
         'sensitivity_csv', sensitivity_path, ...
         'comparison_csv', comparison_path, ...
+        'xbin_primary_csv', xbin_primary_path, ...
+        'xbin_sensitivity_csv', xbin_sensitivity_path, ...
         'plot_png', plot_path);
 
     fid = fopen(path_value, 'w');
@@ -177,12 +232,18 @@ function plot_sensitivity(primary_A, sensitivity_B, path_value)
     fig = figure('Visible', 'off', 'Color', 'w');
     cleaner = onCleanup(@() close(fig));
     x = primary_A.frame_index;
+    x_label_text = 'Frame index';
+    if ismember('time_s', primary_A.Properties.VariableNames) && ...
+            any(isfinite(primary_A.time_s))
+        x = primary_A.time_s;
+        x_label_text = 'Time (s)';
+    end
     plot(x, primary_A.S_NAPL_color, '-o', 'LineWidth', 1.2, ...
         'DisplayName', 'Endpoint A primary');
     hold on;
     plot(x, sensitivity_B.S_NAPL_color, '-s', 'LineWidth', 1.2, ...
         'DisplayName', 'Endpoint B sensitivity');
-    xlabel('Frame index');
+    xlabel(x_label_text);
     ylabel('S\_NAPL\_color');
     title('BasicPy HDF5 Branch C chroma S\_NAPL\_color');
     grid on;

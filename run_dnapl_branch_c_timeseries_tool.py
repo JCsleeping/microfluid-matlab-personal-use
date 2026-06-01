@@ -161,6 +161,9 @@ def manifest_command(
         command.append("--expand-pages")
     if manifest_config.get("max_pages") is not None:
         command.extend(["--max-pages", str(manifest_config["max_pages"])])
+    if manifest_config.get("time_step_s") is not None:
+        command.extend(["--time-step-s", str(manifest_config["time_step_s"])])
+        command.extend(["--time-start-s", str(manifest_config.get("time_start_s", 0.0))])
     if endpoint_policy_input is not None:
         command.extend(["--endpoint-policy", str(endpoint_policy_input)])
     if config.get("force_manifest", False):
@@ -291,6 +294,10 @@ def validate_outputs(
     comparison_path = (
         paths["matlab_dir"] / "S_NAPL_color_A_B_sensitivity_comparison.csv"
     )
+    xbin_primary_path = paths["matlab_dir"] / "S_NAPL_color_xbins_primary_A.csv"
+    xbin_sensitivity_path = (
+        paths["matlab_dir"] / "S_NAPL_color_xbins_sensitivity_B.csv"
+    )
     required_paths = [primary_path, sensitivity_path, comparison_path]
     missing = [str(path_value) for path_value in required_paths if not path_value.is_file()]
     if missing:
@@ -299,6 +306,12 @@ def validate_outputs(
     primary = read_csv_rows(primary_path)
     sensitivity = read_csv_rows(sensitivity_path)
     comparison = read_csv_rows(comparison_path)
+    xbin_primary = (
+        read_csv_rows(xbin_primary_path) if xbin_primary_path.is_file() else []
+    )
+    xbin_sensitivity = (
+        read_csv_rows(xbin_sensitivity_path) if xbin_sensitivity_path.is_file() else []
+    )
     manifest_summary = (
         read_json(manifest_summary_path) if manifest_summary_path.is_file() else {}
     )
@@ -334,6 +347,24 @@ def validate_outputs(
         failures.append("Sensitivity S_NAPL_color contains NaN or missing values.")
     if comparison_metric["nan_or_missing_count"]:
         failures.append("Comparison endpoint sensitivity contains NaN or missing values.")
+    xbin_primary_metric = (
+        metric_summary(xbin_primary, "S_NAPL_color_xbin") if xbin_primary else {}
+    )
+    xbin_sensitivity_metric = (
+        metric_summary(xbin_sensitivity, "S_NAPL_color_xbin")
+        if xbin_sensitivity
+        else {}
+    )
+    if xbin_primary_metric and xbin_primary_metric["nan_or_missing_count"]:
+        failures.append("Primary x-bin S_NAPL_color_xbin contains NaN or missing values.")
+    if xbin_sensitivity_metric and xbin_sensitivity_metric["nan_or_missing_count"]:
+        failures.append(
+            "Sensitivity x-bin S_NAPL_color_xbin contains NaN or missing values."
+        )
+    if bool(xbin_primary) != bool(xbin_sensitivity):
+        failures.append("Primary and sensitivity x-bin outputs are not both present.")
+    if xbin_primary and xbin_sensitivity and len(xbin_primary) != len(xbin_sensitivity):
+        failures.append("Primary and sensitivity x-bin row counts differ.")
 
     threshold = float(config.get("validation", {}).get("full_napl_low_threshold", 0.5))
     low_full_rows = [
@@ -359,13 +390,22 @@ def validate_outputs(
             "primary_csv": str(primary_path),
             "sensitivity_csv": str(sensitivity_path),
             "comparison_csv": str(comparison_path),
+            "xbin_primary_csv": str(xbin_primary_path) if xbin_primary_path.is_file() else "",
+            "xbin_sensitivity_csv": str(xbin_sensitivity_path)
+            if xbin_sensitivity_path.is_file()
+            else "",
         },
         "row_counts": {
             "expected_timeseries_rows": expected_rows,
             "primary": len(primary),
             "sensitivity": len(sensitivity),
             "comparison": len(comparison),
+            "xbin_primary": len(xbin_primary),
+            "xbin_sensitivity": len(xbin_sensitivity),
         },
+        "time_s": metric_summary(primary, "time_s")
+        if primary and "time_s" in primary[0]
+        else {},
         "primary": {
             "S_NAPL_color": primary_metric,
             "by_role": metric_by_role(primary, "S_NAPL_color"),
@@ -377,6 +417,18 @@ def validate_outputs(
         "sensitivity": {
             "S_NAPL_color": sensitivity_metric,
             "by_role": metric_by_role(sensitivity, "S_NAPL_color"),
+        },
+        "xbin_primary": {
+            "S_NAPL_color_xbin": xbin_primary_metric,
+            "by_role": metric_by_role(xbin_primary, "S_NAPL_color_xbin")
+            if xbin_primary
+            else {},
+        },
+        "xbin_sensitivity": {
+            "S_NAPL_color_xbin": xbin_sensitivity_metric,
+            "by_role": metric_by_role(xbin_sensitivity, "S_NAPL_color_xbin")
+            if xbin_sensitivity
+            else {},
         },
         "endpoint_sensitivity": comparison_metric,
         "commands": commands,
