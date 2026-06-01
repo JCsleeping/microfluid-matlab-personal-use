@@ -14,6 +14,7 @@ function validation = run_geometry_sample_validation(output_root, postprocess_di
     parser.addParameter('MaskDir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('SegmentationContextAuditDir', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('FrameTimelineCsv', '', @(x) ischar(x) || isstring(x));
+    parser.addParameter('SelectedFramesCsv', '', @(x) ischar(x) || isstring(x));
     parser.addParameter('MaxFrames', 40, @(x) isnumeric(x) && isscalar(x) && isfinite(x));
     parser.addParameter('Overwrite', false, @(x) islogical(x) || isnumeric(x));
     parser.parse(output_root, postprocess_dir, metadata_json, varargin{:});
@@ -49,7 +50,8 @@ function validation = run_geometry_sample_validation(output_root, postprocess_di
         context_audit_dir = latest_segmentation_context_audit_dir(postprocess_dir);
     end
 
-    selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames, char(opts.FrameTimelineCsv));
+    selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames, ...
+        char(opts.FrameTimelineCsv), char(opts.SelectedFramesCsv));
     writetable(selected, fullfile(output_dir, 'selected_frames.csv'));
 
     metadata_exists = is_valid_metadata_json(metadata_json);
@@ -206,34 +208,39 @@ function ok = segmentation_context_ready(context_audit_dir)
 end
 
 
-function selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames, frame_timeline_csv)
-    rates_path = fullfile(postprocess_dir, 'dissolution_rates.csv');
-    if ~isfile(rates_path)
-        error('run_geometry_sample_validation:missingDissolutionRates', ...
-            'dissolution_rates.csv not found: %s', rates_path);
-    end
-    rates = readtable(rates_path, 'VariableNamingRule', 'preserve');
-    if ~ismember('FrameIndex', rates.Properties.VariableNames)
-        error('run_geometry_sample_validation:missingFrameIndex', 'dissolution_rates.csv has no FrameIndex column.');
-    end
-    rates.FrameIndex = double(rates.FrameIndex);
-    if ~ismember('Stage', rates.Properties.VariableNames)
-        rates.Stage = repmat({'unknown'}, height(rates), 1);
-    end
-    if isstring(rates.Stage)
-        rates.Stage = cellstr(rates.Stage);
-    end
-    if ~ismember('DissolutionRate_Sn_per_min', rates.Properties.VariableNames)
-        rates.DissolutionRate_Sn_per_min = NaN(height(rates), 1);
-    end
+function selected = select_and_map_frames(output_root, postprocess_dir, raw_image_dir, max_frames, frame_timeline_csv, selected_frames_csv)
+    selected_frames_csv = char(selected_frames_csv);
+    if ~isempty(selected_frames_csv)
+        selected = read_explicit_selected_frames(selected_frames_csv, max_frames);
+    else
+        rates_path = fullfile(postprocess_dir, 'dissolution_rates.csv');
+        if ~isfile(rates_path)
+            error('run_geometry_sample_validation:missingDissolutionRates', ...
+                'dissolution_rates.csv not found: %s', rates_path);
+        end
+        rates = readtable(rates_path, 'VariableNamingRule', 'preserve');
+        if ~ismember('FrameIndex', rates.Properties.VariableNames)
+            error('run_geometry_sample_validation:missingFrameIndex', 'dissolution_rates.csv has no FrameIndex column.');
+        end
+        rates.FrameIndex = double(rates.FrameIndex);
+        if ~ismember('Stage', rates.Properties.VariableNames)
+            rates.Stage = repmat({'unknown'}, height(rates), 1);
+        end
+        if isstring(rates.Stage)
+            rates.Stage = cellstr(rates.Stage);
+        end
+        if ~ismember('DissolutionRate_Sn_per_min', rates.Properties.VariableNames)
+            rates.DissolutionRate_Sn_per_min = NaN(height(rates), 1);
+        end
 
-    frame_ids = stratified_frame_ids(rates, max_frames);
-    frame_ids = unique(frame_ids(:), 'stable');
-    if numel(frame_ids) > max_frames
-        frame_ids = frame_ids(1:max_frames);
-    end
+        frame_ids = stratified_frame_ids(rates, max_frames);
+        frame_ids = unique(frame_ids(:), 'stable');
+        if numel(frame_ids) > max_frames
+            frame_ids = frame_ids(1:max_frames);
+        end
 
-    selected = table(frame_ids(:), 'VariableNames', {'FrameIndex'});
+        selected = table(frame_ids(:), 'VariableNames', {'FrameIndex'});
+    end
     frame_timeline_csv = char(frame_timeline_csv);
     if ~isempty(frame_timeline_csv)
         timeline_path = frame_timeline_csv;
@@ -249,6 +256,7 @@ function selected = select_and_map_frames(output_root, postprocess_dir, raw_imag
             PageInTif = NaN(height(selected), 1);
             RealTime_s = NaN(height(selected), 1);
             Interval_s = NaN(height(selected), 1);
+            TifPath = repmat({''}, height(selected), 1);
             if any(lia)
                 if ismember('TifFile', timeline.Properties.VariableNames)
                     tif_values = table_text_column(timeline, 'TifFile');
@@ -263,11 +271,16 @@ function selected = select_and_map_frames(output_root, postprocess_dir, raw_imag
                 if ismember('Interval_s', timeline.Properties.VariableNames)
                     Interval_s(lia) = double(timeline.Interval_s(loc(lia)));
                 end
+                if ismember('TifPath', timeline.Properties.VariableNames)
+                    tif_paths = table_text_column(timeline, 'TifPath');
+                    TifPath(lia) = tif_paths(loc(lia));
+                end
             end
             selected.TifFile = TifFile;
             selected.PageInTif = PageInTif;
             selected.RealTime_s = RealTime_s;
             selected.Interval_s = Interval_s;
+            selected.TifPath = TifPath;
         end
     end
     if ~ismember('TifFile', selected.Properties.VariableNames)
@@ -275,16 +288,46 @@ function selected = select_and_map_frames(output_root, postprocess_dir, raw_imag
         selected.PageInTif = NaN(height(selected), 1);
         selected.RealTime_s = NaN(height(selected), 1);
         selected.Interval_s = NaN(height(selected), 1);
+        selected.TifPath = repmat({''}, height(selected), 1);
     end
-    TifPath = cell(height(selected), 1);
+    TifPath = table_text_column(selected, 'TifPath');
     for i = 1:height(selected)
-        if isempty(selected.TifFile{i})
+        if ~isempty(TifPath{i})
+            continue;
+        elseif isempty(selected.TifFile{i})
             TifPath{i} = '';
+        elseif is_absolute_path(selected.TifFile{i})
+            TifPath{i} = selected.TifFile{i};
         else
             TifPath{i} = fullfile(raw_image_dir, selected.TifFile{i});
         end
     end
     selected.TifPath = TifPath;
+end
+
+
+function selected = read_explicit_selected_frames(selected_frames_csv, max_frames)
+    if ~isfile(selected_frames_csv)
+        error('run_geometry_sample_validation:missingSelectedFramesCsv', ...
+            'SelectedFramesCsv not found: %s', selected_frames_csv);
+    end
+    selected = readtable(selected_frames_csv, 'VariableNamingRule', 'preserve');
+    if ~ismember('FrameIndex', selected.Properties.VariableNames)
+        error('run_geometry_sample_validation:missingFrameIndex', ...
+            'SelectedFramesCsv must contain FrameIndex.');
+    end
+    selected.FrameIndex = double(selected.FrameIndex);
+    selected = selected(isfinite(selected.FrameIndex), :);
+    [~, ia] = unique(selected.FrameIndex, 'stable');
+    selected = selected(sort(ia), :);
+    if height(selected) == 0
+        error('run_geometry_sample_validation:emptySelectedFrames', ...
+            'SelectedFramesCsv contains no valid FrameIndex values.');
+    end
+    if height(selected) > max_frames
+        error('run_geometry_sample_validation:tooManySelectedFrames', ...
+            'SelectedFramesCsv has %d frames, exceeding MaxFrames=%d.', height(selected), max_frames);
+    end
 end
 
 
@@ -507,9 +550,13 @@ end
 
 function mask = segment_selected_raw_frame(tif_path, page_in_tif, context)
     rgb = imread(tif_path, max(1, round(page_in_tif)));
+    if isa(rgb, 'uint16')
+        rgb = im2uint8(rgb);
+    end
     if size(rgb, 3) == 1
         rgb = repmat(rgb, [1 1 3]);
     end
+    rgb = prepare_rgb_input_encoding(rgb, context.config);
     [rgb_rot, ~, ~] = rotate_and_crop(rgb, context.config);
     if isfield(context.config, 'illumination') && isfield(context.config.illumination, 'method')
         [rgb_corr, ~] = correct_illumination(rgb_rot, ...

@@ -59,6 +59,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
     blob_detail_csv_path = fullfile(config.output_path, 'blob_detail_all_frames.csv');
     blob_detail_chunks_dir = fullfile(config.output_path, 'blob_detail_chunks');
     blob_detail_schema = get_blob_detail_legacy_schema();
+    geometry_opts = resolve_geometry_options(config);
     blob_detail_writer = [];
     blob_detail_csv_exported = false;
     blob_detail_timing = struct('buffer_push_time_sec', 0, ...
@@ -152,8 +153,12 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         mkdir(config.output_path);
     end
     if do_write_blob_detail
+        assert_geometry_schema_compatible(config.output_path, geometry_opts);
+        write_geometry_schema_manifest(config.output_path, geometry_opts);
         fprintf('  Per-blob detail chunks: %s\n', blob_detail_chunks_dir);
         fprintf('  Per-blob detail CSV: %s (exported on normal completion)\n', blob_detail_csv_path);
+        fprintf('  Blob geometry mode: %s (%s)\n', ...
+            geometry_opts.mode, geometry_opts.schema_version);
     elseif do_save_blob_detail && use_parallel
         fprintf('  Per-blob detail CSV: disabled in parallel mode\n');
     else
@@ -357,7 +362,17 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             sat = calculate_saturation(first_mask, flow_domain, px);
             sn_arr(1) = sat.Sn;
             iface_arr(1) = compute_timeseries_interface_length(first_mask, solid_contact_zone);
-            [blob_metrics_1, blob_table_1] = compute_timeseries_blob_metrics(first_mask, flow_domain, solid_mask);
+            if do_write_blob_detail
+                breadcrumb_extra = geometry_breadcrumb_extra(first_mask, geometry_opts);
+                write_geometry_breadcrumb(config, geometry_opts, 1, num_frames, ...
+                    'before_blob_metrics', breadcrumb_extra);
+            end
+            [blob_metrics_1, blob_table_1] = compute_timeseries_blob_metrics( ...
+                first_mask, flow_domain, solid_mask, geometry_opts);
+            if do_write_blob_detail
+                write_geometry_breadcrumb(config, geometry_opts, 1, num_frames, ...
+                    'after_blob_metrics', breadcrumb_extra);
+            end
             nblobs_arr(1) = blob_metrics_1.num_blobs;
             mbs_arr(1) = blob_metrics_1.mean_blob_size;
             max_blob_frac_arr(1) = blob_metrics_1.max_blob_frac;
@@ -497,7 +512,7 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
             sat_t = calculate_saturation(mask_t, flow_domain, px);
             sn_arr(t) = sat_t.Sn;
             iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
-            blob_metrics_t = compute_timeseries_blob_metrics(mask_t, flow_domain, solid_mask);
+            blob_metrics_t = compute_timeseries_blob_metrics(mask_t, flow_domain, solid_mask, geometry_opts);
             nblobs_arr(t) = blob_metrics_t.num_blobs;
             mbs_arr(t) = blob_metrics_t.mean_blob_size;
             max_blob_frac_arr(t) = blob_metrics_t.max_blob_frac;
@@ -552,7 +567,17 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
                 sat_t = calculate_saturation(mask_t, flow_domain, px);
                 sn_arr(t) = sat_t.Sn;
                 iface_arr(t) = compute_timeseries_interface_length(mask_t, solid_contact_zone);
-                [blob_metrics_t, blob_table_t] = compute_timeseries_blob_metrics(mask_t, flow_domain, solid_mask);
+                if do_write_blob_detail
+                    breadcrumb_extra = geometry_breadcrumb_extra(mask_t, geometry_opts);
+                    write_geometry_breadcrumb(config, geometry_opts, t, num_frames, ...
+                        'before_blob_metrics', breadcrumb_extra);
+                end
+                [blob_metrics_t, blob_table_t] = compute_timeseries_blob_metrics( ...
+                    mask_t, flow_domain, solid_mask, geometry_opts);
+                if do_write_blob_detail
+                    write_geometry_breadcrumb(config, geometry_opts, t, num_frames, ...
+                        'after_blob_metrics', breadcrumb_extra);
+                end
                 nblobs_arr(t) = blob_metrics_t.num_blobs;
                 mbs_arr(t) = blob_metrics_t.mean_blob_size;
                 max_blob_frac_arr(t) = blob_metrics_t.max_blob_frac;
@@ -726,9 +751,16 @@ function [sol, heartbeat] = characterize_solubilization_v2(frame_index, flow_dom
         [blob_detail_writer, heartbeat] = flush_blob_detail_writer_with_heartbeat( ...
             blob_detail_writer, heartbeat, last_completed_frame, num_frames);
         tic_csv_merge = tic;
-        export_blob_detail_chunks_csv(blob_detail_chunks_dir, blob_detail_csv_path, blob_detail_schema);
+        try
+            export_blob_detail_chunks_csv(blob_detail_chunks_dir, blob_detail_csv_path, blob_detail_schema);
+            blob_detail_csv_exported = true;
+        catch csv_export_error
+            blob_detail_csv_exported = false;
+            warning('characterize_solubilization_v2:blobDetailCsvExportFailed', ...
+                ['Failed to export blob detail CSV: %s. Blob detail chunks remain ' ...
+                 'available in: %s'], csv_export_error.message, blob_detail_chunks_dir);
+        end
         blob_detail_writer.csv_merge_time_sec = blob_detail_writer.csv_merge_time_sec + toc(tic_csv_merge);
-        blob_detail_csv_exported = true;
         blob_detail_timing = writer_timing_struct(blob_detail_writer);
         fprintf('  Blob detail timing: buffer %.3fs, chunk flush %.3fs, final CSV merge %.3fs\n', ...
             blob_detail_timing.buffer_push_time_sec, ...
@@ -908,6 +940,87 @@ function print_blob_detail_writer_diagnostics(writer)
     if isfield(writer, 'format_probe') && isfield(writer.format_probe, 'message') && ...
             ~isempty(writer.format_probe.message)
         fprintf('  Blob detail format probe: %s\n', writer.format_probe.message);
+    end
+end
+
+
+function geometry_opts = resolve_geometry_options(config)
+    if isfield(config, 'geometry') && ~isempty(config.geometry)
+        geometry_opts = config.geometry;
+    else
+        geometry_opts = struct();
+    end
+    if ~isfield(geometry_opts, 'mode') || isempty(geometry_opts.mode)
+        geometry_opts.mode = 'core_only';
+    end
+    if ~isfield(geometry_opts, 'object_connectivity') || isempty(geometry_opts.object_connectivity)
+        geometry_opts.object_connectivity = 8;
+    end
+    if ~isfield(geometry_opts, 'schema_version') || isempty(geometry_opts.schema_version)
+        mode = char(string(geometry_opts.mode));
+        if strcmp(mode, 'legacy_fullframe')
+            geometry_opts.schema_version = 'geometry_v1_legacy_fullframe';
+        elseif strcmp(mode, 'roi')
+            geometry_opts.schema_version = 'geometry_v3_roi_holes';
+        else
+            geometry_opts.schema_version = 'geometry_v2_core_only';
+        end
+    end
+    if ~isfield(geometry_opts, 'include_heavy_shape_props') || isempty(geometry_opts.include_heavy_shape_props)
+        geometry_opts.include_heavy_shape_props = true;
+    end
+    if ~isfield(geometry_opts, 'roi_pad') || isempty(geometry_opts.roi_pad)
+        geometry_opts.roi_pad = 1;
+    end
+    if ~isfield(geometry_opts, 'max_roi_area_fraction') || isempty(geometry_opts.max_roi_area_fraction)
+        geometry_opts.max_roi_area_fraction = 0.25;
+    end
+    if ~isfield(geometry_opts, 'max_roi_pixels') || isempty(geometry_opts.max_roi_pixels)
+        geometry_opts.max_roi_pixels = 2e6;
+    end
+end
+
+
+function extra = geometry_breadcrumb_extra(mask, geometry_opts)
+    extra = struct('num_blobs', NaN, 'nnz_mask', nnz(mask));
+    try
+        cc_probe = bwconncomp(mask, geometry_opts.object_connectivity);
+        extra.num_blobs = cc_probe.NumObjects;
+    catch
+        % Breadcrumbs are diagnostic only; never change frame processing.
+    end
+end
+
+
+function write_geometry_breadcrumb(config, geometry_opts, frame_idx, num_frames, stage, extra)
+    if nargin < 6
+        extra = struct();
+    end
+
+    status_dir = fullfile(config.output_path, 'status');
+    if exist(status_dir, 'dir') ~= 7
+        mkdir(status_dir);
+    end
+
+    breadcrumb = struct();
+    breadcrumb.frame = frame_idx;
+    breadcrumb.num_frames = num_frames;
+    breadcrumb.stage = char(string(stage));
+    breadcrumb.timestamp = datestr(now, 30);
+    breadcrumb.geometry_mode = char(string(geometry_opts.mode));
+    breadcrumb.schema_version = char(string(geometry_opts.schema_version));
+    breadcrumb.extra = extra;
+
+    breadcrumb_path = fullfile(status_dir, 'last_geometry_state.mat');
+    tmp_path = fullfile(status_dir, 'last_geometry_state.tmp.mat');
+
+    try
+        save(tmp_path, 'breadcrumb', '-v7');
+        atomic_replace_file(tmp_path, breadcrumb_path, []);
+    catch
+        if exist(tmp_path, 'file') == 2
+            try delete(tmp_path); catch, end %#ok<CTCH>
+        end
     end
 end
 

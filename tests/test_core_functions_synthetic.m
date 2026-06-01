@@ -26,9 +26,14 @@ function test_validate_config_accepts_residual_metric_defaults(testCase)
     cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
     config = make_valid_test_config(fixture_dir, tif_path);
 
-    verifyFalse(testCase, config.output.save_blob_detail);
+    verifyTrue(testCase, config.output.save_blob_detail);
     verifyEqual(testCase, config.output.blob_detail_chunk_size, 100);
     verifyEqual(testCase, config.output.blob_detail_save_format, 'v7');
+    verifyTrue(testCase, isfield(config, 'geometry'));
+    verifyEqual(testCase, config.geometry.mode, 'core_only');
+    verifyEqual(testCase, config.geometry.object_connectivity, 8);
+    verifyEqual(testCase, config.geometry.schema_version, 'geometry_v2_core_only');
+    verifyTrue(testCase, config.geometry.include_heavy_shape_props);
     verifyEqual(testCase, config.architecture.pool_like.max_blob_fraction_min, 0.50);
     verifyEqual(testCase, config.architecture.pool_like.num_blobs_max, 10);
     verifyEqual(testCase, config.architecture.pool_like.a_i_2D_max, 3.0e4);
@@ -38,6 +43,20 @@ function test_validate_config_accepts_residual_metric_defaults(testCase)
 
     config = validate_config(config);
     verifyTrue(testCase, isstruct(config));
+end
+
+function test_validate_config_accepts_roi_geometry_mode(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.geometry.mode = 'roi';
+
+    config = validate_config(config);
+    verifyEqual(testCase, config.geometry.mode, 'roi');
+    verifyEqual(testCase, config.geometry.schema_version, 'geometry_v3_roi_holes');
+    verifyEqual(testCase, config.geometry.roi_pad, 1);
+    verifyEqual(testCase, config.geometry.max_roi_area_fraction, 0.25);
 end
 
 function test_config_pipeline_scans_overridden_data_path(testCase)
@@ -224,6 +243,42 @@ function test_validate_config_rejects_bad_input_mode(testCase)
         'validate_config:badParam');
 end
 
+function test_validate_config_accepts_input_encoding_toggle(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    verifyTrue(testCase, isfield(config, 'input'));
+    verifyFalse(testCase, config.input.is_linear_rgb);
+
+    config.input.is_linear_rgb = 1;
+    config = validate_config(config);
+    verifyTrue(testCase, config.input.is_linear_rgb);
+
+    config.input.is_linear_rgb = false;
+    config = validate_config(config);
+    verifyFalse(testCase, config.input.is_linear_rgb);
+end
+
+function test_validate_config_rejects_bad_input_encoding_toggle(testCase)
+    setup_path();
+    [fixture_dir, tif_path] = create_temp_tif_fixture();
+    cleanup = onCleanup(@() cleanup_temp_tif_fixture(fixture_dir)); %#ok<NASGU>
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.input.is_linear_rgb = 2;
+    verifyError(testCase, @() validate_config(config), 'validate_config:badParam');
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.input.is_linear_rgb = -1;
+    verifyError(testCase, @() validate_config(config), 'validate_config:badParam');
+
+    config = make_valid_test_config(fixture_dir, tif_path);
+    config.input.is_linear_rgb = 'linear';
+    verifyError(testCase, @() validate_config(config), 'validate_config:badParam');
+end
+
 function test_validate_config_rejects_fractional_pages(testCase)
     setup_path();
     [fixture_dir, tif_path] = create_temp_tif_fixture();
@@ -233,6 +288,60 @@ function test_validate_config_rejects_fractional_pages(testCase)
     verifyError(testCase, ...
         @() validate_config(config), ...
         'validate_config:badParam');
+end
+
+
+%% ========== input encoding ==========
+
+function test_prepare_rgb_input_encoding_srgb_noop(testCase)
+    setup_path();
+    config = struct();
+    config.input.is_linear_rgb = false;
+    rgb = uint8(randi([0 255], 5, 6, 3));
+
+    out = prepare_rgb_input_encoding(rgb, config);
+
+    verifyEqual(testCase, out, rgb);
+end
+
+function test_prepare_rgb_input_encoding_linear_transfer(testCase)
+    setup_path();
+    config = struct();
+    config.input.is_linear_rgb = true;
+
+    linear_vals = reshape([0, 0.0031308, 0.25, 1], [2 2 1]);
+    rgb_linear = repmat(linear_vals, [1 1 3]);
+
+    out = prepare_rgb_input_encoding(rgb_linear, config);
+
+    expected = zeros(size(rgb_linear));
+    branch = rgb_linear <= 0.0031308;
+    expected(branch) = 12.92 .* rgb_linear(branch);
+    expected(~branch) = 1.055 .* rgb_linear(~branch).^(1 / 2.4) - 0.055;
+    expected = im2uint8(expected);
+
+    verifyClass(testCase, out, 'uint8');
+    verifySize(testCase, out, [2 2 3]);
+    verifyEqual(testCase, out, expected);
+end
+
+function test_segment_dnapl_records_input_encoding_provenance(testCase)
+    setup_path();
+    rgb = uint8(90 * ones(12, 12, 3));
+    rgb(1:6, :, 1) = 220;
+    rgb(1:6, :, 2) = 40;
+    rgb(1:6, :, 3) = 70;
+    flow_domain = true(12, 12);
+
+    config = minimal_segmentation_config();
+    [~, ~, seg_info] = segment_DNAPL(rgb, flow_domain, config);
+    verifyFalse(testCase, seg_info.input_is_linear_rgb);
+    verifyEqual(testCase, string(seg_info.rgb_encoding_for_segmentation), "srgb");
+
+    config.input.is_linear_rgb = true;
+    [~, ~, seg_info] = segment_DNAPL(rgb, flow_domain, config);
+    verifyTrue(testCase, seg_info.input_is_linear_rgb);
+    verifyEqual(testCase, string(seg_info.rgb_encoding_for_segmentation), "srgb");
 end
 
 
@@ -321,6 +430,9 @@ function test_blob_geometry_empty_mask(testCase)
     verifyEqual(testCase, blob.topology_summary.frac_droplets, 0);
     verifyEqual(testCase, blob.topology_summary.frac_columns, 0);
     verifyEqual(testCase, blob.topology_summary.frac_clusters, 0);
+    verifyTrue(testCase, all(ismember(["GeometryMode", "GeometrySchemaVersion", ...
+        "ObjectConnectivity", "HoleClassificationComputed", "HoleCountSource", ...
+        "EulerHoleCount"], string(blob.blob_table.Properties.VariableNames))));
 end
 
 function test_blob_geometry_single_blob(testCase)
@@ -419,7 +531,7 @@ function test_blob_geometry_reports_topology_and_req_statistics(testCase)
         1, 'AbsTol', 1e-10);
 end
 
-function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
+function test_blob_geometry_core_only_marks_domain_holes_not_classified(testCase)
     setup_path();
     mask = false(80, 80);
     mask(20:60, 20:60) = true;
@@ -430,10 +542,145 @@ function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
     blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask);
 
     verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).EulerNumber, 0);
+    verifyEqual(testCase, blob.props(1).EulerHoleCount, 1);
+    verifyFalse(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "euler_number");
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "not_classified");
+    verifyTrue(testCase, isnan(blob.props(1).WaterHoleCount));
+    verifyTrue(testCase, isnan(blob.props(1).SolidHoleCount));
+    verifyEqual(testCase, blob.props(1).GeometryMode, "core_only");
+    verifyEqual(testCase, blob.props(1).GeometrySchemaVersion, "geometry_v2_core_only");
+    verifyEqual(testCase, blob.props(1).ObjectConnectivity, 8);
+    verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
+    verifyTrue(testCase, all(ismember(["GeometryMode", "GeometrySchemaVersion", ...
+        "ObjectConnectivity", "HoleClassificationComputed", "HoleCountSource", ...
+        "EulerHoleCount"], string(blob.blob_table.Properties.VariableNames))));
+end
+
+function test_blob_geometry_core_connectivity_diagonal(testCase)
+    setup_path();
+    mask = false(8, 8);
+    mask(3, 3) = true;
+    mask(4, 4) = true;
+
+    blob8 = analyze_blob_geometry(mask, [], [], [], ...
+        struct('mode', 'core_only', 'object_connectivity', 8));
+    blob4 = analyze_blob_geometry(mask, [], [], [], ...
+        struct('mode', 'core_only', 'object_connectivity', 4));
+
+    verifyEqual(testCase, blob8.num_blobs, 1);
+    verifyEqual(testCase, blob4.num_blobs, 2);
+    verifyEqual(testCase, unique(blob8.blob_table.ObjectConnectivity), 8);
+    verifyEqual(testCase, unique(blob4.blob_table.ObjectConnectivity), 4);
+end
+
+function test_blob_geometry_roi_classifies_water_hole(testCase)
+    setup_path();
+    mask = false(100, 100);
+    mask(30:70, 30:70) = true;
+    mask(42:58, 42:58) = false;
+    flow_domain = true(size(mask));
+    solid_mask = false(size(mask));
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, roi_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
     verifyEqual(testCase, blob.props(1).HoleCount, 1);
     verifyEqual(testCase, blob.props(1).WaterHoleCount, 1);
     verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
     verifyEqual(testCase, blob.props(1).DominantHoleType, "water");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "roi_domain_aware");
+    verifyEqual(testCase, blob.props(1).GeometryMode, "roi");
+    verifyEqual(testCase, blob.props(1).GeometrySchemaVersion, "geometry_v3_roi_holes");
+    verifyFalse(testCase, blob.props(1).RoiFallbackUsed);
+    verifyEqual(testCase, blob.props(1).RoiFallbackReason, "none");
+    verifyGreaterThan(testCase, blob.props(1).RoiAreaFraction, 0);
+    verifyTrue(testCase, all(ismember(["RoiFallbackUsed", "RoiFallbackReason", ...
+        "TouchesImageBorder", "RoiAreaFraction"], ...
+        string(blob.blob_table.Properties.VariableNames))));
+end
+
+function test_blob_geometry_roi_classifies_solid_hole_not_cluster(testCase)
+    setup_path();
+    mask = false(100, 100);
+    mask(30:70, 30:70) = true;
+    mask(42:58, 42:58) = false;
+    solid_mask = false(size(mask));
+    solid_mask(42:58, 42:58) = true;
+    flow_domain = true(size(mask));
+    flow_domain(solid_mask) = false;
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, roi_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).HoleCount, 1);
+    verifyEqual(testCase, blob.props(1).WaterHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).SolidHoleCount, 1);
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "solid");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 1);
+    verifyEqual(testCase, blob.props(1).EulerHoleCount, 1);
+    verifyNotEqual(testCase, blob.props(1).TopologyType, "cluster");
+end
+
+function test_blob_geometry_roi_fallback_when_domain_unavailable(testCase)
+    setup_path();
+    mask = false(100, 100);
+    mask(30:70, 30:70) = true;
+    mask(42:58, 42:58) = false;
+
+    blob = analyze_blob_geometry(mask, [], [], [], roi_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).EulerHoleCount, 1);
+    verifyFalse(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "euler_number_domain_unavailable");
+    verifyTrue(testCase, blob.props(1).RoiFallbackUsed);
+    verifyEqual(testCase, blob.props(1).RoiFallbackReason, "domain_masks_unavailable");
+    verifyTrue(testCase, isnan(blob.props(1).WaterHoleCount));
+    verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
+end
+
+function test_blob_geometry_roi_fallback_when_roi_too_large(testCase)
+    setup_path();
+    mask = false(80, 80);
+    mask(5:75, 5:75) = true;
+    mask(32:48, 32:48) = false;
+    flow_domain = true(size(mask));
+    solid_mask = false(size(mask));
+    opts = roi_geometry_opts();
+    opts.max_roi_area_fraction = 0.10;
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, opts);
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyFalse(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "euler_number_large_roi_fallback");
+    verifyTrue(testCase, blob.props(1).RoiFallbackUsed);
+    verifyEqual(testCase, blob.props(1).RoiFallbackReason, "max_roi_area_fraction_exceeded");
+    verifyGreaterThan(testCase, blob.props(1).RoiAreaFraction, 0.10);
+end
+
+function test_blob_geometry_classifies_water_hole_as_cluster(testCase)
+    setup_path();
+    mask = false(80, 80);
+    mask(20:60, 20:60) = true;
+    mask(32:48, 32:48) = false;
+    flow_domain = true(size(mask));
+    solid_mask = false(size(mask));
+
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, legacy_geometry_opts());
+
+    verifyEqual(testCase, blob.num_blobs, 1);
+    verifyEqual(testCase, blob.props(1).HoleCount, 1);
+    verifyEqual(testCase, blob.props(1).WaterHoleCount, 1);
+    verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
+    verifyEqual(testCase, blob.props(1).DominantHoleType, "water");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "legacy_domain_aware");
+    verifyEqual(testCase, blob.props(1).GeometryMode, "legacy_fullframe");
     verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 0);
     verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
     verifyTrue(testCase, all(ismember(["HoleCount", "WaterHoleCount", ...
@@ -452,7 +699,7 @@ function test_blob_geometry_solid_pillar_hole_not_cluster(testCase)
     flow_domain = true(size(mask));
     flow_domain(solid_mask) = false;
 
-    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask);
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, legacy_geometry_opts());
 
     verifyEqual(testCase, blob.num_blobs, 1);
     verifyLessThan(testCase, blob.props(1).EulerNumber, 1);
@@ -460,18 +707,20 @@ function test_blob_geometry_solid_pillar_hole_not_cluster(testCase)
     verifyEqual(testCase, blob.props(1).WaterHoleCount, 0);
     verifyEqual(testCase, blob.props(1).SolidHoleCount, 1);
     verifyEqual(testCase, blob.props(1).DominantHoleType, "solid");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "legacy_domain_aware");
     verifyEqual(testCase, blob.props(1).EffectiveEulerNumber, 1);
     verifyNotEqual(testCase, blob.props(1).TopologyType, "cluster");
     verifyEqual(testCase, blob.topology_summary.n_clusters, 0);
 end
 
-function test_blob_geometry_without_domain_keeps_legacy_unknown_hole_behavior(testCase)
+function test_blob_geometry_legacy_unknown_hole_without_domain(testCase)
     setup_path();
     mask = false(80, 80);
     mask(20:60, 20:60) = true;
     mask(32:48, 32:48) = false;
 
-    blob = analyze_blob_geometry(mask, []);
+    blob = analyze_blob_geometry(mask, [], [], [], legacy_geometry_opts());
 
     verifyEqual(testCase, blob.num_blobs, 1);
     verifyEqual(testCase, blob.props(1).HoleCount, 1);
@@ -479,6 +728,8 @@ function test_blob_geometry_without_domain_keeps_legacy_unknown_hole_behavior(te
     verifyEqual(testCase, blob.props(1).SolidHoleCount, 0);
     verifyEqual(testCase, blob.props(1).UnknownHoleCount, 1);
     verifyEqual(testCase, blob.props(1).DominantHoleType, "unknown");
+    verifyTrue(testCase, blob.props(1).HoleClassificationComputed);
+    verifyEqual(testCase, blob.props(1).HoleCountSource, "legacy_domain_aware");
     verifyEqual(testCase, blob.props(1).TopologyType, "cluster");
 end
 
@@ -549,6 +800,15 @@ function config = make_valid_test_config(fixture_dir, tif_path)
         'output_path', fullfile(fixture_dir, 'output'));
 end
 
+function config = minimal_segmentation_config()
+    config.segmentation.method = 'otsu';
+    config.segmentation.num_components = 2;
+    config.segmentation.min_blob_area = 1;
+    config.segmentation.morph_radius = 0;
+    config.segmentation.hole_fill_radius = 0;
+    config.input.is_linear_rgb = false;
+end
+
 function default_data_path = get_config_pipeline_default_data_path()
     pipeline_source = fileread(which('config_pipeline'));
     tokens = regexp(pipeline_source, "config\.data_path\s*=\s*'((?:''|[^'])*)';", 'tokens', 'once');
@@ -582,4 +842,23 @@ function value = local_percentile(values, percentile)
 
     weight = position - lower_idx;
     value = values(lower_idx) + weight * (values(upper_idx) - values(lower_idx));
+end
+
+function opts = legacy_geometry_opts()
+    opts = struct( ...
+        'mode', 'legacy_fullframe', ...
+        'object_connectivity', 8, ...
+        'schema_version', 'geometry_v1_legacy_fullframe', ...
+        'include_heavy_shape_props', true);
+end
+
+function opts = roi_geometry_opts()
+    opts = struct( ...
+        'mode', 'roi', ...
+        'object_connectivity', 8, ...
+        'schema_version', 'geometry_v3_roi_holes', ...
+        'include_heavy_shape_props', true, ...
+        'roi_pad', 1, ...
+        'max_roi_area_fraction', 0.25, ...
+        'max_roi_pixels', 2e6);
 end

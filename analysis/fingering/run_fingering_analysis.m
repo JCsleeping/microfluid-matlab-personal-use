@@ -304,7 +304,7 @@ function results = load_and_segment_frame(results, config, frame_idx)
     end
 
     %% 2. Load frame
-    rgb = load_frame(frame_idx, frame_index);
+    rgb = load_frame(frame_idx, frame_index, config);
     fprintf('  [Frame Loader] Loaded: %s (page %d), size [%d x %d]\n', ...
         frame_index(frame_idx).tif_path, frame_index(frame_idx).page, ...
         size(rgb, 1), size(rgb, 2));

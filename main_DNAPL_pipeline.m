@@ -188,6 +188,11 @@ function results = main_DNAPL_pipeline(config)
 
     fprintf('  Frames to analyze: %d\n', num_frames);
     fprintf('  Flow domain frame: index %d\n', fd_idx);
+    if isfield(config, 'input') && isfield(config.input, 'is_linear_rgb') && config.input.is_linear_rgb
+        fprintf('  Input RGB encoding: linear RGB -> normalized to sRGB for segmentation\n');
+    else
+        fprintf('  Input RGB encoding: sRGB/default\n');
+    end
     fprintf('  Output: %s\n\n', config.output_path);
     heartbeat = write_pipeline_heartbeat(heartbeat, struct( ...
         'status', 'running', ...
@@ -210,7 +215,7 @@ function results = main_DNAPL_pipeline(config)
 
         fig_cal = figure('Name', 'Pixel Size Calibration', ...
             'Position', [100 100 900 750], 'Color', 'w');
-        imshow(load_frame(1, frame_index));
+        imshow(load_frame(1, frame_index, config));
         title(sprintf('Draw a line across the channel (%.0f μm). Double-click to confirm.', channel_um), ...
             'FontSize', 13);
 
@@ -244,7 +249,7 @@ function results = main_DNAPL_pipeline(config)
         fprintf('INTERACTIVE ROI: Click vertices around the chip boundary.\n');
         fprintf('  Double-click the last vertex to close the polygon.\n');
 
-        ref_img = load_frame(fd_idx, frame_index);
+        ref_img = load_frame(fd_idx, frame_index, config);
         [H_orig, W_orig, ~] = size(ref_img);
         fig_roi = figure('Name', 'Select Chip ROI', ...
             'Position', [100 100 900 750], 'Color', 'w');
@@ -298,6 +303,7 @@ function results = main_DNAPL_pipeline(config)
         rgb_clean = imread(fd_path, fd_page);
         if isa(rgb_clean, 'uint16'), rgb_clean = im2uint8(rgb_clean); end
         if size(rgb_clean, 3) == 1, rgb_clean = repmat(rgb_clean, [1 1 3]); end
+        rgb_clean = prepare_rgb_input_encoding(rgb_clean, config);
         fprintf('  Clean reference image: %s (page %d)\n', fd_path, fd_page);
 
         % Interactive ROI on clean image (if no saved rect)
@@ -370,7 +376,7 @@ function results = main_DNAPL_pipeline(config)
         else
             % manual_crop_rect can be [] (auto). In that case, derive crop
             % from an experiment frame so clean reference is resized safely.
-            [~, exp_angle, exp_rect] = rotate_and_crop(load_frame(fd_idx, frame_index), config);
+            [~, exp_angle, exp_rect] = rotate_and_crop(load_frame(fd_idx, frame_index, config), config);
             fprintf('  Auto-detected experiment crop for resize: [%d x %d]\n', ...
                 exp_rect(3), exp_rect(4));
         end
@@ -394,7 +400,7 @@ function results = main_DNAPL_pipeline(config)
             rgb_fd = rgb_clean;
         else
             fprintf('  Using experiment frame index %d\n', fd_idx);
-            rgb_fd = load_frame(fd_idx, frame_index);
+            rgb_fd = load_frame(fd_idx, frame_index, config);
         end
 
         % 1a. Rotate and crop
@@ -465,7 +471,7 @@ function results = main_DNAPL_pipeline(config)
     fprintf('--------------------------------------------------------\n');
 
     % Preprocess frame 1
-    rgb1 = load_frame(1, frame_index);
+    rgb1 = load_frame(1, frame_index, config);
     [rgb1_rot, ~, ~] = rotate_and_crop(rgb1, config);
     [rgb1_corr, ~]   = correct_illumination(rgb1_rot, ...
         config.illumination.method, config.illumination, config.parallel.use_gpu);
@@ -510,7 +516,12 @@ function results = main_DNAPL_pipeline(config)
 
     %% 3c. Blob Geometry
     fprintf('\n  Analyzing blob geometry...\n');
-    blob = analyze_blob_geometry(dnapl_mask, config.physical.pixel_size, flow_domain, solid_mask);
+    geometry_opts = [];
+    if isfield(config, 'geometry')
+        geometry_opts = config.geometry;
+    end
+    blob = analyze_blob_geometry(dnapl_mask, config.physical.pixel_size, ...
+        flow_domain, solid_mask, geometry_opts);
     results.blobs = blob;
     fprintf('    %d blobs detected\n', blob.num_blobs);
 

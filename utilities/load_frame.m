@@ -1,13 +1,15 @@
-function rgb = load_frame(idx, frame_index)
+function rgb = load_frame(idx, frame_index, config)
 % LOAD_FRAME  Load a single frame on-demand from a TIF file.
 %
 %   rgb = load_frame(idx, frame_index)
+%   rgb = load_frame(idx, frame_index, config)
 %
 %   Inputs:
 %       idx         - Frame index (1-based, into frame_index)
 %       frame_index - Struct array with fields:
 %                       .tif_path  - path to the TIF file
 %                       .page      - page number within that TIF
+%       config      - Optional pipeline config with input encoding settings
 %
 %   Output:
 %       rgb - uint8 RGB image (M x N x 3)
@@ -37,4 +39,7 @@ function rgb = load_frame(idx, frame_index)
     end
 
     rgb = img;
+    if nargin >= 3 && ~isempty(config)
+        rgb = prepare_rgb_input_encoding(rgb, config);
+    end
 end

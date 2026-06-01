@@ -28,6 +28,30 @@ function test_selects_stratified_frames_and_maps_timeline(testCase)
 end
 
 
+function test_uses_explicit_selected_frames_csv(testCase)
+    fixture = make_fixture();
+    cleanup = onCleanup(@() cleanup_fixture(fixture)); %#ok<NASGU>
+
+    write_dissolution_rates(fixture.postprocess_dir, 12);
+    write_timeline(fixture.output_root, fixture.raw_dir, 12);
+    selected_csv = fullfile(fixture.postprocess_dir, 'selected_geometry_validation_frames_g21.csv');
+    FrameIndex = [7; 2; 11]; %#ok<NASGU>
+    SelectionReason = {'rate_peak'; 'initial_stage'; 'late_stage'}; %#ok<NASGU>
+    T = table(FrameIndex, SelectionReason);
+    writetable(T, selected_csv);
+
+    run_geometry_sample_validation(fixture.output_root, fixture.postprocess_dir, ...
+        fixture.metadata_json, 'OutputDir', fixture.validation_dir, 'MaxFrames', 20, ...
+        'RawImageDir', fixture.raw_dir, 'SelectedFramesCsv', selected_csv);
+
+    selected = readtable(fullfile(fixture.validation_dir, 'selected_frames.csv'), ...
+        'VariableNamingRule', 'preserve');
+    verifyEqual(testCase, selected.FrameIndex, [7; 2; 11]);
+    verifyEqual(testCase, selected.SelectionReason, SelectionReason);
+    verifyEqual(testCase, selected.PageInTif, [7; 2; 11]);
+end
+
+
 function test_stops_safely_when_segmentation_context_missing(testCase)
     fixture = make_fixture();
     cleanup = onCleanup(@() cleanup_fixture(fixture)); %#ok<NASGU>

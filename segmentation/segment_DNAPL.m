@@ -31,6 +31,11 @@ function [dnapl_mask, confidence_map, seg_info] = segment_DNAPL(ref_image, flow_
     seg_info.method = method;
     seg_info.gmm_model = [];
     seg_info.threshold = NaN;
+    seg_info.input_is_linear_rgb = false;
+    if isfield(config, 'input') && isfield(config.input, 'is_linear_rgb')
+        seg_info.input_is_linear_rgb = logical(config.input.is_linear_rgb);
+    end
+    seg_info.rgb_encoding_for_segmentation = "srgb";
 
     %% Step 2: Extract pore-only pixels
     pore_idx = find(flow_domain);

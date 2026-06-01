@@ -8,7 +8,12 @@ function test_config_exposes_safe_output_defaults(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
     addpath(genpath(root_dir));
 
-    config = config_pipeline();
+    [fixture_dir, tif_path] = create_config_tif_fixture();
+    c = onCleanup(@() cleanup_tempdir(fixture_dir)); %#ok<NASGU>
+
+    config = config_pipeline('data_path', fixture_dir, ...
+        'multipage_tif_path', {tif_path}, ...
+        'output_path', fullfile(fixture_dir, 'out'));
 
     verifyTrue(testCase, isfield(config, 'output'));
     verifyTrue(testCase, isfield(config.output, 'save_log'));
@@ -19,12 +24,22 @@ function test_config_exposes_safe_output_defaults(testCase)
     verifyEqual(testCase, config.output.progress_interval, 50);
     verifyTrue(testCase, isfield(config.output, 'save_heartbeat'));
     verifyTrue(testCase, config.output.save_heartbeat);
+    verifyTrue(testCase, isfield(config.output, 'save_blob_detail'));
+    verifyTrue(testCase, config.output.save_blob_detail);
     verifyTrue(testCase, isfield(config.output, 'heartbeat_frame_interval'));
     verifyEqual(testCase, config.output.heartbeat_frame_interval, 10);
     verifyTrue(testCase, isfield(config.output, 'heartbeat_time_interval_sec'));
     verifyEqual(testCase, config.output.heartbeat_time_interval_sec, 30);
     verifyTrue(testCase, isfield(config.output, 'max_frames_per_session'));
     verifyTrue(testCase, isinf(config.output.max_frames_per_session));
+    verifyTrue(testCase, isfield(config, 'geometry'));
+    verifyEqual(testCase, config.geometry.mode, 'core_only');
+    verifyEqual(testCase, config.geometry.object_connectivity, 8);
+    verifyEqual(testCase, config.geometry.schema_version, 'geometry_v2_core_only');
+    verifyTrue(testCase, config.geometry.include_heavy_shape_props);
+    verifyEqual(testCase, config.geometry.roi_pad, 1);
+    verifyEqual(testCase, config.geometry.max_roi_area_fraction, 0.25);
+    verifyEqual(testCase, config.geometry.max_roi_pixels, 2e6);
 end
 
 
@@ -32,35 +47,47 @@ function test_config_rejects_invalid_safe_output_settings(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
     addpath(genpath(root_dir));
 
+    [fixture_dir, tif_path] = create_config_tif_fixture();
+    c = onCleanup(@() cleanup_tempdir(fixture_dir)); %#ok<NASGU>
+    make_config = @(varargin) config_pipeline('data_path', fixture_dir, ...
+        'multipage_tif_path', {tif_path}, ...
+        'output_path', fullfile(fixture_dir, 'out'), varargin{:});
+
     verifyError(testCase, ...
-        @() config_pipeline('output.save_log', 7), ...
+        @() make_config('output.save_log', 7), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.save_progress', -1), ...
+        @() make_config('output.save_progress', -1), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.progress_interval', 0), ...
+        @() make_config('output.progress_interval', 0), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.save_heartbeat', 4), ...
+        @() make_config('output.save_heartbeat', 4), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.heartbeat_frame_interval', 0), ...
+        @() make_config('output.heartbeat_frame_interval', 0), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.heartbeat_time_interval_sec', 0), ...
+        @() make_config('output.heartbeat_time_interval_sec', 0), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.max_frames_per_session', 0), ...
+        @() make_config('output.max_frames_per_session', 0), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.max_frames_per_session', 4, 'output.checkpoint', false), ...
+        @() make_config('output.max_frames_per_session', 4, 'output.checkpoint', false), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.max_frames_per_session', 5, 'output.save_interval', 2), ...
+        @() make_config('output.max_frames_per_session', 5, 'output.save_interval', 2), ...
         'validate_config:badParam');
     verifyError(testCase, ...
-        @() config_pipeline('output.max_frames_per_session', 4, 'parallel.enabled', true), ...
+        @() make_config('output.max_frames_per_session', 4, 'parallel.enabled', true), ...
+        'validate_config:badParam');
+    verifyError(testCase, ...
+        @() make_config('geometry.mode', 'not_a_mode'), ...
+        'validate_config:badParam');
+    verifyError(testCase, ...
+        @() make_config('geometry.object_connectivity', 6), ...
         'validate_config:badParam');
 end
 
@@ -68,6 +95,7 @@ end
 function test_main_pipeline_writes_log_and_progress_snapshot(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
     addpath(genpath(root_dir));
+    assume_default_tif_available(testCase);
 
     old_vis = get(groot, 'defaultFigureVisible');
     set(groot, 'defaultFigureVisible', 'off');
@@ -182,6 +210,7 @@ end
 function test_main_pipeline_keeps_only_first_and_last_masks_in_memory(testCase)
     root_dir = fileparts(fileparts(mfilename('fullpath')));
     addpath(genpath(root_dir));
+    assume_default_tif_available(testCase);
 
     old_vis = get(groot, 'defaultFigureVisible');
     set(groot, 'defaultFigureVisible', 'off');
@@ -276,6 +305,130 @@ function test_step4_pauses_on_checkpoint_boundary_and_resumes(testCase)
     blob_detail_table = readtable(final_blob_csv, 'VariableNamingRule', 'preserve');
     verifyEqual(testCase, height(blob_detail_table), ...
         sum(results3.solubilization.num_blobs_vs_time));
+    verifyTrue(testCase, all(ismember( ...
+        {'GeometryMode', 'GeometrySchemaVersion', 'ObjectConnectivity', ...
+         'HoleClassificationComputed', 'HoleCountSource', 'EulerHoleCount', ...
+         'RoiFallbackUsed', 'RoiFallbackReason', 'TouchesImageBorder', ...
+         'RoiAreaFraction'}, ...
+        blob_detail_table.Properties.VariableNames)));
+    verifyTrue(testCase, all(string(blob_detail_table.GeometryMode) == "core_only"));
+    verifyTrue(testCase, all(string(blob_detail_table.GeometrySchemaVersion) == "geometry_v2_core_only"));
+
+    schema_path = fullfile(out_dir, 'status', 'geometry_schema.mat');
+    verifyTrue(testCase, isfile(schema_path));
+    schema_data = load(schema_path, 'geometry_schema');
+    verifyEqual(testCase, string(schema_data.geometry_schema.GeometryMode), "core_only");
+    verifyEqual(testCase, string(schema_data.geometry_schema.GeometrySchemaVersion), "geometry_v2_core_only");
+
+    breadcrumb_path = fullfile(out_dir, 'status', 'last_geometry_state.mat');
+    verifyTrue(testCase, isfile(breadcrumb_path));
+    breadcrumb_data = load(breadcrumb_path, 'breadcrumb');
+    verifyTrue(testCase, ismember(string(breadcrumb_data.breadcrumb.stage), ...
+        ["before_blob_metrics", "after_blob_metrics"]));
+    verifyEqual(testCase, string(breadcrumb_data.breadcrumb.geometry_mode), "core_only");
+end
+
+
+function test_step4_rejects_incompatible_geometry_schema_manifest(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    out_dir = fullfile(tempdir, ['dnapl_geometry_schema_mismatch_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    c1 = onCleanup(@() cleanup_tempdir(out_dir)); %#ok<NASGU>
+    mkdir(fullfile(out_dir, 'status'));
+
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(out_dir, 3);
+    config = make_synthetic_step4_config(out_dir, size(flow_domain));
+    config.output.save_blob_detail = true;
+    config.output.checkpoint = false;
+    config.output.max_frames_per_session = inf;
+
+    geometry_schema = struct( ...
+        'GeometryMode', "legacy_fullframe", ...
+        'GeometrySchemaVersion', "geometry_v1_legacy_fullframe", ...
+        'ObjectConnectivity', 8, ...
+        'HoleClassificationComputed', true, ...
+        'CreatedAt', datestr(now, 30)); %#ok<NASGU>
+    save(fullfile(out_dir, 'status', 'geometry_schema.mat'), 'geometry_schema', '-v7');
+
+    verifyError(testCase, ...
+        @() characterize_solubilization_v2(frame_index, flow_domain, time_vector, config), ...
+        'geometry:schemaMismatch');
+end
+
+
+function test_step4_roi_mode_exports_geometry_v3_schema(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    out_dir = fullfile(tempdir, ['dnapl_roi_step4_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    c1 = onCleanup(@() cleanup_tempdir(out_dir)); %#ok<NASGU>
+    mkdir(out_dir);
+
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(out_dir, 4);
+    config = make_synthetic_step4_config(out_dir, size(flow_domain));
+    config.output.save_blob_detail = true;
+    config.output.checkpoint = false;
+    config.output.max_frames_per_session = inf;
+    config.geometry.mode = 'roi';
+    config.geometry.schema_version = 'geometry_v3_roi_holes';
+    solid_mask = false(size(flow_domain));
+
+    sol = characterize_solubilization_v2(frame_index, flow_domain, time_vector, ...
+        config, struct('enabled', false), solid_mask);
+
+    verifyEqual(testCase, string(sol.pipeline_status), "completed");
+    final_blob_csv = fullfile(out_dir, 'blob_detail_all_frames.csv');
+    verifyTrue(testCase, isfile(final_blob_csv));
+    blob_detail_table = readtable(final_blob_csv, 'VariableNamingRule', 'preserve');
+    verifyGreaterThan(testCase, height(blob_detail_table), 0);
+    verifyTrue(testCase, all(string(blob_detail_table.GeometryMode) == "roi"));
+    verifyTrue(testCase, all(string(blob_detail_table.GeometrySchemaVersion) == "geometry_v3_roi_holes"));
+    verifyTrue(testCase, all(blob_detail_table.HoleClassificationComputed == 1));
+    verifyTrue(testCase, all(string(blob_detail_table.HoleCountSource) == "roi_domain_aware"));
+    verifyTrue(testCase, all(ismember( ...
+        {'RoiFallbackUsed', 'RoiFallbackReason', 'TouchesImageBorder', 'RoiAreaFraction'}, ...
+        blob_detail_table.Properties.VariableNames)));
+
+    schema_data = load(fullfile(out_dir, 'status', 'geometry_schema.mat'), 'geometry_schema');
+    verifyEqual(testCase, string(schema_data.geometry_schema.GeometryMode), "roi");
+    verifyEqual(testCase, string(schema_data.geometry_schema.GeometrySchemaVersion), "geometry_v3_roi_holes");
+    verifyTrue(testCase, schema_data.geometry_schema.HoleClassificationComputed);
+    verifyEqual(testCase, schema_data.geometry_schema.RoiPad, 1);
+end
+
+
+function test_blob_detail_csv_export_failure_preserves_completed_run(testCase)
+    root_dir = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(root_dir));
+
+    out_dir = fullfile(tempdir, ['dnapl_blob_csv_export_fail_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    c1 = onCleanup(@() cleanup_tempdir(out_dir)); %#ok<NASGU>
+    mkdir(out_dir);
+
+    [frame_index, flow_domain, time_vector] = create_synthetic_checkpoint_fixture(out_dir, 4);
+    config = make_synthetic_step4_config(out_dir, size(flow_domain));
+    config.output.checkpoint = false;
+    config.output.max_frames_per_session = inf;
+    config.output.save_blob_detail = true;
+    config.output.blob_detail_chunk_size = 10;
+
+    mkdir(fullfile(out_dir, 'blob_detail_all_frames.tmp.csv'));
+    lastwarn('');
+    sol = characterize_solubilization_v2(frame_index, flow_domain, time_vector, config);
+    [warn_msg, warn_id] = lastwarn;
+
+    verifyEqual(testCase, string(sol.pipeline_status), "completed");
+    verifyEqual(testCase, sol.last_completed_frame, 4);
+    verifyEqual(testCase, warn_id, 'characterize_solubilization_v2:blobDetailCsvExportFailed');
+    verifyTrue(testCase, contains(warn_msg, 'Failed to export blob detail CSV'));
+    verifyTrue(testCase, isfolder(fullfile(out_dir, 'blob_detail_chunks')));
+    verifyTrue(testCase, isfile(fullfile(out_dir, 'blob_detail_chunks', ...
+        'blob_detail_000001_000004.mat')));
+    verifyFalse(testCase, isfile(fullfile(out_dir, 'blob_detail_all_frames.csv')));
+    verifyFalse(testCase, sol.blob_detail_csv_exported);
+    verifyEqual(testCase, sol.blob_detail_csv, '');
+    verifyEqual(testCase, sol.blob_detail_csv_path, fullfile(out_dir, 'blob_detail_all_frames.csv'));
 end
 
 
@@ -443,6 +596,26 @@ function cleanup_tempdir(out_dir)
 end
 
 
+function [fixture_dir, tif_path] = create_config_tif_fixture()
+    fixture_dir = fullfile(tempdir, ['dnapl_config_fixture_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+    mkdir(fixture_dir);
+    tif_path = fullfile(fixture_dir, 'fixture.tif');
+    rgb = uint8(zeros(8, 8, 3));
+    rgb(:, :, 1) = 180;
+    rgb(:, :, 2) = 120;
+    rgb(:, :, 3) = 120;
+    imwrite(rgb, tif_path);
+end
+
+
+function assume_default_tif_available(testCase)
+    default_data_path = 'G:\Microfluid\18 1-BO 4UL 5% TWEEM 80 4UL WATER DISPLACE\01 Tween 80';
+    has_tif = ~isempty(dir(fullfile(default_data_path, '*.tif')));
+    assumeTrue(testCase, has_tif, ...
+        'Default real-data path is unavailable in this test environment.');
+end
+
+
 function rewrite_checkpoint_without_ai2d_units(checkpoint_path)
     checkpoint_data = load(checkpoint_path);
     if isfield(checkpoint_data, 'a_i_2D_units')
@@ -579,5 +752,10 @@ function config = make_synthetic_step4_config(output_dir, image_size)
         'save_interval', 2, ...
         'max_frames_per_session', 2, ...
         'save_blob_detail', false);
+    config.geometry = struct( ...
+        'mode', 'core_only', ...
+        'object_connectivity', 8, ...
+        'schema_version', 'geometry_v2_core_only', ...
+        'include_heavy_shape_props', true);
     config.output_path = output_dir;
 end

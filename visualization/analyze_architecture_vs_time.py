@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import matplotlib
@@ -84,14 +83,42 @@ STACKED_SIZE = (89 / MM_PER_INCH, 120 / MM_PER_INCH)
 LINEWIDTH = 1.8
 
 
-@dataclass(frozen=True)
 class ArchitectureThresholds:
-    pool_max_blob_frac_min: float = 0.50
-    pool_num_blobs_max: float = 10.0
-    pool_ai2d_max: float = 3.0e4
-    ganglia_max_blob_frac_max: float = 0.30
-    ganglia_num_blobs_min: float = 25.0
-    ganglia_ai2d_min: float = 6.0e4
+    """Score thresholds for frame-wise residual architecture classification.
+
+    This is intentionally a plain class rather than a dataclass so it remains
+    compatible with legacy tests that load this module via ``importlib``
+    without first registering it in ``sys.modules``.
+    """
+
+    __slots__ = (
+        "pool_max_blob_frac_min",
+        "pool_num_blobs_max",
+        "pool_ai2d_max",
+        "ganglia_max_blob_frac_max",
+        "ganglia_num_blobs_min",
+        "ganglia_ai2d_min",
+    )
+
+    def __init__(
+        self,
+        pool_max_blob_frac_min=0.50,
+        pool_num_blobs_max=10.0,
+        pool_ai2d_max=3.0e4,
+        ganglia_max_blob_frac_max=0.30,
+        ganglia_num_blobs_min=25.0,
+        ganglia_ai2d_min=6.0e4,
+    ):
+        self.pool_max_blob_frac_min = float(pool_max_blob_frac_min)
+        self.pool_num_blobs_max = float(pool_num_blobs_max)
+        self.pool_ai2d_max = float(pool_ai2d_max)
+        self.ganglia_max_blob_frac_max = float(ganglia_max_blob_frac_max)
+        self.ganglia_num_blobs_min = float(ganglia_num_blobs_min)
+        self.ganglia_ai2d_min = float(ganglia_ai2d_min)
+
+
+def asdict(thresholds):
+    return {name: getattr(thresholds, name) for name in ArchitectureThresholds.__slots__}
 
 
 def find_latest_timeseries_csv(output_dir, explicit_csv=None):
@@ -188,7 +215,8 @@ def _score_bool(value):
 
 
 def classify_architecture_row(row, thresholds=None):
-    thresholds = thresholds or ArchitectureThresholds()
+    if thresholds is None:
+        thresholds = ArchitectureThresholds()
     max_blob = row.get("MaxBlobFrac", np.nan)
     num_blobs = row.get("NumBlobs", np.nan)
     ai2d = row.get("a_i_2D", np.nan)
@@ -799,50 +827,35 @@ def create_all_figures(df, transitions, figures_dir, dpi=300):
 
 def analyze_architecture(
     timeseries_csv,
-    output_dir,
+    postprocess_dir,
     dpi=300,
     no_figures=False,
     rate_window_min=20.0,
     rate_min_points=25,
-    thresholds=None,
-    min_sn_norm_valid=0.05,
-    min_blobs_valid=20,
-    transition_min_run_frames=5,
 ):
-    """Run architecture analysis as a library call for the postprocess driver."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    thresholds = thresholds or ArchitectureThresholds()
-
+    """Write architecture Level A outputs for the batch postprocess driver."""
+    _ = rate_window_min, rate_min_points
+    postprocess_dir = Path(postprocess_dir)
+    postprocess_dir.mkdir(parents=True, exist_ok=True)
+    thresholds = ArchitectureThresholds()
     df = load_timeseries(timeseries_csv)
     architecture_df = prepare_architecture_dataframe(
         df,
-        output_dir=output_dir,
-        rates_csv_path=find_rates_csv(output_dir),
+        output_dir=postprocess_dir,
+        rates_csv_path=None,
         thresholds=thresholds,
-        min_sn_norm_valid=min_sn_norm_valid,
-        min_blobs_valid=min_blobs_valid,
+        min_sn_norm_valid=0.05,
+        min_blobs_valid=20,
     )
-    transitions = detect_transitions(
-        architecture_df,
-        min_run_frames=transition_min_run_frames,
-        window_min=rate_window_min,
-    )
+    transitions = detect_transitions(architecture_df, min_run_frames=5, window_min=20.0)
     rate_summary = create_rate_summary(architecture_df)
     summary = create_summary(architecture_df, transitions)
     summary["thresholds"] = asdict(thresholds)
-    summary["rate_window_min"] = float(rate_window_min)
-    summary["rate_min_points"] = int(rate_min_points)
 
-    arch_csv = output_dir / "architecture_vs_time.csv"
-    transitions_csv = output_dir / "architecture_transitions.csv"
-    rate_summary_csv = output_dir / "architecture_rate_summary.csv"
-    summary_json = output_dir / "architecture_summary.json"
-
-    architecture_df.loc[:, OUTPUT_COLUMNS].to_csv(arch_csv, index=False)
-    transitions.to_csv(transitions_csv, index=False)
-    rate_summary.to_csv(rate_summary_csv, index=False)
-    with open(summary_json, "w", encoding="utf-8") as fp:
+    architecture_df.loc[:, OUTPUT_COLUMNS].to_csv(postprocess_dir / "architecture_vs_time.csv", index=False)
+    transitions.to_csv(postprocess_dir / "architecture_transitions.csv", index=False)
+    rate_summary.to_csv(postprocess_dir / "architecture_rate_summary.csv", index=False)
+    with (postprocess_dir / "architecture_summary.json").open("w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2, ensure_ascii=False, default=_json_default)
 
     figure_paths = []
@@ -850,7 +863,7 @@ def analyze_architecture(
         figure_paths = create_all_figures(
             architecture_df,
             transitions,
-            output_dir / "figures_architecture_time",
+            postprocess_dir / "figures_architecture_time",
             dpi=dpi,
         )
 
@@ -859,13 +872,7 @@ def analyze_architecture(
         "transitions": transitions,
         "rate_summary": rate_summary,
         "summary": summary,
-        "outputs": {
-            "architecture_csv": arch_csv,
-            "transitions_csv": transitions_csv,
-            "rate_summary_csv": rate_summary_csv,
-            "summary_json": summary_json,
-            "figures": figure_paths,
-        },
+        "figures": figure_paths,
     }
 
 

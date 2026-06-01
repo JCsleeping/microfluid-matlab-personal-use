@@ -31,5 +31,8 @@ Desktop.ini
 __pycache__/
 *.pyc
 
+# Local scratch/output probes
+tmp/
+
 # Local git worktrees
 .worktrees/

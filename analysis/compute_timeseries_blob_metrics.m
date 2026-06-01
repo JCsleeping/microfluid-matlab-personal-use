@@ -1,4 +1,4 @@
-function [metrics, blob_table] = compute_timeseries_blob_metrics(mask, flow_domain, solid_mask)
+function [metrics, blob_table] = compute_timeseries_blob_metrics(mask, flow_domain, solid_mask, geometry_opts)
 % COMPUTE_TIMESERIES_BLOB_METRICS  Step-4 blob summary sourced from analyze_blob_geometry.
 
     if nargin < 2
@@ -7,8 +7,11 @@ function [metrics, blob_table] = compute_timeseries_blob_metrics(mask, flow_doma
     if nargin < 3
         solid_mask = [];
     end
+    if nargin < 4
+        geometry_opts = [];
+    end
 
-    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask);
+    blob = analyze_blob_geometry(mask, [], flow_domain, solid_mask, geometry_opts);
     blob_table = blob.blob_table;
 
     metrics = zero_blob_metrics();

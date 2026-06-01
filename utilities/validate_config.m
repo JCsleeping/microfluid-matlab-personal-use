@@ -57,6 +57,30 @@ function config = validate_config(config)
             strjoin(valid_modes, ', '), config.input_mode);
     end
 
+    %% Input encoding
+    if ~isfield(config, 'input') || isempty(config.input)
+        config.input = struct();
+    end
+    if ~isfield(config.input, 'is_linear_rgb') || isempty(config.input.is_linear_rgb)
+        config.input.is_linear_rgb = false;
+    end
+    if islogical(config.input.is_linear_rgb)
+        if ~isscalar(config.input.is_linear_rgb)
+            error('validate_config:badParam', ...
+                'input.is_linear_rgb must be a logical scalar or numeric 0/1.');
+        end
+    elseif isnumeric(config.input.is_linear_rgb)
+        if ~isscalar(config.input.is_linear_rgb) || ...
+                ~ismember(config.input.is_linear_rgb, [0 1])
+            error('validate_config:badParam', ...
+                'input.is_linear_rgb must be a logical scalar or numeric 0/1.');
+        end
+    else
+        error('validate_config:badParam', ...
+            'input.is_linear_rgb must be a logical scalar or numeric 0/1.');
+    end
+    config.input.is_linear_rgb = logical(config.input.is_linear_rgb);
+
     %% Output controls
     if ~isfield(config.output, 'blob_detail_chunk_size') || isempty(config.output.blob_detail_chunk_size)
         config.output.blob_detail_chunk_size = 100;
@@ -101,6 +125,77 @@ function config = validate_config(config)
             ['output.save_blob_detail=true is not supported when parallel.enabled=true. ' ...
              'Set output.save_blob_detail=false or disable parallel processing.']);
     end
+
+    %% Blob geometry controls
+    if ~isfield(config, 'geometry') || isempty(config.geometry)
+        config.geometry = struct();
+    end
+    if ~isfield(config.geometry, 'mode') || isempty(config.geometry.mode)
+        config.geometry.mode = 'core_only';
+    end
+    if ~isfield(config.geometry, 'object_connectivity') || isempty(config.geometry.object_connectivity)
+        config.geometry.object_connectivity = 8;
+    end
+    if ~isfield(config.geometry, 'schema_version') || isempty(config.geometry.schema_version)
+        config.geometry.schema_version = 'geometry_v2_core_only';
+    end
+    if ~isfield(config.geometry, 'include_heavy_shape_props') || isempty(config.geometry.include_heavy_shape_props)
+        config.geometry.include_heavy_shape_props = true;
+    end
+    if ~isfield(config.geometry, 'roi_pad') || isempty(config.geometry.roi_pad)
+        config.geometry.roi_pad = 1;
+    end
+    if ~isfield(config.geometry, 'max_roi_area_fraction') || isempty(config.geometry.max_roi_area_fraction)
+        config.geometry.max_roi_area_fraction = 0.25;
+    end
+    if ~isfield(config.geometry, 'max_roi_pixels') || isempty(config.geometry.max_roi_pixels)
+        config.geometry.max_roi_pixels = 2e6;
+    end
+
+    valid_geometry_modes = {'core_only', 'roi', 'legacy_fullframe'};
+    geometry_mode = char(string(config.geometry.mode));
+    if ~ismember(geometry_mode, valid_geometry_modes)
+        error('validate_config:badParam', ...
+            'geometry.mode="%s" must be one of: %s.', ...
+            geometry_mode, strjoin(valid_geometry_modes, ', '));
+    end
+    config.geometry.mode = geometry_mode;
+
+    default_core_schema = 'geometry_v2_core_only';
+    default_legacy_schema = 'geometry_v1_legacy_fullframe';
+    default_roi_schema = 'geometry_v3_roi_holes';
+    if strcmp(geometry_mode, 'legacy_fullframe') && ...
+            strcmp(char(string(config.geometry.schema_version)), default_core_schema)
+        config.geometry.schema_version = default_legacy_schema;
+    elseif strcmp(geometry_mode, 'roi') && ...
+            strcmp(char(string(config.geometry.schema_version)), default_core_schema)
+        config.geometry.schema_version = default_roi_schema;
+    end
+
+    if isempty(config.geometry.object_connectivity) || ~isnumeric(config.geometry.object_connectivity) || ...
+            ~isscalar(config.geometry.object_connectivity) || ...
+            ~ismember(config.geometry.object_connectivity, [4 8])
+        error('validate_config:badParam', ...
+            'geometry.object_connectivity must be 4 or 8 for 2-D masks.');
+    end
+
+    if ~(ischar(config.geometry.schema_version) || isstring(config.geometry.schema_version)) || ...
+            strlength(string(config.geometry.schema_version)) == 0
+        error('validate_config:badParam', ...
+            'geometry.schema_version must be a non-empty string.');
+    end
+    config.geometry.schema_version = char(string(config.geometry.schema_version));
+
+    assert_logical_scalar(config.geometry.include_heavy_shape_props, ...
+        'geometry.include_heavy_shape_props');
+    assert_nonnegative_integer(config.geometry.roi_pad, 'geometry.roi_pad');
+    assert_fraction_scalar(config.geometry.max_roi_area_fraction, ...
+        'geometry.max_roi_area_fraction');
+    assert_finite_positive_scalar(config.geometry.max_roi_pixels, ...
+        'geometry.max_roi_pixels');
+    config.geometry.roi_pad = double(config.geometry.roi_pad);
+    config.geometry.max_roi_area_fraction = double(config.geometry.max_roi_area_fraction);
+    config.geometry.max_roi_pixels = double(config.geometry.max_roi_pixels);
 
     if isfinite(config.output.max_frames_per_session)
         if ~config.output.checkpoint
@@ -181,6 +276,13 @@ function assert_pos_integer(val, name)
     if isempty(val) || ~isnumeric(val) || ~isscalar(val) || val < 1 || mod(val, 1) ~= 0
         error('validate_config:badParam', ...
             '%s must be a positive integer, got %s.', name, mat2str(val));
+    end
+end
+
+function assert_nonnegative_integer(val, name)
+    if isempty(val) || ~isnumeric(val) || ~isscalar(val) || val < 0 || mod(val, 1) ~= 0
+        error('validate_config:badParam', ...
+            '%s must be a non-negative integer, got %s.', name, mat2str(val));
     end
 end
 

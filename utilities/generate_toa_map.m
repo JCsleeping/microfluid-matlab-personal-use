@@ -138,7 +138,7 @@ function generate_toa_map(mat_path, pixel_size_um, label, output_dir, pages, tif
     else
         % Rebuild from last frame
         fd_idx = num_frames;
-        rgb_fd = load_frame(fd_idx, frame_index);
+        rgb_fd = load_frame(fd_idx, frame_index, config);
         [rgb_fd_rot, ~, crop_rect] = rotate_and_crop(rgb_fd, config);
         config.preprocess.saved_crop_rect = crop_rect;
         chip_mask = [];
@@ -184,7 +184,7 @@ function generate_toa_map(mat_path, pixel_size_um, label, output_dir, pages, tif
     if isempty(locked_threshold)
         % Compute from frame 1
         fprintf('  Computing threshold from frame 1...\n');
-        rgb1 = load_frame(1, frame_index);
+        rgb1 = load_frame(1, frame_index, config);
         [rgb1_rot, ~, ~] = rotate_and_crop(rgb1, config);
         [rgb1_corr, ~] = correct_illumination(rgb1_rot, ...
             config.illumination.method, config.illumination, false);
@@ -220,7 +220,7 @@ function generate_toa_map(mat_path, pixel_size_um, label, output_dir, pages, tif
 
     for t = 1:num_frames
         % Load and preprocess
-        rgb_t = load_frame(t, frame_index);
+        rgb_t = load_frame(t, frame_index, config_locked);
         [rgb_rot_t, ~, ~] = rotate_and_crop(rgb_t, config_locked);
         [rgb_corr_t, ~] = correct_illumination(rgb_rot_t, ...
             config_locked.illumination.method, config_locked.illumination, false);
@@ -555,6 +555,13 @@ function generate_toa_map(mat_path, pixel_size_um, label, output_dir, pages, tif
             rgb_soil = imread(tmp_s, soil_page);
             delete(tmp_s);
         end
+        if isa(rgb_soil, 'uint16')
+            rgb_soil = im2uint8(rgb_soil);
+        end
+        if size(rgb_soil, 3) == 1
+            rgb_soil = repmat(rgb_soil, [1 1 3]);
+        end
+        rgb_soil = prepare_rgb_input_encoding(rgb_soil, config_locked);
         [rgb_soil_rot, ~, ~] = rotate_and_crop(rgb_soil, config_locked);
         [rgb_soil_corr, ~] = correct_illumination(rgb_soil_rot, ...
             config_locked.illumination.method, config_locked.illumination, false);

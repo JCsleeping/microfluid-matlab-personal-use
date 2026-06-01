@@ -54,6 +54,7 @@ function config = config_pipeline(varargin)
     config.input_mode = 'multipage_tif';
     config.image_dir = '';
     config.image_files = {};
+    config.input.is_linear_rgb = false;  % 0 = sRGB/default, 1 = Linear RGB input
 
     % --- Output path ---
     default_output_name = ['output_' datestr(now, 'yyyymmdd_HHMMSS')];
@@ -86,12 +87,24 @@ function config = config_pipeline(varargin)
     config.architecture.ganglia_rich.num_blobs_min = 25;
     config.architecture.ganglia_rich.a_i_2D_min = 6.0e4;
 
+    % --- Per-blob geometry computation ---
+    % Default stable mode avoids per-blob full-frame hole classification.
+    % Set geometry.mode='roi' for reusable ROI-local domain-aware hole
+    % classification after synthetic validation.
+    config.geometry.mode = 'core_only';
+    config.geometry.object_connectivity = 8;
+    config.geometry.schema_version = 'geometry_v2_core_only';
+    config.geometry.include_heavy_shape_props = true;
+    config.geometry.roi_pad = 1;
+    config.geometry.max_roi_area_fraction = 0.25;
+    config.geometry.max_roi_pixels = 2e6;
+
     % --- Mass transfer model ---
     config.physical.sherwood_correlation = 'powers';
 
     % --- Visualization ---
-    config.visualization.show_figures = true;
-    config.visualization.save_figures = true;
+    config.visualization.show_figures = false;
+    config.visualization.save_figures = false;
     config.visualization.figure_format = 'png';
     config.visualization.colormap_blobs = 'jet';
 
@@ -109,7 +122,7 @@ function config = config_pipeline(varargin)
     config.output.save_heartbeat = true;
     config.output.heartbeat_frame_interval = 10;
     config.output.heartbeat_time_interval_sec = 30;
-    config.output.save_blob_detail = false;
+    config.output.save_blob_detail = true;
     config.output.blob_detail_chunk_size = 100;
     config.output.blob_detail_save_format = 'v7';
     config.output.blob_detail_allow_format_fallback = true;
