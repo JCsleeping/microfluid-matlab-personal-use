@@ -321,10 +321,20 @@ After selecting a threshold, edit the config:
 }
 ```
 
-Then run production morphology:
+The current A1 1-BO 6 uL config is already locked to that pilot-reviewed
+`lab_a` threshold. Change it only after rerunning `segpilot` for a new ROI,
+dataset, correction method, or score-mode decision.
+
+Then run pilot morphology validation:
 
 ```powershell
 python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode pilot --steps segmorph validate
+```
+
+After the pilot passes, run full morphology validation:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps segmorph validate
 ```
 
 Production C2 outputs are written separately:

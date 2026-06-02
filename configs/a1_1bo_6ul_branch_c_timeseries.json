@@ -47,7 +47,7 @@
     "enabled": true,
     "score_modes": ["lab_a", "excess_red", "chroma", "normalized_red"],
     "production_score_mode": "lab_a",
-    "locked_threshold": null,
+    "locked_threshold": 13.1720056533813,
     "threshold_source": "pilot_locked",
     "threshold_percentiles": [90, 92.5, 95, 97.5, 99],
     "threshold_sample_frame_stride": 1,

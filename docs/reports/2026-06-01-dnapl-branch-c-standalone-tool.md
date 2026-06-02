@@ -223,6 +223,53 @@ excess_red pct 92.5:
 These are pilot diagnostics only. A production `segmorph` run must wait until a
 score mode and locked threshold are selected from overlay review.
 
+Locked C2 pilot morphology candidate:
+
+```text
+production_score_mode = lab_a
+locked_threshold = 13.1720056533813
+threshold_source = pilot_locked
+```
+
+Pilot morphology validation:
+
+```text
+status = pass
+red_mask_timeseries rows = 102
+red_blob_summary rows = 102
+NaNs = 0
+sample overlay PNGs = 12
+red_mask_area_fraction median = 0.072146
+full_napl median red_mask_area_fraction = 0.387557
+residual median red_mask_area_fraction = 0.072128
+```
+
+The full-NAPL role still contains a low red-mask row because the role is a
+file-level label and one accepted page spans a transition. This remains a label
+provenance warning, not a C2 morphology failure.
+
+Full 3585-page C2 morphology validation:
+
+```text
+status = pass
+red_mask_timeseries rows = 3585
+red_blob_summary rows = 3585
+NaNs = 0
+sample overlay PNGs = 12
+red_mask_area_fraction median = 0.071369
+full_napl median red_mask_area_fraction = 0.386689
+residual median red_mask_area_fraction = 0.071349
+num_blobs median = 601
+```
+
+Full C2 outputs:
+
+```text
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585\red_mask_timeseries.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585\red_blob_summary_timeseries.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585\segmentation_manifest.json
+```
+
 ## Usage Notes
 
 For a new ROI, rerun at least:
