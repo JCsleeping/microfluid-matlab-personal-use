@@ -90,6 +90,20 @@ The joiner writes `frame_timeline_manifest.csv`, `timeline_join_summary.json`,
 and `_realtime.csv` copies of the requested CSVs. Original Branch C/C2 CSVs are
 not modified.
 
+After realtime joining, compute residual trapping proxy metrics from Branch C
+and C2 segmentation outputs:
+
+```powershell
+python tools\residual\compute_residual_trapping_metrics.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585
+```
+
+This writes `residual_trapping_timeseries.csv`,
+`residual_trapping_summary.csv`, and `residual_trapping_summary.json`. These
+outputs are operational residual trapping proxies. They combine
+`S_NAPL_color`, endpoint sensitivity, red-mask area fraction, blob morphology,
+and x-zone metrics. They are not physical trapped saturation until the endpoint
+and pore-volume calibration gates are complete.
+
 `manifest.time_step_s` remains available only for explicit diagnostic sequence
 axes. Do not use it as a substitute for reconstructed acquisition time.
 
@@ -362,6 +376,38 @@ the MATLAB stage stops and tells you to run/review `segpilot` first.
 Rows labeled `full_napl` are file-level labels. If a file spans a transition,
 some later pages can be below the full-NAPL threshold; the summary records this
 as a warning rather than a hard failure.
+
+## Residual Trapping Proxy Outputs
+
+The residual postprocess reads realtime Branch C/C2 CSVs and writes a derived
+table without changing the source files:
+
+```text
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585\residual_trapping_timeseries.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585\residual_trapping_summary.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585\residual_trapping_summary.json
+```
+
+Key definitions:
+
+```text
+S_color_retention_ratio_A = S_NAPL_color_A / full-role median S_NAPL_color_A
+red_mask_retention_ratio  = red_mask_area_fraction / full-role median red_mask_area_fraction
+num_blobs_per_red_area_fraction = num_blobs / red_mask_area_fraction
+```
+
+The structure proxy mirrors the available parts of the MATLAB residual
+architecture convention:
+
+```text
+pool-like    = largest_component_fraction >= 0.50 and num_blobs <= 10
+ganglia-rich = largest_component_fraction <= 0.30 and num_blobs >= 25
+mixed        = otherwise
+```
+
+Because this CSV workflow does not include `a_i_2D`, the structure label should
+be treated as a morphology proxy rather than the full residual architecture
+classification.
 
 ## MATLAB Compatibility
 

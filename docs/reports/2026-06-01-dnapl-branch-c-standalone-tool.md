@@ -341,6 +341,64 @@ outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_mor
 outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585\segmentation_manifest.json
 ```
 
+## 2026-06-02 Residual Trapping Proxy Postprocess
+
+Added a standalone residual postprocess:
+
+```text
+tools/residual/compute_residual_trapping_metrics.py
+```
+
+It reads realtime Branch C/C2 CSVs, joins by `label`, and writes derived
+residual trapping proxy metrics without modifying the source files.
+
+Command used for the full 3585-page run:
+
+```powershell
+python tools\residual\compute_residual_trapping_metrics.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585
+```
+
+Outputs:
+
+```text
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585\residual_trapping_timeseries.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585\residual_trapping_summary.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585\residual_trapping_summary.json
+```
+
+Full-run result:
+
+```text
+status = pass
+rows = 3585
+full rows = 498
+residual rows = 3087
+missing mask labels = 0
+A residual median S_NAPL_color = 0.154290
+B residual median S_NAPL_color = 0.152606
+residual median red_mask_area_fraction = 0.071349
+residual median red_mask_retention_ratio = 0.184512
+residual median num_blobs = 602
+residual median largest_component_fraction = 0.027627
+residual median ganglia_area_fraction = 0.906160
+final residual label = residual_02_water_3s_42_p063
+final residual S_NAPL_color_A = 0.153737
+final residual red_mask_area_fraction = 0.071089
+final residual structure_proxy = ganglia-rich
+```
+
+The structure proxy uses only fields available in the C2 CSV:
+
+```text
+pool-like    = largest_component_fraction >= 0.50 and num_blobs <= 10
+ganglia-rich = largest_component_fraction <= 0.30 and num_blobs >= 25
+mixed        = otherwise
+```
+
+This mirrors the available parts of `analysis/classify_residual_architecture.m`
+but does not use `a_i_2D`, so it should not be interpreted as the full MATLAB
+residual architecture classification.
+
 ## Usage Notes
 
 For a new ROI, rerun at least:
