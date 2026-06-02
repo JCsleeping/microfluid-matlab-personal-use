@@ -442,7 +442,7 @@ Command used:
 python tools\analysis_package\build_branch_c_analysis_package.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --residual-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585 --run-label "A1 1-BO 6uL full3585 Branch C/C2"
 ```
 
-Package result:
+Initial package result before the 2026-06-03 style/parameter expansion:
 
 ```text
 status = pass
@@ -473,6 +473,9 @@ Figure set:
 05_residual_trapping_summary
 06_interface_contact_metrics
 ```
+
+This figure set is superseded by the 11-figure analysis package documented in
+the 2026-06-03 sections below.
 
 ## 2026-06-03 Analysis Package Style and Parameter Expansion
 
@@ -510,6 +513,122 @@ all-sequence and residual-role first outlet-zone ge_0p2/ge_0p5 timing proxies
 These outputs remain operational Branch C/C2 descriptors. They are derived from
 the existing realtime CSVs and residual postprocess summary, and do not change
 the source CSVs or claim endpoint-validated physical Sn.
+
+## 2026-06-03 Legacy Research Parameter Alignment
+
+Extended the analysis-package builder so the standalone Branch C/C2 pipeline
+can generate the parameters that are currently computable from existing
+realtime, segmentation, and residual-proxy CSVs, while explicitly marking the
+quantities that still require physical metadata or mask-stack inputs.
+
+New output tables:
+
+```text
+analysis_timeseries_derived.csv
+branch_c_legacy_plot_timeseries.csv
+analysis_qc_summary.csv
+research_parameter_alignment.csv
+```
+
+Policy recorded in provenance:
+
+```text
+analysis_policy_version = branch_c_proxy_alignment_v1
+```
+
+The derived time-series table now includes:
+
+```text
+Branch C S_NAPL_color A/B and endpoint sensitivity
+S_color_norm / Sn / SnNorm proxy columns
+DissolutionRate_* proxy columns
+full/residual stage labels and near-depleted flags
+red_mask_area_fraction and retention proxies
+blob count, size, largest-component, circularity, and Req proxies
+droplet/column/cluster area and count fractions
+dnapl_water_length_px / dnapl_water_length_m
+dnapl_solid_length_px / dnapl_solid_length_m
+InterfaceArea as a legacy alias of dnapl_water_length_px
+solid_contact_fraction and a_i_2D proxy
+x-zone inlet/mid/outlet and front/extent proxies
+```
+
+The legacy plotting adapter is intentionally guarded. It exposes the old column
+names needed by scripts such as `visualization/plot_timeseries.py`, but also
+writes:
+
+```text
+Sn_semantics = operational_S_NAPL_color_proxy
+InterfaceArea_semantics = legacy_alias_of_dnapl_water_length_px
+AdapterWarning = not_endpoint_validated_physical_Sn
+```
+
+Missing physical quantities are not inferred. `analysis_qc_summary.csv` and
+`research_parameter_alignment.csv` mark pore volume, pixel size, mass data,
+true fingering/TOA mask-stack metrics, and other unavailable physical outputs
+as `missing_metadata` or `not_computable`.
+
+The legacy plotting adapter is plot-only and guarded; it does not zero-fill
+missing numeric values. Unavailable physical or per-blob fields remain `NaN`,
+and QC records them under:
+
+```text
+legacy_adapter_nonfinite_required_value_count
+```
+
+The alignment registry was expanded to cover physical metadata from
+`visualization/recover_experiment_metadata.py`, window/mass-rate names from
+rate-correlation utilities, per-blob morphology fields such as aspect ratio,
+solidity, Euler number, AreaGini, size-distribution slope, and shape entropy,
+plus true fingering/TOA fields that require a frame-level mask stack.
+
+The analysis package figure set is now:
+
+```text
+01_S_NAPL_color_A_B_vs_realtime
+02_residual_zoom
+03_red_mask_area_and_blob_morphology
+04_xzone_S_NAPL_color
+05_residual_trapping_summary
+06_interface_contact_metrics
+07_endpoint_sensitivity_and_x_extent
+08_S_color_norm_and_rate
+09_legacy_morphology_metrics
+10_proxy_architecture_stage
+11_qc_alignment_summary
+```
+
+Verification after implementation:
+
+```text
+python -m py_compile tools\analysis_package\build_branch_c_analysis_package.py
+python -m pytest tests\test_branch_c_analysis_package.py -q
+python -m pytest tests\test_branch_c_analysis_package.py tests\test_branch_c_timeseries_tool.py tests\test_residual_trapping_metrics.py -q
+```
+
+Result:
+
+```text
+1 passed
+5 passed
+```
+
+Full3585 compatibility checks after regenerating the package:
+
+```powershell
+python visualization\plot_timeseries.py "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585" --csv "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585\branch_c_legacy_plot_timeseries.csv" --figures-dir "C:\tmp\branch_c_legacy_plot_timeseries_verify" --dpi 120
+python visualization\plot_rate_correlations.py "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585" --csv "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585\branch_c_legacy_plot_timeseries.csv" --figures-dir "C:\tmp\branch_c_legacy_rate_verify" --dpi 120
+```
+
+Result:
+
+```text
+plot_timeseries.py read 3585 rows and completed
+plot_rate_correlations.py read 3585 rows and completed
+legacy_plot_timeseries_ready = true
+legacy_adapter_nonfinite_required_value_count = 0
+research_parameter_alignment rows = 62
+```
 
 ## Usage Notes
 

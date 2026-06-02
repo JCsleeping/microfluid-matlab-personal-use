@@ -30,9 +30,13 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert (out_dir / "analysis_report.md").is_file()
     assert (out_dir / "run_commands.md").is_file()
     assert (out_dir / "analysis_parameter_summary.csv").is_file()
+    assert (out_dir / "analysis_timeseries_derived.csv").is_file()
+    assert (out_dir / "branch_c_legacy_plot_timeseries.csv").is_file()
+    assert (out_dir / "analysis_qc_summary.csv").is_file()
+    assert (out_dir / "research_parameter_alignment.csv").is_file()
     assert (out_dir / "analysis_package_provenance.json").is_file()
     figures = provenance["outputs"]["figures"]
-    assert len(figures) == 7
+    assert len(figures) == 11
     for outputs in figures.values():
         for path_value in outputs.values():
             path = Path(path_value)
@@ -46,9 +50,59 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     saved = json.loads((out_dir / "analysis_package_provenance.json").read_text(encoding="utf-8"))
     assert saved["row_counts"]["primary_rows"] == 4
     assert saved["figure_style"] == "nature_timeseries_v1"
+    assert saved["analysis_policy_version"] == "branch_c_proxy_alignment_v1"
     assert saved["outputs"]["parameter_summary_csv"].endswith("analysis_parameter_summary.csv")
+    assert saved["outputs"]["derived_timeseries_csv"].endswith("analysis_timeseries_derived.csv")
+    assert saved["outputs"]["legacy_plot_timeseries_csv"].endswith("branch_c_legacy_plot_timeseries.csv")
+    assert saved["outputs"]["qc_summary_csv"].endswith("analysis_qc_summary.csv")
+    assert saved["outputs"]["research_parameter_alignment_csv"].endswith("research_parameter_alignment.csv")
     assert saved["derived_parameters"]["run.total_rows"] == "4"
     assert saved["derived_parameters"]["front_proxy.residual_first_outlet_zone_ge_0p2_since_residual_start_min"] == "0"
+
+    derived_rows = read_csv(out_dir / "analysis_timeseries_derived.csv")
+    assert len(derived_rows) == 4
+    assert derived_rows[0]["S_color_norm"] == "0.974358974359"
+    assert derived_rows[-1]["DissolutionStage_proxy"] == "active_removal"
+    assert derived_rows[-1]["ValidStructure_proxy"] == "true"
+    assert "DissolutionRate_time_lr_per_min" in derived_rows[0]
+    assert "MaxBlobFlowFrac_proxy" in derived_rows[0]
+
+    legacy_rows = read_csv(out_dir / "branch_c_legacy_plot_timeseries.csv")
+    assert len(legacy_rows) == 4
+    assert legacy_rows[0]["Sn_semantics"] == "operational_S_NAPL_color_proxy"
+    assert legacy_rows[0]["AdapterWarning"] == "not_endpoint_validated_physical_Sn"
+    assert legacy_rows[0]["MeanCircularity"] == "NaN"
+    for column in [
+        "Sn",
+        "SnNorm",
+        "DissolutionRate_per_min",
+        "ValidStructure",
+        "DissolutionStage",
+        "InterfaceArea",
+        "a_i_2D",
+        "MaxBlobFlowFrac",
+    ]:
+        assert column in legacy_rows[0]
+
+    qc_rows = read_csv(out_dir / "analysis_qc_summary.csv")
+    qc = {row["metric"]: row["value"] for row in qc_rows}
+    assert qc["legacy_adapter_schema_ready"] == "true"
+    assert qc["legacy_plot_timeseries_ready"] == "false"
+    assert qc["legacy_adapter_nonfinite_required_value_count"] == "28"
+    assert qc["pv_ready"] == "false"
+    assert qc["pixel_size_ready"] == "false"
+    assert qc["true_fingering_ready"] == "false"
+
+    alignment_rows = read_csv(out_dir / "research_parameter_alignment.csv")
+    alignment = {row["parameter"]: row for row in alignment_rows}
+    assert alignment["Sn"]["status"] == "aligned_proxy"
+    assert alignment["DissolutionRate_per_min"]["status"] == "aligned_proxy"
+    assert alignment["PV"]["status"] == "missing_metadata"
+    assert alignment["TOA"]["status"] == "not_computable"
+    assert alignment["pixel_size_um"]["status"] == "missing_metadata"
+    assert alignment["AreaGini"]["status"] == "not_computable"
+    assert alignment["DissolutionRate_mass_kg_per_s"]["status"] == "missing_metadata"
+    assert alignment["true_fingering"]["status"] == "not_computable"
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -56,6 +110,11 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 def base_rows() -> list[dict[str, object]]:

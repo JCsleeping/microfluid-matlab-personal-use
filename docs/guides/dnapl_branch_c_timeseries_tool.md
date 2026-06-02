@@ -440,6 +440,10 @@ The package writes:
 analysis_package_full3585\analysis_report.md
 analysis_package_full3585\run_commands.md
 analysis_package_full3585\analysis_parameter_summary.csv
+analysis_package_full3585\analysis_timeseries_derived.csv
+analysis_package_full3585\branch_c_legacy_plot_timeseries.csv
+analysis_package_full3585\analysis_qc_summary.csv
+analysis_package_full3585\research_parameter_alignment.csv
 analysis_package_full3585\analysis_package_provenance.json
 analysis_package_full3585\figures\01_S_NAPL_color_A_B_vs_realtime.png/svg
 analysis_package_full3585\figures\02_residual_zoom.png/svg
@@ -448,12 +452,17 @@ analysis_package_full3585\figures\04_xzone_S_NAPL_color.png/svg
 analysis_package_full3585\figures\05_residual_trapping_summary.png/svg
 analysis_package_full3585\figures\06_interface_contact_metrics.png/svg
 analysis_package_full3585\figures\07_endpoint_sensitivity_and_x_extent.png/svg
+analysis_package_full3585\figures\08_S_color_norm_and_rate.png/svg
+analysis_package_full3585\figures\09_legacy_morphology_metrics.png/svg
+analysis_package_full3585\figures\10_proxy_architecture_stage.png/svg
+analysis_package_full3585\figures\11_qc_alignment_summary.png/svg
 ```
 
 The analysis package is read-only with respect to the source Branch C/C2 CSVs.
 Its provenance JSON records input paths, output files, row counts, unmatched
-label counts, current Git SHA, figure style, summary metrics, and derived
-parameters. Figures use the same compact Nature-style conventions as
+label counts, current Git SHA, figure style, summary metrics, derived
+parameters, and `analysis_policy_version =
+branch_c_proxy_alignment_v1`. Figures use the same compact Nature-style conventions as
 `visualization/plot_timeseries.py`: Wong colors, white-face markers, hidden
 top/right spines, light major grid, 600 dpi PNG output, and editable SVG text.
 
@@ -465,6 +474,67 @@ Branch C/C2 CSVs; they do not upgrade `S_NAPL_color` to endpoint-validated
 physical Sn. The package records both all-sequence outlet-zone first-active
 times and residual-role-only first-active times; the all-sequence value can be
 0 min when the full-NAPL phase is already active at the outlet.
+
+`analysis_timeseries_derived.csv` is the main researcher-facing derived table.
+It joins Branch C color-index saturation, endpoint A/B sensitivity, C2 red-mask
+occupancy, blob morphology, interface/contact metrics, x-zone proxies, rate
+proxies, and stage/architecture proxy labels by `label`. The compatibility
+columns `Sn`, `SnNorm`, `DissolutionRate_per_min`, and related legacy names are
+operational `S_NAPL_color` proxies, not endpoint-validated physical saturation.
+
+`branch_c_legacy_plot_timeseries.csv` is a guarded adapter for the older
+`visualization/plot_timeseries.py` style scripts. It includes the required
+legacy column names plus semantic guard columns:
+
+```text
+Sn_semantics = operational_S_NAPL_color_proxy
+InterfaceArea_semantics = legacy_alias_of_dnapl_water_length_px
+AdapterWarning = not_endpoint_validated_physical_Sn
+```
+
+Use this adapter only for legacy plotting compatibility. Scientific reporting
+should cite the Branch C/C2 proxy names unless the masked endpoint and
+pore-volume calibration gates have passed.
+
+The adapter does not zero-fill missing numeric fields. If a physical or
+per-blob statistic is not available from the aggregate Branch C/C2 CSV inputs,
+the value remains `NaN` and `analysis_qc_summary.csv` counts it under
+`legacy_adapter_nonfinite_required_value_count`. This prevents missing
+metadata from becoming a real zero in architecture, rate, or mass-transfer
+plots.
+
+`analysis_qc_summary.csv` records whether each downstream contract is ready.
+The current standalone Branch C/C2 package can be ready for legacy time-series
+plotting while still reporting:
+
+```text
+pixel_size_ready = false
+pv_ready = false
+mass_ready = false
+true_fingering_ready = false
+toa_ready = false
+```
+
+Those fields stay false until the required physical metadata or mask-stack
+inputs are supplied. Missing physical quantities are written as `NaN`,
+`missing_metadata`, or `not_computable`; they are not guessed from filenames or
+proxy curves.
+
+`research_parameter_alignment.csv` maps legacy MATLAB/visualization parameter
+names to one of these statuses:
+
+```text
+aligned_proxy
+aligned_alias
+derived_proxy
+partial_proxy
+missing_metadata
+not_computable
+```
+
+This table is the handoff checklist for deciding what can be used immediately
+and what still needs calibration metadata, pore volume, mass data, pixel size,
+solid/core masks, or a full mask stack.
 
 ## MATLAB Compatibility
 

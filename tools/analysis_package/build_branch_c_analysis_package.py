@@ -32,6 +32,7 @@ WONG = {
 }
 
 FIGURE_STYLE = "nature_timeseries_v1"
+ANALYSIS_POLICY_VERSION = "branch_c_proxy_alignment_v1"
 MM_PER_INCH = 25.4
 WIDE_SIZE = (180 / MM_PER_INCH, 82 / MM_PER_INCH)
 TALL_SIZE = (180 / MM_PER_INCH, 132 / MM_PER_INCH)
@@ -132,6 +133,8 @@ def rows_by_role(rows: list[dict[str, str]], role: str) -> list[dict[str, str]]:
 
 
 def format_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, str):
         return value
     try:
@@ -437,7 +440,148 @@ def plot_sensitivity_extent(timeline: dict[str, list[dict[str, str]]], figures_d
     return save_figure(fig, figures_dir, "07_endpoint_sensitivity_and_x_extent")
 
 
-def create_figures(data: dict[str, Any], out_dir: Path) -> dict[str, dict[str, str]]:
+def derived_series(rows: list[dict[str, object]], column: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        try:
+            value = float(row.get(column, math.nan))
+        except (TypeError, ValueError):
+            value = math.nan
+        values.append(value if math.isfinite(value) else math.nan)
+    return values
+
+
+def plot_s_norm_rate(derived_rows: list[dict[str, object]], figures_dir: Path) -> dict[str, str]:
+    fig, ax = plt.subplots(figsize=WIDE_SIZE)
+    x = derived_series(derived_rows, "Time_min")
+    ax.plot(
+        x,
+        derived_series(derived_rows, "S_color_norm"),
+        color=WONG["blue"],
+        linewidth=LINEWIDTH,
+        marker=MARKER,
+        markersize=MARKER_SIZE,
+        markerfacecolor="white",
+        markeredgecolor=WONG["blue"],
+        markevery=markevery([{} for _ in derived_rows]),
+        label=r"$S_{\mathrm{color,norm}}$",
+    )
+    ax2 = ax.twinx()
+    ax2.plot(
+        x,
+        derived_series(derived_rows, "DissolutionRate_time_lr_per_min"),
+        color=WONG["vermillion"],
+        linewidth=1.2,
+        marker=MARKER,
+        markersize=MARKER_SIZE,
+        markerfacecolor="white",
+        markeredgecolor=WONG["vermillion"],
+        markevery=markevery([{} for _ in derived_rows]),
+        label=r"$-dS_{\mathrm{color,norm}}/dt$",
+    )
+    ax.set_xlabel("Time (min)")
+    ax.set_ylabel(r"$S_{\mathrm{color,norm}}$")
+    ax2.set_ylabel("proxy removal rate (min$^{-1}$)")
+    lines, labels = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines + lines2, labels + labels2, frameon=False, ncols=2)
+    style_axes(ax)
+    style_axes(ax2, keep_right=True, grid_axis="y")
+    return save_figure(fig, figures_dir, "08_S_color_norm_and_rate")
+
+
+def plot_legacy_morphology(derived_rows: list[dict[str, object]], figures_dir: Path) -> dict[str, str]:
+    fig, axes = plt.subplots(3, 1, figsize=TALL_SIZE, sharex=True)
+    x = derived_series(derived_rows, "Time_min")
+    specs = [
+        (axes[0], "NumBlobs", "number of blobs", WONG["bluish_green"]),
+        (axes[1], "ReqMedian", "median equivalent radius (px)", WONG["orange"]),
+        (axes[2], "MaxBlobFrac", "largest blob fraction", WONG["reddish_purple"]),
+    ]
+    for ax, column, ylabel, color in specs:
+        ax.plot(
+            x,
+            derived_series(derived_rows, column),
+            color=color,
+            linewidth=1.2,
+            marker=MARKER,
+            markersize=MARKER_SIZE,
+            markerfacecolor="white",
+            markeredgecolor=color,
+            markevery=markevery([{} for _ in derived_rows]),
+        )
+        ax.set_ylabel(ylabel)
+        style_axes(ax)
+    axes[-1].set_xlabel("Time (min)")
+    return save_figure(fig, figures_dir, "09_legacy_morphology_metrics")
+
+
+def plot_proxy_architecture_stage(derived_rows: list[dict[str, object]], figures_dir: Path) -> dict[str, str]:
+    fig, axes = plt.subplots(2, 1, figsize=(180 / MM_PER_INCH, 104 / MM_PER_INCH), sharex=True)
+    x = derived_series(derived_rows, "Time_min")
+    stage_codes = {"near_depleted": 0, "tail": 1, "active_removal": 2, "induction_or_stable": 3}
+    arch_codes = {"pool-like": 0, "mixed": 1, "ganglia-rich": 2}
+    axes[0].plot(
+        x,
+        [stage_codes.get(str(row.get("Stage", "")), math.nan) for row in derived_rows],
+        color=WONG["blue"],
+        linewidth=1.2,
+        marker=MARKER,
+        markersize=MARKER_SIZE,
+        markerfacecolor="white",
+        markeredgecolor=WONG["blue"],
+        markevery=markevery([{} for _ in derived_rows]),
+    )
+    axes[0].set_yticks(list(stage_codes.values()), list(stage_codes.keys()))
+    axes[0].set_ylabel("proxy stage")
+    axes[1].plot(
+        x,
+        [arch_codes.get(str(row.get("ArchitectureType_proxy", "")), math.nan) for row in derived_rows],
+        color=WONG["orange"],
+        linewidth=1.2,
+        marker=MARKER,
+        markersize=MARKER_SIZE,
+        markerfacecolor="white",
+        markeredgecolor=WONG["orange"],
+        markevery=markevery([{} for _ in derived_rows]),
+    )
+    axes[1].set_yticks(list(arch_codes.values()), list(arch_codes.keys()))
+    axes[1].set_ylabel("architecture proxy")
+    axes[1].set_xlabel("Time (min)")
+    for ax in axes:
+        style_axes(ax)
+    return save_figure(fig, figures_dir, "10_proxy_architecture_stage")
+
+
+def truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def plot_qc_alignment_summary(qc_rows: list[dict[str, object]], figures_dir: Path) -> dict[str, str]:
+    readiness = [
+        row
+        for row in qc_rows
+        if str(row.get("metric", "")).endswith("_ready")
+        or row.get("metric") in {"legacy_plot_timeseries_ready", "rate_correlations_ready", "multi_experiment_ready", "architecture_ready"}
+    ]
+    labels = [str(row["metric"]).replace("_ready", "") for row in readiness]
+    values = [1.0 if truthy(row.get("value")) else 0.0 for row in readiness]
+    colors = [WONG["bluish_green"] if value else WONG["gray"] for value in values]
+    fig, ax = plt.subplots(figsize=(180 / MM_PER_INCH, 70 / MM_PER_INCH))
+    ax.bar(range(len(labels)), values, color=colors)
+    ax.set_xticks(range(len(labels)), labels, rotation=35, ha="right")
+    ax.set_ylabel("ready")
+    ax.set_ylim(0, 1.15)
+    style_axes(ax, grid_axis="y")
+    return save_figure(fig, figures_dir, "11_qc_alignment_summary")
+
+
+def create_figures(
+    data: dict[str, Any],
+    out_dir: Path,
+    derived_rows: list[dict[str, object]],
+    qc_rows: list[dict[str, object]],
+) -> dict[str, dict[str, str]]:
     configure_nature_style()
     figures_dir = out_dir / "figures"
     timeline = data["timeline"]
@@ -451,6 +595,10 @@ def create_figures(data: dict[str, Any], out_dir: Path) -> dict[str, dict[str, s
         "residual_trapping_summary": plot_residual_summary(summary_json, figures_dir),
         "interface_contact_metrics": plot_interface_metrics(timeline, figures_dir),
         "endpoint_sensitivity_and_x_extent": plot_sensitivity_extent(timeline, figures_dir),
+        "S_color_norm_and_rate": plot_s_norm_rate(derived_rows, figures_dir),
+        "legacy_morphology_metrics": plot_legacy_morphology(derived_rows, figures_dir),
+        "proxy_architecture_stage": plot_proxy_architecture_stage(derived_rows, figures_dir),
+        "qc_alignment_summary": plot_qc_alignment_summary(qc_rows, figures_dir),
     }
 
 
@@ -616,6 +764,717 @@ def parameter_rows_to_dict(rows: list[dict[str, str]]) -> dict[str, str]:
     return {f"{row['section']}.{row['parameter']}": row["value"] for row in rows}
 
 
+def row_by_label(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    return {row.get("label", ""): row for row in rows if row.get("label", "")}
+
+
+def first_finite_positive(rows: list[dict[str, str]], column: str) -> float:
+    for row in rows:
+        value = number(row, column)
+        if math.isfinite(value) and value > 0:
+            return value
+    return math.nan
+
+
+def normalization_baseline(rows: list[dict[str, str]], column: str) -> float:
+    full_rows = rows_by_role(rows, "full_napl")
+    full_values = finite_values(full_rows, column)
+    positive_full = [value for value in full_values if value > 0]
+    if positive_full:
+        return median(positive_full)
+    return first_finite_positive(rows, column)
+
+
+def nearest_rate(x_values: list[float], y_values: list[float]) -> list[float]:
+    rates: list[float] = []
+    n = len(y_values)
+    for idx in range(n):
+        x0 = x_values[idx]
+        y0 = y_values[idx]
+        if not math.isfinite(x0) or not math.isfinite(y0):
+            rates.append(math.nan)
+            continue
+        left = next(
+            (
+                j
+                for j in range(idx - 1, -1, -1)
+                if math.isfinite(x_values[j]) and math.isfinite(y_values[j]) and x_values[j] != x0
+            ),
+            None,
+        )
+        right = next(
+            (
+                j
+                for j in range(idx + 1, n)
+                if math.isfinite(x_values[j]) and math.isfinite(y_values[j]) and x_values[j] != x0
+            ),
+            None,
+        )
+        if left is not None and right is not None:
+            dx = x_values[right] - x_values[left]
+            dy = y_values[right] - y_values[left]
+        elif right is not None:
+            dx = x_values[right] - x0
+            dy = y_values[right] - y0
+        elif left is not None:
+            dx = x0 - x_values[left]
+            dy = y0 - y_values[left]
+        else:
+            rates.append(math.nan)
+            continue
+        rates.append(max(-(dy / dx), 0.0) if dx else math.nan)
+    return rates
+
+
+def cumulative_min(values: list[float]) -> list[float]:
+    out: list[float] = []
+    current = math.inf
+    for value in values:
+        if math.isfinite(value):
+            current = min(current, value)
+            out.append(current)
+        else:
+            out.append(math.nan)
+    return out
+
+
+def stage_proxy(sn_norm: float) -> str:
+    if not math.isfinite(sn_norm) or sn_norm < 0.05:
+        return "near_depleted"
+    if sn_norm < 0.10:
+        return "tail"
+    if sn_norm < 0.95:
+        return "active_removal"
+    return "induction_or_stable"
+
+
+def text_value(row: dict[str, str], column: str, default: str = "") -> str:
+    value = row.get(column, default)
+    if value is None:
+        return default
+    text = str(value)
+    return default if text.lower() in {"", "nan", "none"} else text
+
+
+def finite_or_nan(row: dict[str, str], column: str) -> float:
+    return number(row, column)
+
+
+def finite_or_zero(row: dict[str, str], column: str) -> float:
+    value = number(row, column)
+    return value if math.isfinite(value) else 0.0
+
+
+def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
+    timeline = data["timeline"]
+    primary = timeline["primary"]
+    sensitivity_by_label = row_by_label(timeline["sensitivity"])
+    comparison_by_label = row_by_label(timeline["comparison"])
+    xzone_by_label = row_by_label(timeline["xzone"])
+    mask_by_label = row_by_label(timeline["mask"])
+    blob_by_label = row_by_label(timeline["blob"])
+    residual_by_label = row_by_label(data["residual"]["timeseries"])
+    baseline = normalization_baseline(primary, "S_NAPL_color")
+    if not math.isfinite(baseline) or baseline == 0:
+        baseline = 1.0
+
+    rows: list[dict[str, object]] = []
+    for index, primary_row in enumerate(primary, start=1):
+        label = text_value(primary_row, "label")
+        sensitivity = sensitivity_by_label.get(label, {})
+        comparison = comparison_by_label.get(label, {})
+        xzone = xzone_by_label.get(label, {})
+        mask = mask_by_label.get(label, {})
+        blob = blob_by_label.get(label, {})
+        residual = residual_by_label.get(label, {})
+
+        s_a = number(comparison, "S_NAPL_color_A")
+        if not math.isfinite(s_a):
+            s_a = number(primary_row, "S_NAPL_color")
+        s_b = number(comparison, "S_NAPL_color_B")
+        if not math.isfinite(s_b):
+            s_b = number(sensitivity, "S_NAPL_color")
+        s_norm = s_a / baseline if math.isfinite(s_a) else math.nan
+        num_blobs = finite_or_nan(blob, "num_blobs")
+        red_area = finite_or_nan(mask, "red_mask_area_fraction")
+        largest_component = finite_or_nan(blob, "largest_component_fraction")
+        max_blob_frac = number(blob, "max_blob_frac")
+        if not math.isfinite(max_blob_frac):
+            max_blob_frac = largest_component
+        valid_structure = (
+            math.isfinite(s_norm)
+            and s_norm >= 0.05
+            and math.isfinite(num_blobs)
+            and num_blobs >= 20
+            and math.isfinite(red_area)
+            and red_area > 0
+        )
+        stage = stage_proxy(s_norm)
+        pool_score = int(math.isfinite(max_blob_frac) and max_blob_frac >= 0.5) + int(math.isfinite(num_blobs) and num_blobs <= 10)
+        ganglia_score = int(math.isfinite(max_blob_frac) and max_blob_frac <= 0.3) + int(math.isfinite(num_blobs) and num_blobs >= 20)
+        if pool_score >= 2 and ganglia_score == 0:
+            architecture_type = "pool-like"
+        elif ganglia_score >= 2 and pool_score == 0:
+            architecture_type = "ganglia-rich"
+        else:
+            architecture_type = "mixed"
+        row = {
+            "FrameIndex": number(primary_row, "frame_index") or index,
+            "frame_index": number(primary_row, "frame_index") or index,
+            "label": label,
+            "role": text_value(primary_row, "role"),
+            "RealTime_s": finite_or_nan(primary_row, "RealTime_s"),
+            "Time_min": finite_or_nan(primary_row, "Time_min"),
+            "Interval_s": finite_or_nan(primary_row, "Interval_s"),
+            "TifFile": text_value(primary_row, "TifFile"),
+            "PageInTif": finite_or_nan(primary_row, "PageInTif"),
+            "S_NAPL_color_A": s_a,
+            "S_NAPL_color_B": s_b,
+            "S_NAPL_color_B_minus_A": number(comparison, "S_NAPL_color_B_minus_A"),
+            "abs_endpoint_sensitivity": number(comparison, "abs_endpoint_sensitivity"),
+            "Sn": s_a,
+            "SnNorm": s_norm,
+            "S_color_norm": s_norm,
+            "RemovalFraction_proxy": 1.0 - s_norm if math.isfinite(s_norm) else math.nan,
+            "RemovalFraction": 1.0 - s_norm if math.isfinite(s_norm) else math.nan,
+            "red_mask_area_px": finite_or_nan(mask, "red_mask_area_px"),
+            "domain_area_px": finite_or_nan(mask, "domain_area_px"),
+            "TotalArea": finite_or_nan(mask, "red_mask_area_px"),
+            "red_mask_area_fraction": red_area,
+            "red_mask_retention_ratio": number(residual, "red_mask_retention_ratio"),
+            "NumBlobs": num_blobs,
+            "MeanBlobSize": finite_or_nan(blob, "mean_blob_size"),
+            "MaxBlobFrac": max_blob_frac,
+            "MaxBlobFlowFrac_proxy": red_area * max_blob_frac if math.isfinite(red_area) and math.isfinite(max_blob_frac) else math.nan,
+            "ReqMedian": finite_or_nan(blob, "Req_median"),
+            "ReqMean": finite_or_nan(blob, "Req_mean"),
+            "ReqStd": finite_or_nan(blob, "Req_std"),
+            "MeanCircularity": finite_or_nan(blob, "mean_circularity"),
+            "fracDroplets": finite_or_nan(blob, "frac_droplets"),
+            "fracColumns": finite_or_nan(blob, "frac_columns"),
+            "fracClusters": finite_or_nan(blob, "frac_clusters"),
+            "areaFracDroplets": finite_or_nan(blob, "frac_droplets"),
+            "areaFracColumns": finite_or_nan(blob, "frac_columns"),
+            "areaFracClusters": finite_or_nan(blob, "frac_clusters"),
+            "areaFracDropletsValid": finite_or_nan(blob, "frac_droplets") if valid_structure else math.nan,
+            "areaFracColumnsValid": finite_or_nan(blob, "frac_columns") if valid_structure else math.nan,
+            "areaFracClustersValid": finite_or_nan(blob, "frac_clusters") if valid_structure else math.nan,
+            "countFracDroplets": finite_or_nan(blob, "frac_droplets"),
+            "countFracColumns": finite_or_nan(blob, "frac_columns"),
+            "countFracClusters": finite_or_nan(blob, "frac_clusters"),
+            "countFracDropletsValid": finite_or_nan(blob, "frac_droplets") if valid_structure else math.nan,
+            "countFracColumnsValid": finite_or_nan(blob, "frac_columns") if valid_structure else math.nan,
+            "countFracClustersValid": finite_or_nan(blob, "frac_clusters") if valid_structure else math.nan,
+            "areaFracDroplets_proxy": finite_or_nan(blob, "frac_droplets"),
+            "areaFracColumns_proxy": finite_or_nan(blob, "frac_columns"),
+            "areaFracClusters_proxy": finite_or_nan(blob, "frac_clusters"),
+            "dnapl_water_length_px": finite_or_nan(mask, "dnapl_water_length_px"),
+            "dnapl_solid_length_px": finite_or_nan(mask, "dnapl_solid_length_px"),
+            "dnapl_water_length_m": finite_or_nan(mask, "dnapl_water_length_m"),
+            "dnapl_solid_length_m": finite_or_nan(mask, "dnapl_solid_length_m"),
+            "InterfaceArea": finite_or_nan(mask, "InterfaceArea"),
+            "solid_contact_fraction": finite_or_nan(mask, "solid_contact_fraction"),
+            "a_i_2D_proxy": finite_or_nan(mask, "a_i_2D_proxy"),
+            "S_x_inlet": finite_or_nan(xzone, "S_x_inlet"),
+            "S_x_mid": finite_or_nan(xzone, "S_x_mid"),
+            "S_x_outlet": finite_or_nan(xzone, "S_x_outlet"),
+            "active_bin_fraction_ge_0p2": finite_or_nan(xzone, "active_bin_fraction_ge_0p2"),
+            "active_bin_fraction_ge_0p5": finite_or_nan(xzone, "active_bin_fraction_ge_0p5"),
+            "napl_extent_fraction_ge_0p2": finite_or_nan(xzone, "napl_extent_fraction_ge_0p2"),
+            "napl_extent_fraction_ge_0p5": finite_or_nan(xzone, "napl_extent_fraction_ge_0p5"),
+            "qc_status": text_value(primary_row, "qc_status"),
+            "TimelineStatus": text_value(primary_row, "TimelineStatus"),
+            "endpoint_status": text_value(primary_row, "endpoint_policy", text_value(primary_row, "reference_transfer_status")),
+            "endpoint_delta_A": finite_or_nan(primary_row, "endpoint_delta"),
+            "endpoint_delta_B": finite_or_nan(sensitivity, "endpoint_delta"),
+            "score_frame_A": finite_or_nan(primary_row, "score_frame"),
+            "score_frame_B": finite_or_nan(sensitivity, "score_frame"),
+            "score_water_ref_A": finite_or_nan(primary_row, "score_water_ref"),
+            "score_water_ref_B": finite_or_nan(sensitivity, "score_water_ref"),
+            "score_napl_ref_A": finite_or_nan(primary_row, "score_napl_ref"),
+            "score_napl_ref_B": finite_or_nan(sensitivity, "score_napl_ref"),
+            "DissolutionStage_proxy": stage,
+            "DissolutionStage": stage,
+            "Stage": stage,
+            "ValidStructure_proxy": valid_structure,
+            "ValidStructure": valid_structure,
+            "NearDepleted_proxy": stage == "near_depleted",
+            "NearDepleted": stage == "near_depleted",
+            "ValidArchitecture": valid_structure,
+            "ArchitectureType_proxy": architecture_type,
+            "PoolScore_proxy": pool_score,
+            "GangliaScore_proxy": ganglia_score,
+            "Sn_semantics": "operational_S_NAPL_color_proxy",
+        }
+        rows.append(row)
+
+    s_norm_values = [float(row["S_color_norm"]) for row in rows]
+    time_values = [float(row["Time_min"]) for row in rows]
+    s_mono = cumulative_min(s_norm_values)
+    raw_rate = nearest_rate(time_values, s_norm_values)
+    lr_rate = nearest_rate(time_values, s_mono)
+    for row, mono, raw, lr in zip(rows, s_mono, raw_rate, lr_rate):
+        row["S_color_mono"] = mono
+        row["Sn_rate_input"] = mono
+        row["DissolutionRate_raw_per_min"] = raw
+        row["DissolutionRate_time_lr_per_min"] = lr
+        row["DissolutionRate_per_min"] = lr
+        row["DissolutionRate_Sn_time_lr"] = lr
+        row["DissolutionRate_Sn_movmed"] = raw
+        row["DissolutionRate_Sn_lr"] = lr
+        s_norm = float(row["S_color_norm"])
+        normalized_rate = lr / max(s_norm, 1.0e-12) if math.isfinite(lr) and math.isfinite(s_norm) else math.nan
+        row["NormalizedDissolutionRate_time_lr"] = normalized_rate
+        row["NormalizedDissolutionRate_Sn_time_lr"] = normalized_rate
+        row["NormalizedDissolutionRate_Sn_movmed"] = raw / max(s_norm, 1.0e-12) if math.isfinite(raw) and math.isfinite(s_norm) else math.nan
+        row["NormalizedDissolutionRate_Sn_lr"] = normalized_rate
+    return rows
+
+
+DERIVED_FIELDNAMES = [
+    "FrameIndex",
+    "frame_index",
+    "label",
+    "role",
+    "RealTime_s",
+    "Time_min",
+    "Interval_s",
+    "TifFile",
+    "PageInTif",
+    "S_NAPL_color_A",
+    "S_NAPL_color_B",
+    "S_NAPL_color_B_minus_A",
+    "abs_endpoint_sensitivity",
+    "Sn",
+    "SnNorm",
+    "S_color_norm",
+    "S_color_mono",
+    "Sn_rate_input",
+    "RemovalFraction_proxy",
+    "RemovalFraction",
+    "DissolutionRate_raw_per_min",
+    "DissolutionRate_time_lr_per_min",
+    "DissolutionRate_per_min",
+    "DissolutionRate_Sn_time_lr",
+    "DissolutionRate_Sn_movmed",
+    "DissolutionRate_Sn_lr",
+    "NormalizedDissolutionRate_time_lr",
+    "NormalizedDissolutionRate_Sn_time_lr",
+    "NormalizedDissolutionRate_Sn_movmed",
+    "NormalizedDissolutionRate_Sn_lr",
+    "DissolutionStage_proxy",
+    "DissolutionStage",
+    "Stage",
+    "ValidStructure_proxy",
+    "ValidStructure",
+    "NearDepleted_proxy",
+    "NearDepleted",
+    "ValidArchitecture",
+    "ArchitectureType_proxy",
+    "PoolScore_proxy",
+    "GangliaScore_proxy",
+    "red_mask_area_px",
+    "domain_area_px",
+    "TotalArea",
+    "red_mask_area_fraction",
+    "red_mask_retention_ratio",
+    "NumBlobs",
+    "MeanBlobSize",
+    "MaxBlobFrac",
+    "MaxBlobFlowFrac_proxy",
+    "ReqMedian",
+    "ReqMean",
+    "ReqStd",
+    "MeanCircularity",
+    "fracDroplets",
+    "fracColumns",
+    "fracClusters",
+    "areaFracDroplets",
+    "areaFracColumns",
+    "areaFracClusters",
+    "areaFracDropletsValid",
+    "areaFracColumnsValid",
+    "areaFracClustersValid",
+    "countFracDroplets",
+    "countFracColumns",
+    "countFracClusters",
+    "countFracDropletsValid",
+    "countFracColumnsValid",
+    "countFracClustersValid",
+    "areaFracDroplets_proxy",
+    "areaFracColumns_proxy",
+    "areaFracClusters_proxy",
+    "dnapl_water_length_px",
+    "dnapl_solid_length_px",
+    "dnapl_water_length_m",
+    "dnapl_solid_length_m",
+    "InterfaceArea",
+    "solid_contact_fraction",
+    "a_i_2D_proxy",
+    "S_x_inlet",
+    "S_x_mid",
+    "S_x_outlet",
+    "active_bin_fraction_ge_0p2",
+    "active_bin_fraction_ge_0p5",
+    "napl_extent_fraction_ge_0p2",
+    "napl_extent_fraction_ge_0p5",
+    "qc_status",
+    "TimelineStatus",
+    "endpoint_status",
+    "endpoint_delta_A",
+    "endpoint_delta_B",
+    "score_frame_A",
+    "score_frame_B",
+    "score_water_ref_A",
+    "score_water_ref_B",
+    "score_napl_ref_A",
+    "score_napl_ref_B",
+    "Sn_semantics",
+]
+
+
+def write_rows_csv(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: format_value(row.get(field, "")) for field in fieldnames})
+
+
+LEGACY_REQUIRED_COLUMNS = [
+    "RealTime_s",
+    "Sn",
+    "NumBlobs",
+    "MaxBlobFrac",
+    "ReqMedian",
+    "ReqMean",
+    "ReqStd",
+    "InterfaceArea",
+    "MeanCircularity",
+    "a_i_2D",
+    "fracDroplets",
+    "fracColumns",
+    "fracClusters",
+]
+
+
+def make_legacy_rows(derived_rows: list[dict[str, object]]) -> tuple[list[dict[str, object]], int]:
+    rows: list[dict[str, object]] = []
+    nonfinite_required_count = 0
+    numeric_fields = {
+        "RealTime_s",
+        "Time_min",
+        "FrameIndex",
+        "Sn",
+        "SnNorm",
+        "NumBlobs",
+        "MeanBlobSize",
+        "MaxBlobFrac",
+        "ReqMedian",
+        "ReqMean",
+        "ReqStd",
+        "InterfaceArea",
+        "MeanCircularity",
+        "a_i_2D",
+        "fracDroplets",
+        "fracColumns",
+        "fracClusters",
+        "DissolutionRate_per_min",
+        "DissolutionRate_raw_per_min",
+        "DissolutionRate_Sn_time_lr",
+        "DissolutionRate_Sn_movmed",
+        "DissolutionRate_Sn_lr",
+        "NormalizedDissolutionRate_Sn_time_lr",
+        "NormalizedDissolutionRate_Sn_movmed",
+        "NormalizedDissolutionRate_Sn_lr",
+        "MaxBlobFlowFrac",
+        "MeanCircularity_raw",
+        "MeanCircularity_valid",
+        "areaFracDroplets",
+        "areaFracColumns",
+        "areaFracClusters",
+        "areaFracDropletsValid",
+        "areaFracColumnsValid",
+        "areaFracClustersValid",
+        "countFracDroplets",
+        "countFracColumns",
+        "countFracClusters",
+        "countFracDropletsValid",
+        "countFracColumnsValid",
+        "countFracClustersValid",
+    }
+    for row in derived_rows:
+        legacy = {
+            "RealTime_s": row.get("RealTime_s", math.nan),
+            "Time_min": row.get("Time_min", math.nan),
+            "FrameIndex": row.get("FrameIndex", math.nan),
+            "Sn": row.get("S_NAPL_color_A", math.nan),
+            "SnNorm": row.get("S_color_norm", math.nan),
+            "NumBlobs": row.get("NumBlobs", math.nan),
+            "MeanBlobSize": row.get("MeanBlobSize", math.nan),
+            "MaxBlobFrac": row.get("MaxBlobFrac", math.nan),
+            "ReqMedian": row.get("ReqMedian", math.nan),
+            "ReqMean": row.get("ReqMean", math.nan),
+            "ReqStd": row.get("ReqStd", math.nan),
+            "InterfaceArea": row.get("InterfaceArea", math.nan),
+            "MeanCircularity": row.get("MeanCircularity", math.nan),
+            "a_i_2D": row.get("a_i_2D_proxy", math.nan),
+            "fracDroplets": row.get("fracDroplets", math.nan),
+            "fracColumns": row.get("fracColumns", math.nan),
+            "fracClusters": row.get("fracClusters", math.nan),
+            "DissolutionRate_per_min": row.get("DissolutionRate_time_lr_per_min", math.nan),
+            "DissolutionRate_raw_per_min": row.get("DissolutionRate_raw_per_min", math.nan),
+            "DissolutionRate_Sn_time_lr": row.get("DissolutionRate_Sn_time_lr", math.nan),
+            "DissolutionRate_Sn_movmed": row.get("DissolutionRate_Sn_movmed", math.nan),
+            "DissolutionRate_Sn_lr": row.get("DissolutionRate_Sn_lr", math.nan),
+            "NormalizedDissolutionRate_Sn_time_lr": row.get("NormalizedDissolutionRate_Sn_time_lr", math.nan),
+            "NormalizedDissolutionRate_Sn_movmed": row.get("NormalizedDissolutionRate_Sn_movmed", math.nan),
+            "NormalizedDissolutionRate_Sn_lr": row.get("NormalizedDissolutionRate_Sn_lr", math.nan),
+            "ValidStructure": row.get("ValidStructure_proxy", False),
+            "DissolutionStage": row.get("DissolutionStage_proxy", ""),
+            "Stage": row.get("Stage", ""),
+            "NearDepleted": row.get("NearDepleted", False),
+            "MaxBlobFlowFrac": row.get("MaxBlobFlowFrac_proxy", math.nan),
+            "MeanCircularity_raw": row.get("MeanCircularity", math.nan),
+            "MeanCircularity_valid": row.get("MeanCircularity", math.nan) if row.get("ValidStructure_proxy", False) else math.nan,
+            "areaFracDroplets": row.get("areaFracDroplets", math.nan),
+            "areaFracColumns": row.get("areaFracColumns", math.nan),
+            "areaFracClusters": row.get("areaFracClusters", math.nan),
+            "areaFracDropletsValid": row.get("areaFracDropletsValid", math.nan),
+            "areaFracColumnsValid": row.get("areaFracColumnsValid", math.nan),
+            "areaFracClustersValid": row.get("areaFracClustersValid", math.nan),
+            "countFracDroplets": row.get("countFracDroplets", math.nan),
+            "countFracColumns": row.get("countFracColumns", math.nan),
+            "countFracClusters": row.get("countFracClusters", math.nan),
+            "countFracDropletsValid": row.get("countFracDropletsValid", math.nan),
+            "countFracColumnsValid": row.get("countFracColumnsValid", math.nan),
+            "countFracClustersValid": row.get("countFracClustersValid", math.nan),
+            "Sn_semantics": "operational_S_NAPL_color_proxy",
+            "InterfaceArea_semantics": "legacy_alias_of_dnapl_water_length_px",
+            "AdapterWarning": "not_endpoint_validated_physical_Sn",
+        }
+        for field in numeric_fields:
+            value = legacy.get(field, math.nan)
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                numeric = math.nan
+            if field in LEGACY_REQUIRED_COLUMNS and not math.isfinite(numeric):
+                nonfinite_required_count += 1
+        rows.append(legacy)
+    return rows, nonfinite_required_count
+
+
+LEGACY_FIELDNAMES = [
+    "RealTime_s",
+    "Time_min",
+    "FrameIndex",
+    "Sn",
+    "SnNorm",
+    "NumBlobs",
+    "MeanBlobSize",
+    "MaxBlobFrac",
+    "ReqMedian",
+    "ReqMean",
+    "ReqStd",
+    "InterfaceArea",
+    "MeanCircularity",
+    "a_i_2D",
+    "fracDroplets",
+    "fracColumns",
+    "fracClusters",
+    "DissolutionRate_per_min",
+    "DissolutionRate_raw_per_min",
+    "DissolutionRate_Sn_time_lr",
+    "DissolutionRate_Sn_movmed",
+    "DissolutionRate_Sn_lr",
+    "NormalizedDissolutionRate_Sn_time_lr",
+    "NormalizedDissolutionRate_Sn_movmed",
+    "NormalizedDissolutionRate_Sn_lr",
+    "ValidStructure",
+    "DissolutionStage",
+    "Stage",
+    "NearDepleted",
+    "MaxBlobFlowFrac",
+    "MeanCircularity_raw",
+    "MeanCircularity_valid",
+    "areaFracDroplets",
+    "areaFracColumns",
+    "areaFracClusters",
+    "areaFracDropletsValid",
+    "areaFracColumnsValid",
+    "areaFracClustersValid",
+    "countFracDroplets",
+    "countFracColumns",
+    "countFracClusters",
+    "countFracDropletsValid",
+    "countFracColumnsValid",
+    "countFracClustersValid",
+    "Sn_semantics",
+    "InterfaceArea_semantics",
+    "AdapterWarning",
+]
+
+
+def count_values(rows: list[dict[str, object]], column: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get(column, ""))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def nonfinite_count(rows: list[dict[str, object]], column: str) -> int:
+    count = 0
+    for row in rows:
+        try:
+            value = float(row.get(column, math.nan))
+        except (TypeError, ValueError):
+            value = math.nan
+        if not math.isfinite(value):
+            count += 1
+    return count
+
+
+def compute_qc_summary(
+    data: dict[str, Any],
+    derived_rows: list[dict[str, object]],
+    legacy_rows: list[dict[str, object]],
+    legacy_nonfinite_count: int,
+) -> list[dict[str, object]]:
+    summary_json = data["summary_json"]
+    rows: list[dict[str, object]] = []
+
+    def add(metric: str, value: object, units: str = "", notes: str = "") -> None:
+        rows.append({"metric": metric, "value": value, "units": units, "notes": notes})
+
+    add("primary_rows", len(data["timeline"]["primary"]), "rows")
+    add("derived_rows", len(derived_rows), "rows")
+    add("legacy_rows", len(legacy_rows), "rows")
+    for key, value in summary_json.get("missing_label_counts", {}).items():
+        add(f"missing_label.{key}", value, "rows")
+    for status, count in count_values(derived_rows, "TimelineStatus").items():
+        add(f"TimelineStatus.{status or 'blank'}", count, "rows")
+    for status, count in count_values(derived_rows, "qc_status").items():
+        add(f"qc_status.{status or 'blank'}", count, "rows")
+    for column in ["S_NAPL_color_A", "S_color_norm", "DissolutionRate_time_lr_per_min", "InterfaceArea", "a_i_2D_proxy"]:
+        add(f"nonfinite.{column}", nonfinite_count(derived_rows, column), "rows")
+    legacy_schema_ready = all(column in legacy_rows[0] for column in LEGACY_REQUIRED_COLUMNS) if legacy_rows else False
+    legacy_plot_ready = legacy_schema_ready and legacy_nonfinite_count == 0
+    add("legacy_adapter_schema_ready", legacy_schema_ready, "", "Required legacy columns are present.")
+    add("legacy_plot_timeseries_ready", legacy_plot_ready, "", "Required legacy columns are present and finite.")
+    add("legacy_adapter_nonfinite_required_value_count", legacy_nonfinite_count, "cells", "Nonfinite legacy numeric values are preserved as NaN, not filled.")
+    meter_values = []
+    for row in derived_rows:
+        try:
+            meter_value = float(row.get("dnapl_water_length_m", math.nan))
+        except (TypeError, ValueError):
+            meter_value = math.nan
+        if math.isfinite(meter_value):
+            meter_values.append(meter_value)
+    meter_ready = bool(meter_values) and all(value > 0 for value in meter_values)
+    add("pixel_size_ready", meter_ready, "", "True only when metre interface fields are finite positive.")
+    add("pv_ready", False, "", "Missing flow_rate_ul_min and pore_volume_ul in current package inputs.")
+    add("mass_ready", False, "", "Missing mass calibration / MassDissolvedKg.")
+    add("mask_stack_ready", False, "", "Current package reads aggregate CSVs, not per-frame masks.")
+    add("true_fingering_ready", False, "", "Requires connected per-frame masks, not only x-zone color proxies.")
+    add("toa_ready", False, "", "Requires frame-level mask stack.")
+    add("rate_correlations_ready", legacy_plot_ready, "", "Proxy rate/structure columns are available and required plot fields are finite.")
+    add("multi_experiment_ready", legacy_plot_ready, "", "Legacy adapter exposes finite standard comparison columns.")
+    add("architecture_ready", True, "", "Only proxy architecture labels are available.")
+    add("InterfaceArea_unit", "px_length", "", "Legacy name; projected interface length L_ow, not area.")
+    add("Req_unit", "px", "", "No pixel-size metadata applied.")
+    add("a_i_2D_unit", "px_per_px2_proxy", "", "2D mask-derived proxy.")
+    return rows
+
+
+QC_FIELDNAMES = ["metric", "value", "units", "notes"]
+
+
+def make_alignment_rows() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+
+    def add(parameter: str, legacy: str, source: str, status: str, semantics: str, missing: str = "", requirement: str = "") -> None:
+        rows.append(
+            {
+                "parameter": parameter,
+                "legacy_source": legacy,
+                "branch_c_source": source,
+                "status": status,
+                "semantics": semantics,
+                "missing_reason": missing,
+                "next_requirement": requirement,
+            }
+        )
+
+    add("Sn", "plot_timeseries.py", "S_NAPL_color_A", "aligned_proxy", "operational color-index saturation proxy", "not endpoint-validated physical Sn", "masked endpoint audit pass")
+    add("SnNorm", "plot_timeseries.py", "S_color_norm", "aligned_proxy", "S_NAPL_color_A normalized to full-role baseline", "", "physical Sn endpoint calibration for strict Sn/Sn0")
+    add("S_NAPL_color_raw", "utilities/build_solubilization_timeseries_table.m", "score_frame_A / score_water_ref_A / score_napl_ref_A", "aligned_proxy", "raw endpoint-normalized color-index components", "not endpoint-validated physical Sn", "masked endpoint audit pass")
+    add("Sn_mask_secondary", "utilities/build_solubilization_timeseries_table.m", "red_mask_area_fraction", "aligned_proxy", "2D red-mask occupancy proxy", "not volumetric saturation", "pixel-size/depth/pore-volume calibration")
+    add("mask_color_abs_difference", "utilities/build_solubilization_timeseries_table.m", "abs(S_color_norm - red_mask_retention_ratio)", "derived_proxy", "agreement diagnostic between color-index and mask occupancy proxies", "not yet written as a dedicated time-series column", "add dedicated column if needed by downstream scripts")
+    add("endpoint_source/mask/rgb fields", "utilities/build_solubilization_timeseries_table.m", "endpoint_status and source CSV provenance", "partial_proxy", "endpoint policy and input paths recorded in provenance", "not full legacy manifest schema", "export endpoint/mask/rgb provenance columns if legacy importer needs them")
+    add("Sn_lower/Sn_mid/Sn_upper", "utilities/build_solubilization_timeseries_table.m", "S_NAPL_color_A/B sensitivity envelope", "partial_proxy", "endpoint A/B sensitivity can bound proxy Sn", "not statistical confidence interval", "define uncertainty model after endpoint audit")
+    add("Sn_uncertainty", "utilities/build_solubilization_timeseries_table.m", "abs_endpoint_sensitivity", "aligned_proxy", "endpoint A/B absolute sensitivity")
+    add("validation_status/processing_branch", "utilities/build_solubilization_timeseries_table.m", "TimelineStatus/qc_status/analysis_policy_version", "partial_proxy", "QC and policy status are recorded", "legacy names not fully replicated", "add exact legacy columns if importing back into MATLAB result table")
+    add("processing_scale_factor", "utilities/build_solubilization_timeseries_table.m", "", "missing_metadata", "image processing scale", "not present in aggregate CSV inputs", "record in manifest/provenance during Branch C/C2 generation")
+    add("regional_bin_columns", "visualization/plot_timeseries_pv_common.py", "S_x_inlet/S_x_mid/S_x_outlet and x-zone extent fields", "aligned_proxy", "flow-direction x-zone color-index proxies", "not geometric core/edge", "provide solid/core mask for geometric core/edge")
+    add("RemovalFraction", "plot_timeseries.py", "RemovalFraction", "aligned_proxy", "1 - S_color_norm", "not physical removal fraction", "physical Sn endpoint calibration")
+    add("DissolutionRate_per_min", "plot_timeseries.py; plot_rate_correlations.py", "DissolutionRate_time_lr_per_min", "aligned_proxy", "-dS_color_norm/dt", "not physical dissolution rate", "physical Sn or mass calibration")
+    add("DissolutionRate_Sn_*", "plot_rate_correlations.py", "DissolutionRate_Sn_time_lr/movmed/lr", "aligned_proxy", "proxy rate variants for legacy scripts", "not physical rate", "physical Sn calibration")
+    add("NormalizedDissolutionRate_Sn_*", "plot_rate_correlations.py", "NormalizedDissolutionRate_Sn_*", "aligned_proxy", "proxy rate divided by S_color_norm", "not physical normalized rate", "physical Sn calibration")
+    add("RateLR_*", "compute_dissolution_rate_windows.py", "DissolutionRate_time_lr_per_min", "partial_proxy", "global nearest-neighbor/cumulative-min proxy rate", "not windowed legacy LR suite", "define window lengths and PV/time axis")
+    add("RateRawCentral_*", "compute_dissolution_rate_windows.py", "DissolutionRate_raw_per_min", "partial_proxy", "global nearest-neighbor raw proxy rate", "not exact legacy central-window rate", "define window lengths and edge handling")
+    add("NumBlobs", "plot_timeseries.py", "num_blobs", "aligned", "red-mask connected components")
+    add("MeanBlobSize", "utilities/build_solubilization_timeseries_table.m", "mean_blob_size", "aligned", "mean red-mask component size")
+    add("MaxBlobFrac", "plot_timeseries.py", "max_blob_frac", "aligned", "largest red-mask component fraction")
+    add("MaxBlobFlowFrac", "plot_timeseries.py", "MaxBlobFlowFrac_proxy", "aligned_proxy", "red_mask_area_fraction * MaxBlobFrac")
+    add("ReqMedian/Mean/Std", "plot_timeseries.py", "Req_median/mean/std", "aligned", "equivalent-radius summary in pixels")
+    add("MeanCircularity*", "compute_area_weighted_circularity.py", "mean_circularity and valid proxy", "partial_proxy", "frame-level circularity summary; no per-blob area-weighted recomputation", "missing per-blob detail for strict valid area-weighting", "provide blob_detail_all_frames.csv")
+    add("Area*", "analyze_blob_population_morphology.py", "red_mask_area_px/MeanBlobSize", "partial_proxy", "frame-level area and mean component size only", "missing per-blob area distribution", "provide blob_detail_all_frames.csv")
+    add("EquivRadius*", "analyze_blob_population_morphology.py", "ReqMedian/Mean/Std", "aligned", "equivalent-radius summary in pixels")
+    add("Circularity2D*", "analyze_blob_population_morphology.py", "MeanCircularity", "partial_proxy", "frame-level mean circularity only", "missing per-blob valid/area-weighted variants", "provide blob_detail_all_frames.csv")
+    add("AspectRatio*", "analyze_blob_population_morphology.py", "", "not_computable", "aspect-ratio distribution", "requires per-blob major/minor axes", "provide blob_detail_all_frames.csv")
+    add("Solidity*", "analyze_blob_population_morphology.py", "", "not_computable", "solidity distribution", "requires per-blob convex area", "provide blob_detail_all_frames.csv")
+    add("EulerNumber*", "analyze_blob_population_morphology.py", "", "not_computable", "per-blob topology summary", "requires per-blob hole/topology detail", "provide blob_detail_all_frames.csv")
+    add("AreaGini", "analyze_blob_population_morphology.py", "", "not_computable", "blob area inequality", "requires per-blob area distribution", "provide blob_detail_all_frames.csv")
+    add("size_distribution_slope", "analyze_blob_population_morphology.py", "", "not_computable", "blob size-distribution slope", "requires per-blob area distribution", "provide blob_detail_all_frames.csv")
+    add("shape_entropy", "analyze_blob_population_morphology.py", "", "not_computable", "shape-distribution entropy", "requires per-blob shape distribution", "provide blob_detail_all_frames.csv")
+    add("fracDroplets/Columns/Clusters", "plot_timeseries.py", "frac_droplets/columns/clusters", "aligned_proxy", "classification fractions copied from C2 summary")
+    add("areaFrac*/countFrac*Valid", "plot_timeseries.py; analyze_blob_population_morphology.py", "area/count proxy copies", "partial_proxy", "valid variants masked by ValidStructure_proxy", "no per-blob area/count recomputation", "provide blob_detail_all_frames.csv")
+    add("InterfaceArea", "utilities/build_solubilization_timeseries_table.m", "dnapl_water_length_px", "aligned_proxy", "legacy alias of L_ow projected length, not area", "", "pixel_size_um for metre units")
+    add("dnapl_water_length_m", "new Branch C/C2 contract", "dnapl_water_length_m", "missing_metadata", "metre L_ow", "missing trusted pixel_size", "provide processing pixel size")
+    add("dnapl_solid_length_px", "new Branch C/C2 contract", "dnapl_solid_length_px", "aligned", "DNAPL-solid projected contact length")
+    add("dnapl_solid_length_m", "new Branch C/C2 contract", "dnapl_solid_length_m", "missing_metadata", "metre DNAPL-solid contact length", "missing trusted pixel_size", "provide processing pixel size")
+    add("a_i_2D", "plot_timeseries.py", "a_i_2D_proxy", "aligned_proxy", "2D mask-derived L_ow/red-area proxy")
+    add("ArchitectureType/PoolScore/GangliaScore", "analyze_architecture_vs_time.py", "ArchitectureType_proxy/PoolScore_proxy/GangliaScore_proxy", "partial_proxy", "Level-A proxy from blob count and largest-component fraction", "not legacy threshold-calibrated architecture", "run architecture classifier on physical Sn + full morphology")
+    add("pixel_size_um", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "pixel-to-length calibration", "not present in aggregate CSV inputs", "provide trusted calibration or processing manifest")
+    add("pore_volume_ul", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "pore volume", "not present in aggregate CSV inputs", "provide pore-volume metadata")
+    add("pore_area_px", "visualization/recover_experiment_metadata.py", "domain_area_px", "partial_proxy", "2D ROI/domain pixel area", "not physical pore area unless ROI/domain mask is calibrated", "provide calibrated pore mask and pixel size")
+    add("channel_depth_um/channel_width_um", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "chip geometry", "not present in aggregate CSV inputs", "provide experiment metadata")
+    add("flow_rate_ul_min", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "flow rate", "not present in aggregate CSV inputs", "provide pump/experiment metadata")
+    add("velocity_m_per_s", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "Darcy/interstitial velocity", "requires flow rate and pore geometry", "provide flow rate, pore area, and porosity/depth")
+    add("viscosity_Pa_s", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "fluid viscosity", "not present in aggregate CSV inputs", "provide fluid metadata")
+    add("IFT_mN_m", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "interfacial tension", "not present in aggregate CSV inputs", "provide fluid metadata")
+    add("capillary_number", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "Ca = mu*v/gamma", "requires viscosity, velocity, and IFT", "provide physical metadata")
+    add("temperature_C", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "temperature", "not present in aggregate CSV inputs", "provide experiment metadata")
+    add("diffusion_coefficient_m2_s", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "diffusion coefficient", "not present in aggregate CSV inputs", "provide solute/fluid metadata")
+    add("surfactant_name/concentration", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "surfactant condition", "not present in aggregate CSV inputs", "provide experiment metadata")
+    add("PV", "plot_timeseries_pv_common.py", "", "missing_metadata", "pore-volume axis", "missing flow_rate_ul_min and pore_volume_ul", "provide flow rate and pore volume metadata")
+    add("dS/dPV", "compute_dissolution_rate_windows.py", "", "missing_metadata", "PV-normalized proxy rate", "missing PV axis", "provide flow rate and pore volume metadata")
+    add("MassDissolvedKg", "plot_rate_correlations.py", "", "missing_metadata", "mass-based dissolution", "missing mass calibration", "provide mass calibration")
+    add("DissolutionRate_mass_kg_per_s", "plot_rate_correlations.py", "", "missing_metadata", "mass dissolution rate", "missing mass calibration", "provide mass calibration and time/PV basis")
+    add("projected_interface_mass_flux", "plot_rate_correlations.py", "", "missing_metadata", "mass flux normalized by projected L_ow or area convention", "missing mass calibration and physical interface units", "provide mass calibration and pixel size/depth convention")
+    add("MassTransferProxy_*", "plot_rate_correlations.py", "DissolutionRate_* with InterfaceArea/a_i_2D_proxy", "partial_proxy", "possible proxy correlations only", "not physical mass-transfer coefficient", "provide mass calibration, physical interface units, and flow metadata")
+    add("TOA", "utilities/generate_toa_map.m", "", "not_computable", "pixel-level time of arrival", "requires frame-level mask stack", "retain/export per-frame masks")
+    add("xzone_front_extent_proxy", "analysis/fingering", "x-zone extent proxy", "partial_proxy", "thresholded x-zone color-index front/extent proxy", "not graph fingering", "run fingering analysis on mask stack")
+    add("true_fingering", "analysis/fingering", "", "not_computable", "connected-mask fingering metrics", "requires frame-level connected masks and pore graph", "run fingering analysis on mask stack")
+    add("num_fingers/tau/branch_density/x_lead/front_width/A_invaded", "analysis/fingering", "", "not_computable", "true fingering/front geometry", "requires per-frame connected masks", "run fingering pipeline")
+    return rows
+
+
+ALIGNMENT_FIELDNAMES = ["parameter", "legacy_source", "branch_c_source", "status", "semantics", "missing_reason", "next_requirement"]
+
+
 def git_head(repo_root: Path) -> str:
     try:
         return subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "HEAD"], text=True).strip()
@@ -662,6 +1521,10 @@ def write_report(
     figures: dict[str, dict[str, str]],
     parameter_rows: list[dict[str, str]],
     parameter_summary_path: Path,
+    derived_timeseries_path: Path,
+    legacy_plot_path: Path,
+    qc_summary_path: Path,
+    alignment_path: Path,
     path: Path,
 ) -> None:
     summary_json = data["summary_json"]
@@ -686,6 +1549,10 @@ def write_report(
         "## Derived Parameters",
         "",
         f"Full parameter table: `{parameter_summary_path}`",
+        f"Frame-level derived table: `{derived_timeseries_path}`",
+        f"Legacy plot-timeseries adapter: `{legacy_plot_path}`",
+        f"QC summary: `{qc_summary_path}`",
+        f"Research parameter alignment table: `{alignment_path}`",
         "",
         "| section | parameter | value | units |",
         "|---|---|---:|---|",
@@ -743,23 +1610,54 @@ def write_report(
 def build_package(inputs: PackageInputs) -> dict[str, Any]:
     inputs.out_dir.mkdir(parents=True, exist_ok=True)
     data = load_inputs(inputs)
-    figures = create_figures(data, inputs.out_dir)
+    derived_rows = compute_derived_timeseries(data)
+    legacy_rows, legacy_nonfinite_count = make_legacy_rows(derived_rows)
+    qc_rows = compute_qc_summary(data, derived_rows, legacy_rows, legacy_nonfinite_count)
+    alignment_rows = make_alignment_rows()
+    figures = create_figures(data, inputs.out_dir, derived_rows, qc_rows)
     parameter_rows = compute_parameter_summary(data)
     report_path = inputs.out_dir / "analysis_report.md"
     commands_path = inputs.out_dir / "run_commands.md"
     parameter_summary_path = inputs.out_dir / "analysis_parameter_summary.csv"
+    derived_timeseries_path = inputs.out_dir / "analysis_timeseries_derived.csv"
+    legacy_plot_path = inputs.out_dir / "branch_c_legacy_plot_timeseries.csv"
+    qc_summary_path = inputs.out_dir / "analysis_qc_summary.csv"
+    alignment_path = inputs.out_dir / "research_parameter_alignment.csv"
     provenance_path = inputs.out_dir / "analysis_package_provenance.json"
     write_parameter_summary(parameter_summary_path, parameter_rows)
-    write_report(inputs, data, figures, parameter_rows, parameter_summary_path, report_path)
+    write_rows_csv(derived_timeseries_path, derived_rows, DERIVED_FIELDNAMES)
+    write_rows_csv(legacy_plot_path, legacy_rows, LEGACY_FIELDNAMES)
+    write_rows_csv(qc_summary_path, qc_rows, QC_FIELDNAMES)
+    write_rows_csv(alignment_path, alignment_rows, ALIGNMENT_FIELDNAMES)
+    write_report(
+        inputs,
+        data,
+        figures,
+        parameter_rows,
+        parameter_summary_path,
+        derived_timeseries_path,
+        legacy_plot_path,
+        qc_summary_path,
+        alignment_path,
+        report_path,
+    )
     write_run_commands(inputs, commands_path)
 
     summary_json = data["summary_json"]
+    figure_counts = {
+        "figure_count": len(figures),
+        "png_count": sum(1 for outputs in figures.values() if outputs.get("png")),
+        "svg_count": sum(1 for outputs in figures.values() if outputs.get("svg")),
+        "figure_names": sorted(figures.keys()),
+    }
     provenance = {
         "status": "pass",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_label": inputs.run_label,
         "git_head": git_head(Path(__file__).resolve().parents[2]),
         "figure_style": FIGURE_STYLE,
+        "analysis_policy_version": ANALYSIS_POLICY_VERSION,
+        "figure_counts": figure_counts,
         "input_paths": {
             "timeline_dir": str(inputs.timeline_dir),
             "residual_dir": str(inputs.residual_dir),
@@ -768,12 +1666,19 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
             "report_md": str(report_path),
             "run_commands_md": str(commands_path),
             "parameter_summary_csv": str(parameter_summary_path),
+            "derived_timeseries_csv": str(derived_timeseries_path),
+            "legacy_plot_timeseries_csv": str(legacy_plot_path),
+            "qc_summary_csv": str(qc_summary_path),
+            "research_parameter_alignment_csv": str(alignment_path),
             "figures": figures,
         },
         "row_counts": summary_json.get("row_counts", {}),
         "missing_label_counts": summary_json.get("missing_label_counts", {}),
         "summary_metrics": summary_json.get("summary_metrics", {}),
         "derived_parameters": parameter_rows_to_dict(parameter_rows),
+        "qc_summary": parameter_rows_to_dict(
+            [{"section": "qc", "parameter": row["metric"], "value": format_value(row["value"])} for row in qc_rows]
+        ),
         "semantics": {
             "S_NAPL_color": "operational color-index saturation proxy; not endpoint-validated physical Sn",
             "InterfaceArea": "legacy alias of dnapl_water_length_px/L_ow, not area",
