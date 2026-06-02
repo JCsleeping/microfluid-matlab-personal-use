@@ -36,8 +36,20 @@ segpilot  -> MATLAB red-mask score/threshold sweep for pilot review
 segmorph  -> MATLAB locked-threshold red-mask morphology time series
 ```
 
-These stages produce segmentation-derived 2D occupancy and morphology. They do
-not replace Branch C `S_NAPL_color`.
+These stages produce segmentation-derived 2D occupancy, morphology, and
+projected interface/contact metrics. They do not replace Branch C
+`S_NAPL_color`.
+
+C2 interface/contact fields are computed from the locked red DNAPL mask and the
+flow-domain mask, not approximated from blob perimeters:
+
+```text
+dnapl_water_length_px / dnapl_water_length_m = DNAPL-water projected interface length, L_ow
+dnapl_solid_length_px / dnapl_solid_length_m = DNAPL-solid contact length
+InterfaceArea = legacy alias of dnapl_water_length_px; it is not area
+solid_contact_fraction = dnapl_solid_length_px / (dnapl_water_length_px + dnapl_solid_length_px)
+a_i_2D_proxy = dnapl_water_length_px / red_mask_area_px
+```
 
 ## Default A1 1-BO 6 uL Config
 
@@ -101,8 +113,8 @@ This writes `residual_trapping_timeseries.csv`,
 `residual_trapping_summary.csv`, and `residual_trapping_summary.json`. These
 outputs are operational residual trapping proxies. They combine
 `S_NAPL_color`, endpoint sensitivity, red-mask area fraction, blob morphology,
-and x-zone metrics. They are not physical trapped saturation until the endpoint
-and pore-volume calibration gates are complete.
+x-zone metrics, and C2 interface/contact metrics. They are not physical trapped
+saturation until the endpoint and pore-volume calibration gates are complete.
 
 `manifest.time_step_s` remains available only for explicit diagnostic sequence
 axes. Do not use it as a substitute for reconstructed acquisition time.
@@ -393,7 +405,11 @@ Key definitions:
 ```text
 S_color_retention_ratio_A = S_NAPL_color_A / full-role median S_NAPL_color_A
 red_mask_retention_ratio  = red_mask_area_fraction / full-role median red_mask_area_fraction
+L_ow_retention_ratio      = dnapl_water_length_px / full-role median dnapl_water_length_px
 num_blobs_per_red_area_fraction = num_blobs / red_mask_area_fraction
+InterfaceArea             = legacy alias of dnapl_water_length_px/L_ow, not area
+solid_contact_fraction    = dnapl_solid_length_px / (dnapl_water_length_px + dnapl_solid_length_px)
+a_i_2D_proxy              = dnapl_water_length_px / red_mask_area_px
 ```
 
 The structure proxy mirrors the available parts of the MATLAB residual
@@ -405,9 +421,9 @@ ganglia-rich = largest_component_fraction <= 0.30 and num_blobs >= 25
 mixed        = otherwise
 ```
 
-Because this CSV workflow does not include `a_i_2D`, the structure label should
-be treated as a morphology proxy rather than the full residual architecture
-classification.
+The structure label is still a morphology proxy rather than the full residual
+architecture classifier. `a_i_2D_proxy` is reported separately, but it is a
+2D mask-derived proxy and is not yet a pore-scale calibrated interfacial area.
 
 ## MATLAB Compatibility
 

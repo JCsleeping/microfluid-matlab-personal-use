@@ -224,6 +224,8 @@ function config = default_segmentation_config()
     config.write_blob_detail = false;
     config.threshold_source = "pilot_locked";
     config.output_semantics = "segmentation-derived red DNAPL 2D occupancy";
+    config.processing_pixel_size_m = [];
+    config.interface_solid_dilation = 1;
 end
 
 
@@ -238,6 +240,23 @@ function config = normalize_segmentation_config(config)
     config.overlay_sample_max = max(0, round(double(config.overlay_sample_max)));
     config.write_blob_detail = logical(config.write_blob_detail);
     config.threshold_source = string(config.threshold_source);
+    if ~isfield(config, 'processing_pixel_size_m') || ...
+            isempty(config.processing_pixel_size_m)
+        config.processing_pixel_size_m = [];
+    else
+        config.processing_pixel_size_m = double(config.processing_pixel_size_m);
+        if ~isscalar(config.processing_pixel_size_m) || ...
+                ~isfinite(config.processing_pixel_size_m) || ...
+                config.processing_pixel_size_m <= 0
+            config.processing_pixel_size_m = [];
+        end
+    end
+    if ~isfield(config, 'interface_solid_dilation') || ...
+            isempty(config.interface_solid_dilation)
+        config.interface_solid_dilation = 1;
+    end
+    config.interface_solid_dilation = max(0, round(double( ...
+        config.interface_solid_dilation)));
 end
 
 
@@ -302,7 +321,7 @@ function mask = cleanup_red_mask(mask, config, flow_domain)
 end
 
 
-function [metrics, blob_table] = mask_summary_metrics(mask, flow_domain, solid_mask, ~)
+function [metrics, blob_table] = mask_summary_metrics(mask, flow_domain, solid_mask, config)
     opts = struct();
     opts.mode = 'core_only';
     opts.object_connectivity = 8;
@@ -319,6 +338,7 @@ function [metrics, blob_table] = mask_summary_metrics(mask, flow_domain, solid_m
     metrics.domain_area_px = flow_area;
     metrics.red_mask_area_fraction = red_area / max(flow_area, 1);
     metrics.component_count = blob_metrics.num_blobs;
+    metrics = add_interface_metrics(metrics, mask, flow_domain, red_area, config);
 end
 
 
@@ -360,6 +380,72 @@ function metrics = mask_pilot_metrics(mask, flow_domain)
     metrics.frac_droplets = NaN;
     metrics.frac_columns = NaN;
     metrics.frac_clusters = NaN;
+    metrics = add_empty_interface_metrics(metrics, "not_computed_in_segpilot");
+end
+
+
+function metrics = add_interface_metrics(metrics, mask, flow_domain, red_area, config)
+    pixel_size_m = [];
+    if isstruct(config) && isfield(config, 'processing_pixel_size_m') && ...
+            ~isempty(config.processing_pixel_size_m)
+        pixel_size_m = double(config.processing_pixel_size_m);
+    end
+    solid_dilation = 1;
+    if isstruct(config) && isfield(config, 'interface_solid_dilation')
+        solid_dilation = config.interface_solid_dilation;
+    end
+    iface = compute_global_interface_contact(mask & flow_domain, flow_domain, ...
+        solid_dilation);
+
+    water_px = double(iface.water_length_px);
+    solid_px = double(iface.solid_length_px);
+    metrics.dnapl_water_length_px = water_px;
+    metrics.dnapl_solid_length_px = solid_px;
+    if ~isempty(pixel_size_m)
+        metrics.dnapl_water_length_m = water_px * pixel_size_m;
+        metrics.dnapl_solid_length_m = solid_px * pixel_size_m;
+    else
+        metrics.dnapl_water_length_m = NaN;
+        metrics.dnapl_solid_length_m = NaN;
+    end
+    metrics.InterfaceArea = water_px;
+    total_length = water_px + solid_px;
+    if total_length > 0
+        metrics.solid_contact_fraction = solid_px / total_length;
+    else
+        metrics.solid_contact_fraction = NaN;
+    end
+    if red_area > 0
+        metrics.a_i_2D_proxy = water_px / double(red_area);
+    else
+        metrics.a_i_2D_proxy = NaN;
+    end
+    metrics.interface_semantics = ...
+        "InterfaceArea_legacy_alias_of_dnapl_water_length_px_not_area";
+end
+
+
+function iface = compute_global_interface_contact(mask, flow_domain, solid_dilation)
+    contact_config = struct();
+    contact_config.interface = struct('solid_dilation', solid_dilation);
+    solid_contact_zone = build_solid_contact_zone(flow_domain, contact_config);
+    iface = struct( ...
+        'water_length_px', ...
+            compute_timeseries_interface_length(mask, solid_contact_zone), ...
+        'solid_length_px', ...
+            compute_timeseries_interface_length(mask, ~solid_contact_zone));
+end
+
+
+function metrics = add_empty_interface_metrics(metrics, semantics)
+    metrics.dnapl_water_length_px = NaN;
+    metrics.dnapl_solid_length_px = NaN;
+    metrics.dnapl_water_length_m = NaN;
+    metrics.dnapl_solid_length_m = NaN;
+    metrics.InterfaceArea = NaN;
+    metrics.solid_contact_fraction = NaN;
+    metrics.a_i_2D_proxy = NaN;
+    metrics.interface_semantics = string(semantics);
 end
 
 
@@ -443,6 +529,14 @@ function row = threshold_row(frame_index, time_s, label, role, score_mode, thres
     row.frac_droplets = metrics.frac_droplets;
     row.frac_columns = metrics.frac_columns;
     row.frac_clusters = metrics.frac_clusters;
+    row.dnapl_water_length_px = metrics.dnapl_water_length_px;
+    row.dnapl_solid_length_px = metrics.dnapl_solid_length_px;
+    row.dnapl_water_length_m = metrics.dnapl_water_length_m;
+    row.dnapl_solid_length_m = metrics.dnapl_solid_length_m;
+    row.InterfaceArea = metrics.InterfaceArea;
+    row.solid_contact_fraction = metrics.solid_contact_fraction;
+    row.a_i_2D_proxy = metrics.a_i_2D_proxy;
+    row.interface_semantics = metrics.interface_semantics;
 end
 
 
@@ -487,7 +581,15 @@ function row = empty_threshold_row()
         'n_clusters', NaN, ...
         'frac_droplets', NaN, ...
         'frac_columns', NaN, ...
-        'frac_clusters', NaN);
+        'frac_clusters', NaN, ...
+        'dnapl_water_length_px', NaN, ...
+        'dnapl_solid_length_px', NaN, ...
+        'dnapl_water_length_m', NaN, ...
+        'dnapl_solid_length_m', NaN, ...
+        'InterfaceArea', NaN, ...
+        'solid_contact_fraction', NaN, ...
+        'a_i_2D_proxy', NaN, ...
+        'interface_semantics', "");
 end
 
 
@@ -659,6 +761,8 @@ function write_segmentation_manifest(path_value, run_mode, config, cache_dir, ..
     manifest.config_path = config_path;
     manifest.segmentation_output = 'red_napl_mask';
     manifest.output_semantics = 'segmentation-derived red DNAPL 2D occupancy';
+    manifest.interface_semantics = ...
+        'InterfaceArea is a legacy alias of dnapl_water_length_px/L_ow, not area';
     manifest.endpoint_dependency = 'none';
     manifest.score_modes = cellstr(string(config.score_modes));
     manifest.production_score_mode = char(string(config.production_score_mode));
@@ -667,6 +771,8 @@ function write_segmentation_manifest(path_value, run_mode, config, cache_dir, ..
     manifest.threshold_percentiles = config.threshold_percentiles;
     manifest.min_area_px = config.min_area_px;
     manifest.morph_radius = config.morph_radius;
+    manifest.processing_pixel_size_m = config.processing_pixel_size_m;
+    manifest.interface_solid_dilation = config.interface_solid_dilation;
     manifest.files = struct( ...
         'primary_csv', primary_path, ...
         'secondary_csv', secondary_path, ...

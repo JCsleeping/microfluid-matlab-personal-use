@@ -15,6 +15,16 @@ from typing import Any
 REPO = Path(__file__).resolve().parent
 DEFAULT_CONFIG = REPO / "configs" / "a1_1bo_6ul_branch_c_timeseries.json"
 STEPS = ("manifest", "cache", "matlab", "segpilot", "segmorph", "validate")
+SEGMORPH_INTERFACE_COLUMNS = (
+    "dnapl_water_length_px",
+    "dnapl_solid_length_px",
+    "dnapl_water_length_m",
+    "dnapl_solid_length_m",
+    "InterfaceArea",
+    "solid_contact_fraction",
+    "a_i_2D_proxy",
+    "interface_semantics",
+)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -319,6 +329,66 @@ def metric_by_role(rows: list[dict[str, str]], column: str) -> dict[str, Any]:
         role: metric_summary(role_rows, column)
         for role, role_rows in sorted(grouped.items())
     }
+
+
+def missing_columns(rows: list[dict[str, str]], columns: tuple[str, ...]) -> list[str]:
+    if not rows:
+        return list(columns)
+    available = set(rows[0])
+    return [column for column in columns if column not in available]
+
+
+def segmorph_interface_quality(rows: list[dict[str, str]]) -> dict[str, Any]:
+    missing = missing_columns(rows, SEGMORPH_INTERFACE_COLUMNS)
+    quality: dict[str, Any] = {
+        "missing_columns": missing,
+        "alias_mismatch_count": 0,
+        "water_length_nonpositive_with_mask_count": 0,
+        "solid_length_negative_count": 0,
+        "solid_contact_fraction_out_of_range_count": 0,
+        "a_i_2D_proxy_bad_count": 0,
+        "interface_semantics_bad_count": 0,
+        "metrics": {},
+    }
+    if missing:
+        return quality
+    expected_semantics = "InterfaceArea_legacy_alias_of_dnapl_water_length_px_not_area"
+    for row in rows:
+        red_area = finite_float(row.get("red_mask_area_px", ""))
+        water = finite_float(row.get("dnapl_water_length_px", ""))
+        solid = finite_float(row.get("dnapl_solid_length_px", ""))
+        interface_area = finite_float(row.get("InterfaceArea", ""))
+        solid_fraction = finite_float(row.get("solid_contact_fraction", ""))
+        ai_proxy = finite_float(row.get("a_i_2D_proxy", ""))
+        if water is not None and interface_area is not None and abs(water - interface_area) > 1e-9:
+            quality["alias_mismatch_count"] += 1
+        has_red_mask = red_area is not None and red_area > 0
+        if has_red_mask:
+            if water is None or water <= 0:
+                quality["water_length_nonpositive_with_mask_count"] += 1
+            if ai_proxy is None or ai_proxy < 0:
+                quality["a_i_2D_proxy_bad_count"] += 1
+        if solid is None or solid < 0:
+            quality["solid_length_negative_count"] += 1
+        if has_red_mask and (
+            solid_fraction is None or solid_fraction < 0 or solid_fraction > 1
+        ):
+            quality["solid_contact_fraction_out_of_range_count"] += 1
+        if row.get("interface_semantics", "") != expected_semantics:
+            quality["interface_semantics_bad_count"] += 1
+    quality["metrics"] = {
+        "dnapl_water_length_px": metric_summary(rows, "dnapl_water_length_px"),
+        "dnapl_solid_length_px": metric_summary(rows, "dnapl_solid_length_px"),
+        "dnapl_water_length_m": metric_summary(rows, "dnapl_water_length_m"),
+        "dnapl_solid_length_m": metric_summary(rows, "dnapl_solid_length_m"),
+        "InterfaceArea": metric_summary(rows, "InterfaceArea"),
+        "solid_contact_fraction": metric_summary(rows, "solid_contact_fraction"),
+        "a_i_2D_proxy": metric_summary(rows, "a_i_2D_proxy"),
+        "dnapl_water_length_px_by_role": metric_by_role(rows, "dnapl_water_length_px"),
+        "solid_contact_fraction_by_role": metric_by_role(rows, "solid_contact_fraction"),
+        "a_i_2D_proxy_by_role": metric_by_role(rows, "a_i_2D_proxy"),
+    }
+    return quality
 
 
 def threshold_slug(value: float) -> str:
@@ -892,12 +962,40 @@ def validate_outputs(
         if segmorph_timeseries
         else {}
     )
+    segmorph_interface_quality_summary = (
+        segmorph_interface_quality(segmorph_timeseries)
+        if segmorph_timeseries
+        else {}
+    )
     if segmorph_area_metric and segmorph_area_metric["nan_or_missing_count"]:
         failures.append(
             "Segmentation morphology red_mask_area_fraction contains NaN or missing values."
         )
     if segmorph_blob_metric and segmorph_blob_metric["nan_or_missing_count"]:
         failures.append("Segmentation morphology num_blobs contains NaN or missing values.")
+    if segmorph_interface_quality_summary:
+        missing_interface_columns = segmorph_interface_quality_summary["missing_columns"]
+        if missing_interface_columns:
+            failures.append(
+                "Segmentation morphology interface/contact columns are missing: "
+                + ", ".join(missing_interface_columns)
+            )
+        for key, message in (
+            ("alias_mismatch_count", "InterfaceArea differs from dnapl_water_length_px."),
+            (
+                "water_length_nonpositive_with_mask_count",
+                "dnapl_water_length_px is nonpositive for rows with red mask.",
+            ),
+            ("solid_length_negative_count", "dnapl_solid_length_px is negative or missing."),
+            (
+                "solid_contact_fraction_out_of_range_count",
+                "solid_contact_fraction is missing or outside [0, 1].",
+            ),
+            ("a_i_2D_proxy_bad_count", "a_i_2D_proxy is missing or negative for rows with red mask."),
+            ("interface_semantics_bad_count", "interface_semantics has unexpected values."),
+        ):
+            if segmorph_interface_quality_summary.get(key, 0):
+                failures.append(f"{message} Count={segmorph_interface_quality_summary[key]}.")
 
     threshold = float(config.get("validation", {}).get("full_napl_low_threshold", 0.5))
     low_full_rows = [
@@ -987,6 +1085,7 @@ def validate_outputs(
         "segmentation_morphology": {
             "red_mask_area_fraction": segmorph_area_metric,
             "num_blobs": segmorph_blob_metric,
+            "interface_contact": segmorph_interface_quality_summary,
             "by_role": metric_by_role(segmorph_timeseries, "red_mask_area_fraction")
             if segmorph_timeseries
             else {},

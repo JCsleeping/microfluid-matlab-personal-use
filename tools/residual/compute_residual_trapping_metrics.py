@@ -235,6 +235,7 @@ def build_outputs(inputs: Inputs) -> dict[str, object]:
     full_mask_rows = [row for label, row in mask_by_label.items() if label in full_labels]
     full_baseline_s_a = median(finite_values(primary_full_rows, "S_NAPL_color"))
     full_baseline_red = median(finite_values(full_mask_rows, "red_mask_area_fraction"))
+    full_baseline_l_ow = median(finite_values(full_mask_rows, "dnapl_water_length_px"))
     full_s_b_values = [
         read_number(sensitivity_by_label.get(row.get("label", "")), "S_NAPL_color")
         for row in primary_full_rows
@@ -252,6 +253,7 @@ def build_outputs(inputs: Inputs) -> dict[str, object]:
         full_baseline_s_a=full_baseline_s_a,
         full_baseline_s_b=full_baseline_s_b,
         full_baseline_red=full_baseline_red,
+        full_baseline_l_ow=full_baseline_l_ow,
         residual_role=inputs.residual_role,
     )
 
@@ -299,16 +301,20 @@ def build_outputs(inputs: Inputs) -> dict[str, object]:
             "full_baseline_S_NAPL_color_A_median": full_baseline_s_a,
             "full_baseline_S_NAPL_color_B_median": full_baseline_s_b,
             "full_baseline_red_mask_area_fraction_median": full_baseline_red,
+            "full_baseline_dnapl_water_length_px_median": full_baseline_l_ow,
             "baseline_definition": "median over full-role rows",
         },
         "definitions": {
             "S_color_retention_ratio_A": "S_NAPL_color_A / full_baseline_S_NAPL_color_A_median",
             "red_mask_retention_ratio": "red_mask_area_fraction / full_baseline_red_mask_area_fraction_median",
+            "L_ow_retention_ratio": "dnapl_water_length_px / full_baseline_dnapl_water_length_px_median",
             "num_blobs_per_red_area_fraction": "num_blobs / red_mask_area_fraction",
+            "InterfaceArea": "legacy alias of dnapl_water_length_px/L_ow, not area",
             "structure_proxy": (
                 "pool-like if largest_component_fraction >= 0.50 and num_blobs <= 10; "
                 "ganglia-rich if largest_component_fraction <= 0.30 and num_blobs >= 25; "
-                "otherwise mixed; a_i_2D is not available in this CSV workflow"
+                "otherwise mixed; a_i_2D_proxy is reported separately when C2 interface "
+                "columns are present"
             ),
         },
         "summary_metrics": summary_metrics_dict(summary_rows),
@@ -327,6 +333,7 @@ def residual_timeseries_rows(
     full_baseline_s_a: float,
     full_baseline_s_b: float,
     full_baseline_red: float,
+    full_baseline_l_ow: float,
     residual_role: str,
 ) -> tuple[list[dict[str, object]], dict[str, int]]:
     output_rows: list[dict[str, object]] = []
@@ -354,6 +361,9 @@ def residual_timeseries_rows(
         largest = read_number(blob, "largest_component_fraction")
         if not math.isfinite(largest):
             largest = read_number(blob, "max_blob_frac")
+        l_ow_px = read_number(mask, "dnapl_water_length_px")
+        solid_px = read_number(mask, "dnapl_solid_length_px")
+        interface_area = read_number(mask, "InterfaceArea")
         structure, pool_score, ganglia_score = classify_structure_proxy(num_blobs, largest)
         row_status = "ok" if mask is not None else "missing_mask_label"
         role = row.get("role", "")
@@ -376,6 +386,15 @@ def residual_timeseries_rows(
                 "red_mask_retention_ratio": fmt(safe_ratio(red_area, full_baseline_red)),
                 "red_mask_area_px": read_text(mask, "red_mask_area_px"),
                 "domain_area_px": read_text(mask, "domain_area_px"),
+                "dnapl_water_length_px": fmt(l_ow_px),
+                "dnapl_water_length_m": fmt(read_number(mask, "dnapl_water_length_m")),
+                "dnapl_solid_length_px": fmt(solid_px),
+                "dnapl_solid_length_m": fmt(read_number(mask, "dnapl_solid_length_m")),
+                "InterfaceArea": fmt(interface_area),
+                "L_ow_retention_ratio": fmt(safe_ratio(l_ow_px, full_baseline_l_ow)),
+                "solid_contact_fraction": fmt(read_number(mask, "solid_contact_fraction")),
+                "a_i_2D_proxy": fmt(read_number(mask, "a_i_2D_proxy")),
+                "interface_semantics": read_text(mask, "interface_semantics"),
                 "num_blobs": fmt(num_blobs),
                 "component_count": read_text(blob, "component_count"),
                 "mean_blob_size": fmt(read_number(blob, "mean_blob_size")),
@@ -433,6 +452,15 @@ def residual_timeseries_fields() -> list[str]:
         "red_mask_retention_ratio",
         "red_mask_area_px",
         "domain_area_px",
+        "dnapl_water_length_px",
+        "dnapl_water_length_m",
+        "dnapl_solid_length_px",
+        "dnapl_solid_length_m",
+        "InterfaceArea",
+        "L_ow_retention_ratio",
+        "solid_contact_fraction",
+        "a_i_2D_proxy",
+        "interface_semantics",
         "num_blobs",
         "component_count",
         "mean_blob_size",
@@ -487,6 +515,12 @@ def summary_table_rows(
         "S_color_retention_ratio_A",
         "S_color_retention_ratio_B",
         "red_mask_retention_ratio",
+        "dnapl_water_length_px",
+        "dnapl_solid_length_px",
+        "InterfaceArea",
+        "L_ow_retention_ratio",
+        "solid_contact_fraction",
+        "a_i_2D_proxy",
         "endpoint_sensitivity_abs",
         "num_blobs",
         "largest_component_fraction",
@@ -510,8 +544,13 @@ def summary_table_rows(
             "S_NAPL_color_A",
             "S_NAPL_color_B",
             "red_mask_area_fraction",
+            "dnapl_water_length_px",
+            "dnapl_solid_length_px",
             "S_color_retention_ratio_A",
             "red_mask_retention_ratio",
+            "L_ow_retention_ratio",
+            "solid_contact_fraction",
+            "a_i_2D_proxy",
             "num_blobs",
             "largest_component_fraction",
             "structure_proxy",

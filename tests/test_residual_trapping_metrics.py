@@ -109,8 +109,12 @@ def test_residual_trapping_outputs_retention_and_structure_proxy(tmp_path: Path)
     r1 = next(row for row in rows if row["label"] == "r1")
     assert summary["status"] == "pass"
     assert float(summary["baselines"]["full_baseline_S_NAPL_color_A_median"]) == 0.95
+    assert float(summary["baselines"]["full_baseline_dnapl_water_length_px_median"]) == 45.0
     assert abs(float(r1["S_color_retention_ratio_A"]) - (0.2 / 0.95)) < 1e-10
     assert abs(float(r1["red_mask_retention_ratio"]) - (0.1 / 0.45)) < 1e-10
+    assert abs(float(r1["L_ow_retention_ratio"]) - (10.0 / 45.0)) < 1e-10
+    assert float(r1["InterfaceArea"]) == float(r1["dnapl_water_length_px"])
+    assert r1["interface_semantics"] == "InterfaceArea_legacy_alias_of_dnapl_water_length_px_not_area"
     assert r1["structure_proxy"] == "ganglia-rich"
     assert r1["structure_proxy_scope"] == "residual_proxy"
     assert any(
@@ -209,12 +213,23 @@ def mask_row(
     num_blobs: int,
     largest_fraction: float,
 ) -> dict[str, object]:
+    red_area_px = area_fraction * 1000
+    water_length_px = area_fraction * 100
+    solid_length_px = area_fraction * 10
     return {
         "label": label,
         "role": role,
-        "red_mask_area_px": area_fraction * 1000,
+        "red_mask_area_px": red_area_px,
         "domain_area_px": 1000,
         "red_mask_area_fraction": area_fraction,
+        "dnapl_water_length_px": water_length_px,
+        "dnapl_water_length_m": "NaN",
+        "dnapl_solid_length_px": solid_length_px,
+        "dnapl_solid_length_m": "NaN",
+        "InterfaceArea": water_length_px,
+        "solid_contact_fraction": solid_length_px / (water_length_px + solid_length_px),
+        "a_i_2D_proxy": water_length_px / red_area_px,
+        "interface_semantics": "InterfaceArea_legacy_alias_of_dnapl_water_length_px_not_area",
         "num_blobs": num_blobs,
         "component_count": num_blobs,
         "mean_blob_size": 10,

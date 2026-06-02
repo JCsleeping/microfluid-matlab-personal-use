@@ -257,8 +257,8 @@ segmorph  -> locked-threshold red-mask morphology outputs
 ```
 
 The C2 branch is deliberately separate from Branch C. It outputs
-segmentation-derived red-mask 2D occupancy and blob morphology, not
-endpoint-normalized `Sn`.
+segmentation-derived red-mask 2D occupancy, blob morphology, and projected
+interface/contact metrics, not endpoint-normalized `Sn`.
 
 Pilot command:
 
@@ -331,6 +331,22 @@ red_mask_area_fraction median = 0.071369
 full_napl median red_mask_area_fraction = 0.386689
 residual median red_mask_area_fraction = 0.071349
 num_blobs median = 601
+dnapl_water_length_px median = 41453.624643
+dnapl_solid_length_px median = 148.911688
+solid_contact_fraction median = 0.003579
+a_i_2D_proxy median = 0.323424
+InterfaceArea alias mismatches = 0
+interface/contact validation failures = 0
+```
+
+Interface/contact semantics:
+
+```text
+dnapl_water_length_px / dnapl_water_length_m = DNAPL-water projected interface length, L_ow
+dnapl_solid_length_px / dnapl_solid_length_m = DNAPL-solid contact length
+InterfaceArea = legacy alias of dnapl_water_length_px; it is not area
+solid_contact_fraction = dnapl_solid_length_px / (dnapl_water_length_px + dnapl_solid_length_px)
+a_i_2D_proxy = dnapl_water_length_px / red_mask_area_px
 ```
 
 Full C2 outputs:
@@ -378,12 +394,24 @@ A residual median S_NAPL_color = 0.154290
 B residual median S_NAPL_color = 0.152606
 residual median red_mask_area_fraction = 0.071349
 residual median red_mask_retention_ratio = 0.184512
+full median dnapl_water_length_px = 149993.840506
+residual median dnapl_water_length_px = 41428.387053
+residual median dnapl_solid_length_px = 145.941125
+residual median L_ow_retention_ratio = 0.276201
+residual median solid_contact_fraction = 0.003508
+residual median a_i_2D_proxy = 0.323531
 residual median num_blobs = 602
 residual median largest_component_fraction = 0.027627
 residual median ganglia_area_fraction = 0.906160
 final residual label = residual_02_water_3s_42_p063
+final residual RealTime_s = 10214
 final residual S_NAPL_color_A = 0.153737
 final residual red_mask_area_fraction = 0.071089
+final residual dnapl_water_length_px = 41249.114975
+final residual dnapl_solid_length_px = 80.083261
+final residual L_ow_retention_ratio = 0.275005
+final residual solid_contact_fraction = 0.001938
+final residual a_i_2D_proxy = 0.323317
 final residual structure_proxy = ganglia-rich
 ```
 
@@ -395,9 +423,10 @@ ganglia-rich = largest_component_fraction <= 0.30 and num_blobs >= 25
 mixed        = otherwise
 ```
 
-This mirrors the available parts of `analysis/classify_residual_architecture.m`
-but does not use `a_i_2D`, so it should not be interpreted as the full MATLAB
-residual architecture classification.
+This mirrors the available parts of `analysis/classify_residual_architecture.m`.
+`a_i_2D_proxy` is now reported separately from C2 interface columns, but it is a
+2D mask-derived proxy and should not be interpreted as pore-scale calibrated
+interfacial area.
 
 ## Usage Notes
 
