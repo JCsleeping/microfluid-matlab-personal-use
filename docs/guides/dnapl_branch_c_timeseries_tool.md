@@ -425,6 +425,33 @@ The structure label is still a morphology proxy rather than the full residual
 architecture classifier. `a_i_2D_proxy` is reported separately, but it is a
 2D mask-derived proxy and is not yet a pore-scale calibrated interfacial area.
 
+## Analysis Package Outputs
+
+After the full realtime join and residual postprocess pass, build the
+researcher-facing figure/report package:
+
+```powershell
+python tools\analysis_package\build_branch_c_analysis_package.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --residual-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585 --run-label "A1 1-BO 6uL full3585 Branch C/C2"
+```
+
+The package writes:
+
+```text
+analysis_package_full3585\analysis_report.md
+analysis_package_full3585\run_commands.md
+analysis_package_full3585\analysis_package_provenance.json
+analysis_package_full3585\figures\01_S_NAPL_color_A_B_vs_realtime.png/svg
+analysis_package_full3585\figures\02_residual_zoom.png/svg
+analysis_package_full3585\figures\03_red_mask_area_and_blob_morphology.png/svg
+analysis_package_full3585\figures\04_xzone_S_NAPL_color.png/svg
+analysis_package_full3585\figures\05_residual_trapping_summary.png/svg
+analysis_package_full3585\figures\06_interface_contact_metrics.png/svg
+```
+
+The analysis package is read-only with respect to the source Branch C/C2 CSVs.
+Its provenance JSON records input paths, output files, row counts, unmatched
+label counts, current Git SHA, and summary metrics.
+
 ## MATLAB Compatibility
 
 Use HDF5 compression `none` for MATLAB Branch C runs. `lzf` is intentionally

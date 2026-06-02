@@ -428,6 +428,52 @@ This mirrors the available parts of `analysis/classify_residual_architecture.m`.
 2D mask-derived proxy and should not be interpreted as pore-scale calibrated
 interfacial area.
 
+## 2026-06-02 Full3585 Analysis Package
+
+Added a standalone package builder:
+
+```text
+tools/analysis_package/build_branch_c_analysis_package.py
+```
+
+Command used:
+
+```powershell
+python tools\analysis_package\build_branch_c_analysis_package.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --residual-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585 --run-label "A1 1-BO 6uL full3585 Branch C/C2"
+```
+
+Package result:
+
+```text
+status = pass
+figures = 6 PNG + 6 SVG
+primary rows = 3585
+full rows = 498
+residual rows = 3087
+missing label counts = 0 for mask/sensitivity/comparison/blob/xzone
+git_head = e6e8ba01d69882e5f6574d295ac499c8a5d0d3b7
+```
+
+Outputs:
+
+```text
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585\analysis_report.md
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585\run_commands.md
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585\analysis_package_provenance.json
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585\figures\
+```
+
+Figure set:
+
+```text
+01_S_NAPL_color_A_B_vs_realtime
+02_residual_zoom
+03_red_mask_area_and_blob_morphology
+04_xzone_S_NAPL_color
+05_residual_trapping_summary
+06_interface_contact_metrics
+```
+
 ## Usage Notes
 
 For a new ROI, rerun at least:
