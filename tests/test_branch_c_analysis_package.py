@@ -29,9 +29,10 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert provenance["status"] == "pass"
     assert (out_dir / "analysis_report.md").is_file()
     assert (out_dir / "run_commands.md").is_file()
+    assert (out_dir / "analysis_parameter_summary.csv").is_file()
     assert (out_dir / "analysis_package_provenance.json").is_file()
     figures = provenance["outputs"]["figures"]
-    assert len(figures) == 6
+    assert len(figures) == 7
     for outputs in figures.values():
         for path_value in outputs.values():
             path = Path(path_value)
@@ -41,8 +42,13 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     report = (out_dir / "analysis_report.md").read_text(encoding="utf-8")
     assert "InterfaceArea" in report
     assert "legacy alias" in report
+    assert "Derived Parameters" in report
     saved = json.loads((out_dir / "analysis_package_provenance.json").read_text(encoding="utf-8"))
     assert saved["row_counts"]["primary_rows"] == 4
+    assert saved["figure_style"] == "nature_timeseries_v1"
+    assert saved["outputs"]["parameter_summary_csv"].endswith("analysis_parameter_summary.csv")
+    assert saved["derived_parameters"]["run.total_rows"] == "4"
+    assert saved["derived_parameters"]["front_proxy.residual_first_outlet_zone_ge_0p2_since_residual_start_min"] == "0"
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -98,6 +104,13 @@ def write_timeline_inputs(timeline_dir: Path) -> None:
                 "S_x_inlet": s_a * 0.9,
                 "S_x_mid": s_a,
                 "S_x_outlet": s_a * 1.1,
+                "S_x_inlet_outlet_asymmetry": s_a * 0.9 - s_a * 1.1,
+                "active_bin_fraction_ge_0p2": 1.0 if s_a >= 0.2 else 0.0,
+                "active_bin_fraction_ge_0p5": 1.0 if s_a >= 0.5 else 0.0,
+                "napl_extent_fraction_ge_0p2": 1.0 if s_a >= 0.2 else 0.0,
+                "napl_extent_fraction_ge_0p5": 1.0 if s_a >= 0.5 else 0.0,
+                "outlet_zone_ge_0p2": 1.0 if s_a * 1.1 >= 0.2 else 0.0,
+                "outlet_zone_ge_0p5": 1.0 if s_a * 1.1 >= 0.5 else 0.0,
             }
         )
         mask_row = {

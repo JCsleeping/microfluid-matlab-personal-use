@@ -474,6 +474,43 @@ Figure set:
 06_interface_contact_metrics
 ```
 
+## 2026-06-03 Analysis Package Style and Parameter Expansion
+
+Updated `tools/analysis_package/build_branch_c_analysis_package.py` so the
+analysis-package figures follow the existing `visualization/plot_timeseries.py`
+Nature-style conventions:
+
+```text
+figure_style = nature_timeseries_v1
+Wong color palette
+white-face line markers with sparse markevery
+hidden top/right axes, light major grid, minor ticks
+600 dpi PNG output and editable SVG text
+```
+
+The package also now writes:
+
+```text
+analysis_parameter_summary.csv
+07_endpoint_sensitivity_and_x_extent.png/svg
+```
+
+Supplemented parameters include:
+
+```text
+run duration and full/residual phase duration
+endpoint A/B sensitivity median/p95/max
+full/residual S_NAPL_color and red-mask retention ratios
+full/residual L_ow, solid-contact fraction, and a_i_2D proxy
+blob count, largest connected component, droplet/column/cluster fractions
+x-zone S_NAPL_color and active/extent fraction proxies
+all-sequence and residual-role first outlet-zone ge_0p2/ge_0p5 timing proxies
+```
+
+These outputs remain operational Branch C/C2 descriptors. They are derived from
+the existing realtime CSVs and residual postprocess summary, and do not change
+the source CSVs or claim endpoint-validated physical Sn.
+
 ## Usage Notes
 
 For a new ROI, rerun at least:

@@ -439,6 +439,7 @@ The package writes:
 ```text
 analysis_package_full3585\analysis_report.md
 analysis_package_full3585\run_commands.md
+analysis_package_full3585\analysis_parameter_summary.csv
 analysis_package_full3585\analysis_package_provenance.json
 analysis_package_full3585\figures\01_S_NAPL_color_A_B_vs_realtime.png/svg
 analysis_package_full3585\figures\02_residual_zoom.png/svg
@@ -446,11 +447,24 @@ analysis_package_full3585\figures\03_red_mask_area_and_blob_morphology.png/svg
 analysis_package_full3585\figures\04_xzone_S_NAPL_color.png/svg
 analysis_package_full3585\figures\05_residual_trapping_summary.png/svg
 analysis_package_full3585\figures\06_interface_contact_metrics.png/svg
+analysis_package_full3585\figures\07_endpoint_sensitivity_and_x_extent.png/svg
 ```
 
 The analysis package is read-only with respect to the source Branch C/C2 CSVs.
 Its provenance JSON records input paths, output files, row counts, unmatched
-label counts, current Git SHA, and summary metrics.
+label counts, current Git SHA, figure style, summary metrics, and derived
+parameters. Figures use the same compact Nature-style conventions as
+`visualization/plot_timeseries.py`: Wong colors, white-face markers, hidden
+top/right spines, light major grid, 600 dpi PNG output, and editable SVG text.
+
+`analysis_parameter_summary.csv` records run duration, full/residual phase
+counts, endpoint A/B sensitivity, red-mask occupancy, L_ow and solid-contact
+metrics, residual blob morphology, x-zone extent proxies, and outlet-zone
+front timing proxies. These are operational descriptors derived from existing
+Branch C/C2 CSVs; they do not upgrade `S_NAPL_color` to endpoint-validated
+physical Sn. The package records both all-sequence outlet-zone first-active
+times and residual-role-only first-active times; the all-sequence value can be
+0 min when the full-NAPL phase is already active at the outlet.
 
 ## MATLAB Compatibility
 
