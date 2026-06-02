@@ -113,6 +113,39 @@ downstream MATLAB result `.mat`, for example:
 T = reconstruct_timeline('D:\path\to\results_*.mat')
 ```
 
+For standalone Branch C/C2 CSV outputs, use the manifest-based joiner:
+
+```powershell
+python tools\timeline\join_branch_c_realtime.py --manifest outputs\manifests_20260601\A1_1BO_6UL_manual_roi_page_expanded_full3585\accepted_frames.csv --branch-c-dir outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi --segmentation-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585
+```
+
+The joiner does not modify original CSVs. It writes `frame_timeline_manifest.csv`,
+`timeline_join_summary.json`, and `_realtime.csv` copies with `RealTime_s`,
+`Time_min`, and `Interval_s` columns.
+
+Full 3585-page timeline join validation:
+
+```text
+status = pass
+timeline rows = 3585
+joined CSVs = 10
+unmatched rows = 0
+last RealTime_s = 10214 s
+gap_policy = mtime
+gap_count = 2 files
+total_gap_s = 32 s
+```
+
+Validated full timeline outputs:
+
+```text
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585\frame_timeline_manifest.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585\timeline_join_summary.json
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585\S_NAPL_color_primary_A_realtime.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585\S_NAPL_color_xbins_primary_A_realtime.csv
+outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585\red_mask_timeseries_realtime.csv
+```
+
 The MATLAB bridge now also writes long-format x-bin outputs:
 
 ```text

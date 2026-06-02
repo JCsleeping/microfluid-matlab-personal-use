@@ -74,11 +74,21 @@ time_step_s  = null
 
 The Branch C pipeline does not infer physical acquisition time by default.
 Physical `RealTime_s` should be reconstructed as a post-processing step, using
-the existing MATLAB helper:
+the existing MATLAB helper for legacy `.mat` results:
 
 ```matlab
 T = reconstruct_timeline('D:\path\to\results_*.mat')
 ```
+
+For standalone Branch C/C2 CSV outputs, use the manifest-based joiner:
+
+```powershell
+python tools\timeline\join_branch_c_realtime.py --manifest outputs\manifests_20260601\A1_1BO_6UL_manual_roi_page_expanded_full3585\accepted_frames.csv --branch-c-dir outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi --segmentation-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585
+```
+
+The joiner writes `frame_timeline_manifest.csv`, `timeline_join_summary.json`,
+and `_realtime.csv` copies of the requested CSVs. Original Branch C/C2 CSVs are
+not modified.
 
 `manifest.time_step_s` remains available only for explicit diagnostic sequence
 axes. Do not use it as a substitute for reconstructed acquisition time.
@@ -223,9 +233,8 @@ python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_
 
 The x-bin output is long-format. Each `frame_index` has one row per `x_bin`;
 the current MATLAB bridge uses 20 x-bins with approximately equal numbers of
-flow-domain pixels per bin. To convert frame-index outputs to real time, use
-`utilities/reconstruct_timeline.m` during post-processing and join by frame/page
-order.
+flow-domain pixels per bin. To convert frame-index outputs to real time, use the
+manifest-based timeline joiner above and join by `label`.
 
 ## Regional Proxy Outputs
 
