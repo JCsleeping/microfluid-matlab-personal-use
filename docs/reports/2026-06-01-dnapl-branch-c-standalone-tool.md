@@ -138,6 +138,19 @@ B residual median = 0.170145
 endpoint sensitivity median = 0.001722
 ```
 
+Full 3585-page x-bin validation:
+
+```text
+status = pass
+rows = 3585 primary / 3585 sensitivity / 3585 comparison
+xbin rows = 71700 primary / 71700 sensitivity
+NaNs = 0
+A xbin median S_NAPL_color_xbin = 0.155363
+B xbin median S_NAPL_color_xbin = 0.150433
+A residual xbin median = 0.151238
+B residual xbin median = 0.147391
+```
+
 ## 2026-06-02 Regional Proxy Extension
 
 The standalone validation step now derives x-zone regional proxy outputs when
@@ -164,6 +177,31 @@ The CSVs expose operational color-index metrics including `S_x_inlet`,
 `S_x_mid`, `S_x_outlet`, terminal/mid asymmetry, thresholded extent fraction,
 and active-bin fraction. The JSON summary records first outlet/domain events at
 the configured thresholds.
+
+Full 3585-page x-zone / front-proxy validation:
+
+```text
+status = pass
+xzone rows = 3585 primary / 3585 sensitivity / 3585 comparison
+A xzone mid median = 0.150015
+B xzone mid median = 0.148435
+A residual S_x_inlet / S_x_mid / S_x_outlet =
+  0.151721 / 0.149931 / 0.211507
+B residual S_x_inlet / S_x_mid / S_x_outlet =
+  0.148204 / 0.148351 / 0.211022
+outlet_first_le_0p5 = frame 439, full_01_water_1s_3_p010
+domain_active_fraction_le_5pct_0p5 = frame 450, full_01_water_1s_3_p021
+```
+
+Full x-bin / x-zone outputs:
+
+```text
+outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi\S_NAPL_color_xbins_primary_A.csv
+outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi\S_NAPL_color_xbins_sensitivity_B.csv
+outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi\S_NAPL_color_xzones_primary_A.csv
+outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi\S_NAPL_color_xzones_sensitivity_B.csv
+outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi\S_NAPL_color_regional_proxy_summary.json
+```
 
 True geometric `core_flow` / `edge_flow` remains a later gate. It requires a
 solid/core mask and should follow the existing MATLAB convention based on
