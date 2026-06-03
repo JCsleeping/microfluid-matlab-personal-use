@@ -440,12 +440,6 @@ def read_csv_rows(path_value: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def read_csv_fieldnames(path_value: Path) -> list[str]:
-    with path_value.open("r", newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        return list(reader.fieldnames or [])
-
-
 def finite_float(value: str) -> float | None:
     try:
         number = float(value)
@@ -572,19 +566,33 @@ def expected_processing_scale(config: dict[str, Any]) -> float | None:
     return number
 
 
-def count_bad_processing_scale(rows: list[dict[str, str]], expected_scale: float | None) -> int:
-    if expected_scale is None:
-        return 0
-    bad = 0
-    for row in rows:
-        value = finite_float(row.get("processing_scale_factor", ""))
-        if value is None or abs(value - expected_scale) > 1.0e-9:
-            bad += 1
-    return bad
-
-
-def count_bad_mask_grid(rows: list[dict[str, str]]) -> int:
-    return sum(row.get("mask_grid", "") != "processing_grid" for row in rows)
+def summarize_artifact_csv(
+    path_value: Path,
+    required_columns: tuple[str, ...],
+    expected_scale: float | None,
+) -> dict[str, Any]:
+    with path_value.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        missing = [column for column in required_columns if column not in fieldnames]
+        row_count = 0
+        scale_bad = 0
+        grid_bad = 0
+        for row in reader:
+            row_count += 1
+            value = finite_float(row.get("processing_scale_factor", ""))
+            if expected_scale is not None and (
+                value is None or abs(value - expected_scale) > 1.0e-9
+            ):
+                scale_bad += 1
+            if row.get("mask_grid", "") != "processing_grid":
+                grid_bad += 1
+    return {
+        "row_count": row_count,
+        "missing_columns": missing,
+        "scale_mismatch_count": scale_bad,
+        "mask_grid_bad_count": grid_bad,
+    }
 
 
 def segmorph_artifact_quality(
@@ -645,23 +653,29 @@ def segmorph_artifact_quality(
                 f"{stack_manifest_path}"
             )
         else:
-            stack_rows = read_csv_rows(stack_manifest_path)
-            stack_fields = read_csv_fieldnames(stack_manifest_path)
-            quality["row_counts"]["mask_stack_manifest"] = len(stack_rows)
-            missing = [col for col in SEGMORPH_MASK_STACK_COLUMNS if col not in stack_fields]
+            stack_summary = summarize_artifact_csv(
+                stack_manifest_path,
+                SEGMORPH_MASK_STACK_COLUMNS,
+                expected_scale,
+            )
+            quality["row_counts"]["mask_stack_manifest"] = stack_summary["row_count"]
+            missing = stack_summary["missing_columns"]
             quality["missing_columns"]["mask_stack_manifest"] = missing
             if missing:
                 failures.append(
                     "Segmentation morphology mask-stack manifest columns are missing: "
                     + ", ".join(missing)
                 )
-            if timeseries_row_count is not None and len(stack_rows) != timeseries_row_count:
+            if (
+                timeseries_row_count is not None
+                and stack_summary["row_count"] != timeseries_row_count
+            ):
                 failures.append(
                     "Segmentation morphology mask-stack manifest row count "
-                    f"{len(stack_rows)} != timeseries rows {timeseries_row_count}."
+                    f"{stack_summary['row_count']} != timeseries rows {timeseries_row_count}."
                 )
-            scale_bad = count_bad_processing_scale(stack_rows, expected_scale)
-            grid_bad = count_bad_mask_grid(stack_rows)
+            scale_bad = stack_summary["scale_mismatch_count"]
+            grid_bad = stack_summary["mask_grid_bad_count"]
             quality["scale_mismatch_counts"]["mask_stack_manifest"] = scale_bad
             quality["mask_grid_bad_counts"]["mask_stack_manifest"] = grid_bad
             if scale_bad:
@@ -682,18 +696,21 @@ def segmorph_artifact_quality(
                 f"{blob_detail_path}"
             )
         else:
-            blob_rows = read_csv_rows(blob_detail_path)
-            blob_fields = read_csv_fieldnames(blob_detail_path)
-            quality["row_counts"]["blob_detail"] = len(blob_rows)
-            missing = [col for col in SEGMORPH_BLOB_DETAIL_COLUMNS if col not in blob_fields]
+            blob_summary = summarize_artifact_csv(
+                blob_detail_path,
+                SEGMORPH_BLOB_DETAIL_COLUMNS,
+                expected_scale,
+            )
+            quality["row_counts"]["blob_detail"] = blob_summary["row_count"]
+            missing = blob_summary["missing_columns"]
             quality["missing_columns"]["blob_detail"] = missing
             if missing:
                 failures.append(
                     "Segmentation morphology blob-detail columns are missing: "
                     + ", ".join(missing)
                 )
-            scale_bad = count_bad_processing_scale(blob_rows, expected_scale)
-            grid_bad = count_bad_mask_grid(blob_rows)
+            scale_bad = blob_summary["scale_mismatch_count"]
+            grid_bad = blob_summary["mask_grid_bad_count"]
             quality["scale_mismatch_counts"]["blob_detail"] = scale_bad
             quality["mask_grid_bad_counts"]["blob_detail"] = grid_bad
             if scale_bad:
