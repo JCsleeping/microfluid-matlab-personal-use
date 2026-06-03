@@ -50,7 +50,7 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     saved = json.loads((out_dir / "analysis_package_provenance.json").read_text(encoding="utf-8"))
     assert saved["row_counts"]["primary_rows"] == 4
     assert saved["figure_style"] == "nature_timeseries_v1"
-    assert saved["analysis_policy_version"] == "branch_c_proxy_alignment_v2_physical_metadata_gate"
+    assert saved["analysis_policy_version"] == "branch_c_proxy_alignment_v3_recovered_metadata_gate"
     assert saved["outputs"]["parameter_summary_csv"].endswith("analysis_parameter_summary.csv")
     assert saved["outputs"]["derived_timeseries_csv"].endswith("analysis_timeseries_derived.csv")
     assert saved["outputs"]["legacy_plot_timeseries_csv"].endswith("branch_c_legacy_plot_timeseries.csv")
@@ -149,8 +149,9 @@ def test_branch_c_analysis_package_applies_trusted_physical_metadata(tmp_path: P
     derived_rows = read_csv(out_dir / "analysis_timeseries_derived.csv")
     assert derived_rows[0]["processing_scale_factor"] == "3"
     assert derived_rows[0]["pixel_size_um"] == "2"
+    assert abs(float(derived_rows[0]["processing_pixel_size_um"]) - (2.0 / 3.0)) < 1.0e-12
     assert derived_rows[1]["PV"] == "2"
-    assert derived_rows[0]["dnapl_water_length_m"] == "0.0009"
+    assert derived_rows[0]["dnapl_water_length_m"] == "0.0003"
     assert derived_rows[0]["capillary_number"] == "3.33333333333e-05"
     assert derived_rows[1]["DissolutionRate_pv_lr_per_PV"] != "NaN"
 

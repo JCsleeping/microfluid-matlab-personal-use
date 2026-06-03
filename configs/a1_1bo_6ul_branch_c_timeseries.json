@@ -65,6 +65,7 @@
     "metadata_status": "provenance_only",
     "processing_scale_factor": 3,
     "pixel_size_um": null,
+    "processing_pixel_size_um": null,
     "flow_rate_ul_min": null,
     "pore_volume_ul": null,
     "channel_depth_um": null,

@@ -32,7 +32,7 @@ WONG = {
 }
 
 FIGURE_STYLE = "nature_timeseries_v1"
-ANALYSIS_POLICY_VERSION = "branch_c_proxy_alignment_v2_physical_metadata_gate"
+ANALYSIS_POLICY_VERSION = "branch_c_proxy_alignment_v3_recovered_metadata_gate"
 MM_PER_INCH = 25.4
 WIDE_SIZE = (180 / MM_PER_INCH, 82 / MM_PER_INCH)
 TALL_SIZE = (180 / MM_PER_INCH, 132 / MM_PER_INCH)
@@ -163,8 +163,12 @@ def normalize_physical_metadata(path: Path | None) -> dict[str, Any]:
         gamma_n_m = ift_mn_m * 1.0e-3
         capillary_number = viscosity * velocity / gamma_n_m if gamma_n_m > 0 else math.nan
 
+    processing_pixel_size_um = values["processing_pixel_size_um"]
     derived = {
         "pixel_size_m": pixel_size_um * 1.0e-6 if trusted and math.isfinite(pixel_size_um) else math.nan,
+        "processing_pixel_size_m": processing_pixel_size_um * 1.0e-6
+        if trusted and math.isfinite(processing_pixel_size_um)
+        else math.nan,
         "pv_ready": bool(trusted and math.isfinite(flow_rate) and math.isfinite(pore_volume)),
         "velocity_m_per_s": velocity if trusted else math.nan,
         "capillary_number": capillary_number if trusted else math.nan,
@@ -1032,11 +1036,12 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
     if not math.isfinite(baseline) or baseline == 0:
         baseline = 1.0
     metadata_trusted = bool(physical_metadata.get("trusted", False))
-    pixel_size_m = metadata_number(physical_metadata, "derived", "pixel_size_m")
+    processing_pixel_size_m = metadata_number(physical_metadata, "derived", "processing_pixel_size_m")
     processing_scale_factor = metadata_number(physical_metadata, "values", "processing_scale_factor")
     flow_rate_ul_min = metadata_number(physical_metadata, "values", "flow_rate_ul_min")
     pore_volume_ul = metadata_number(physical_metadata, "values", "pore_volume_ul")
     pixel_size_um = metadata_number(physical_metadata, "values", "pixel_size_um")
+    processing_pixel_size_um = metadata_number(physical_metadata, "values", "processing_pixel_size_um")
     capillary_number = metadata_number(physical_metadata, "derived", "capillary_number")
     pv_ready = bool(physical_metadata.get("derived", {}).get("pv_ready", False))
 
@@ -1081,13 +1086,21 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
         else:
             architecture_type = "mixed"
         water_length_m = finite_or_nan(mask, "dnapl_water_length_m")
-        if not math.isfinite(water_length_m) and metadata_trusted and math.isfinite(pixel_size_m):
+        if not math.isfinite(water_length_m) and metadata_trusted and math.isfinite(processing_pixel_size_m):
             water_length_px = finite_or_nan(mask, "dnapl_water_length_px")
-            water_length_m = water_length_px * pixel_size_m if math.isfinite(water_length_px) else math.nan
+            water_length_m = (
+                water_length_px * processing_pixel_size_m
+                if math.isfinite(water_length_px)
+                else math.nan
+            )
         solid_length_m = finite_or_nan(mask, "dnapl_solid_length_m")
-        if not math.isfinite(solid_length_m) and metadata_trusted and math.isfinite(pixel_size_m):
+        if not math.isfinite(solid_length_m) and metadata_trusted and math.isfinite(processing_pixel_size_m):
             solid_length_px = finite_or_nan(mask, "dnapl_solid_length_px")
-            solid_length_m = solid_length_px * pixel_size_m if math.isfinite(solid_length_px) else math.nan
+            solid_length_m = (
+                solid_length_px * processing_pixel_size_m
+                if math.isfinite(solid_length_px)
+                else math.nan
+            )
         real_time_s = finite_or_nan(primary_row, "RealTime_s")
         pv_value = (
             flow_rate_ul_min * real_time_s / 60.0 / pore_volume_ul
@@ -1171,6 +1184,7 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
             "score_napl_ref_A": finite_or_nan(primary_row, "score_napl_ref"),
             "score_napl_ref_B": finite_or_nan(sensitivity, "score_napl_ref"),
             "pixel_size_um": pixel_size_um if metadata_trusted else math.nan,
+            "processing_pixel_size_um": processing_pixel_size_um if metadata_trusted else math.nan,
             "processing_scale_factor": processing_scale_factor,
             "flow_rate_ul_min": flow_rate_ul_min if metadata_trusted else math.nan,
             "pore_volume_ul": pore_volume_ul if metadata_trusted else math.nan,
@@ -1319,6 +1333,7 @@ DERIVED_FIELDNAMES = [
     "score_napl_ref_A",
     "score_napl_ref_B",
     "pixel_size_um",
+    "processing_pixel_size_um",
     "processing_scale_factor",
     "flow_rate_ul_min",
     "pore_volume_ul",
@@ -1568,7 +1583,7 @@ def compute_qc_summary(
     add("legacy_plot_timeseries_ready", legacy_plot_ready, "", "Required legacy columns are present and finite.")
     add("legacy_adapter_nonfinite_required_value_count", legacy_nonfinite_count, "cells", "Nonfinite legacy numeric values are preserved as NaN, not filled.")
     metadata_trusted = bool(physical_metadata.get("trusted", False))
-    pixel_size_um = metadata_number(physical_metadata, "values", "pixel_size_um")
+    processing_pixel_size_um = metadata_number(physical_metadata, "values", "processing_pixel_size_um")
     processing_scale_factor = metadata_number(physical_metadata, "values", "processing_scale_factor")
     capillary_number = metadata_number(physical_metadata, "derived", "capillary_number")
     meter_values = []
@@ -1581,7 +1596,7 @@ def compute_qc_summary(
             meter_values.append(meter_value)
     meter_ready = (
         metadata_trusted
-        and math.isfinite(pixel_size_um)
+        and math.isfinite(processing_pixel_size_um)
         and bool(meter_values)
         and all(value > 0 for value in meter_values)
     )
@@ -1613,7 +1628,7 @@ def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list
     physical_metadata = physical_metadata or {}
     metadata_trusted = bool(physical_metadata.get("trusted", False))
     pixel_size_ready = metadata_trusted and math.isfinite(
-        metadata_number(physical_metadata, "values", "pixel_size_um")
+        metadata_number(physical_metadata, "values", "processing_pixel_size_um")
     )
     pv_ready = bool(physical_metadata.get("derived", {}).get("pv_ready", False))
     ca_ready = metadata_trusted and math.isfinite(
@@ -1679,15 +1694,15 @@ def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list
     add("shape_entropy", "analyze_blob_population_morphology.py", "", "not_computable", "shape-distribution entropy", "requires per-blob shape distribution", "provide blob_detail_all_frames.csv")
     add("fracDroplets/Columns/Clusters", "plot_timeseries.py", "frac_droplets/columns/clusters", "aligned_proxy", "classification fractions copied from C2 summary")
     add("areaFrac*/countFrac*Valid", "plot_timeseries.py; analyze_blob_population_morphology.py", "area/count proxy copies", "partial_proxy", "valid variants masked by ValidStructure_proxy", "no per-blob area/count recomputation", "provide blob_detail_all_frames.csv")
-    add("InterfaceArea", "utilities/build_solubilization_timeseries_table.m", "dnapl_water_length_px", "aligned_proxy", "legacy alias of L_ow projected length, not area", "", "pixel_size_um for metre units")
+    add("InterfaceArea", "utilities/build_solubilization_timeseries_table.m", "dnapl_water_length_px", "aligned_proxy", "legacy alias of L_ow projected length, not area", "", "processing_pixel_size_um for metre units")
     add(
         "dnapl_water_length_m",
         "new Branch C/C2 contract",
         "dnapl_water_length_m",
         "aligned" if pixel_size_ready else "missing_metadata",
         "metre L_ow",
-        "" if pixel_size_ready else "missing trusted pixel_size",
-        "provide trusted native pixel size",
+        "" if pixel_size_ready else "missing trusted processing_pixel_size_um",
+        "provide trusted native pixel size plus processing scale, or processing pixel size",
     )
     add("dnapl_solid_length_px", "new Branch C/C2 contract", "dnapl_solid_length_px", "aligned", "DNAPL-solid projected contact length")
     add(
@@ -1696,8 +1711,8 @@ def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list
         "dnapl_solid_length_m",
         "aligned" if pixel_size_ready else "missing_metadata",
         "metre DNAPL-solid contact length",
-        "" if pixel_size_ready else "missing trusted pixel_size",
-        "provide trusted native pixel size",
+        "" if pixel_size_ready else "missing trusted processing_pixel_size_um",
+        "provide trusted native pixel size plus processing scale, or processing pixel size",
     )
     add("a_i_2D", "plot_timeseries.py", "a_i_2D_proxy", "aligned_proxy", "2D mask-derived L_ow/red-area proxy")
     add("ArchitectureType/PoolScore/GangliaScore", "analyze_architecture_vs_time.py", "ArchitectureType_proxy/PoolScore_proxy/GangliaScore_proxy", "partial_proxy", "Level-A proxy from blob count and largest-component fraction", "not legacy threshold-calibrated architecture", "run architecture classifier on physical Sn + full morphology")
@@ -1709,6 +1724,15 @@ def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list
         "pixel-to-length calibration",
         "" if pixel_size_ready else "not present as trusted metadata",
         "provide trusted calibration or processing manifest",
+    )
+    add(
+        "processing_pixel_size_um",
+        "visualization/recover_experiment_metadata.py + Branch C adapter",
+        "physical_metadata.processing_pixel_size_um",
+        "metadata_ready" if pixel_size_ready else "missing_metadata",
+        "processing-grid pixel-to-length calibration",
+        "" if pixel_size_ready else "not present as trusted metadata",
+        "provide trusted calibration and processing_scale_factor",
     )
     add(
         "pore_volume_ul",

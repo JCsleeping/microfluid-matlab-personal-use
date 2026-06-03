@@ -167,7 +167,8 @@ derived fields, the manifest must be explicitly trusted:
   "schema_version": 1,
   "trusted": true,
   "processing_scale_factor": 3,
-  "pixel_size_um": 2.0,
+  "pixel_size_um": 4.1,
+  "processing_pixel_size_um": 1.3666666667,
   "flow_rate_ul_min": 6.0,
   "pore_volume_ul": 3.0,
   "channel_width_um": 1000.0,
@@ -185,11 +186,37 @@ Without `trusted=true` or a trusted/calibrated `metadata_status`, the package
 records metadata as provenance only. It will not promote proxy outputs to
 physical quantities.
 
+When old MATLAB/postprocess metadata has already been recovered, build the
+Branch C manifest from that JSON instead of manually transcribing units:
+
+```powershell
+python tools\analysis_package\build_physical_metadata_manifest.py --recovered-metadata D:\path\to\recovered_metadata.json --processing-scale-factor 3 --trusted --out D:\path\to\physical_metadata.json
+```
+
+The standalone runner can also do this conversion from config:
+
+```json
+{
+  "physical_metadata_recovery": {
+    "path": "D:/path/to/recovered_metadata.json",
+    "trusted": true,
+    "processing_scale_factor": 3
+  }
+}
+```
+
+The adapter maps old recovery fields into Branch C units, including
+`pore_volume_m3 -> pore_volume_ul`, `channel_depth_m -> channel_depth_um`,
+`flow_domain_width_m -> channel_width_um`, `active_flow_rate_ul_min`, and
+`interfacial_tension (N/m) -> IFT_mN_m`. Field provenance is retained in
+`field_provenance`.
+
 Trusted metadata enables only fields with explicit formulas:
 
 ```text
-dnapl_water_length_m = dnapl_water_length_px * pixel_size_m
-dnapl_solid_length_m = dnapl_solid_length_px * pixel_size_m
+processing_pixel_size_um = pixel_size_um / processing_scale_factor
+dnapl_water_length_m = dnapl_water_length_px * processing_pixel_size_m * 1e-6
+dnapl_solid_length_m = dnapl_solid_length_px * processing_pixel_size_m * 1e-6
 PV = flow_rate_ul_min * RealTime_s / 60 / pore_volume_ul
 dS_dPV = -dS_color_norm/dPV, using the existing monotone proxy rate convention
 velocity_m_per_s = flow_rate / (channel_width * channel_depth)
@@ -622,9 +649,11 @@ toa_ready = false
 
 Those fields stay false until the required physical metadata or mask-stack
 inputs are supplied. `processing_scale_factor = 3` is recorded separately as
-processing-grid provenance. Missing physical quantities are written as `NaN`,
-`missing_metadata`, or `not_computable`; they are not guessed from filenames or
-proxy curves.
+processing-grid provenance, and physical length conversion uses
+`processing_pixel_size_um`, not native `pixel_size_um`, when the source length
+is a processing-grid pixel count. Missing physical quantities are written as
+`NaN`, `missing_metadata`, or `not_computable`; they are not guessed from
+filenames or proxy curves.
 
 `research_parameter_alignment.csv` maps legacy MATLAB/visualization parameter
 names to one of these statuses:

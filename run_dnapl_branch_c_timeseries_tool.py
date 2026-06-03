@@ -199,6 +199,27 @@ def write_water_endpoints_input(config: dict[str, Any], manifest_dir: Path) -> P
 def write_physical_metadata_input(config: dict[str, Any], paths: dict[str, Path]) -> Path | None:
     if config.get("physical_metadata_path"):
         return resolve_path(config["physical_metadata_path"])
+    recovery_config = config.get("physical_metadata_recovery") or {}
+    recovery_path_value = config.get("physical_metadata_recovery_path") or recovery_config.get("path")
+    if recovery_path_value:
+        from tools.analysis_package.physical_metadata_manifest import (
+            build_physical_metadata_manifest,
+            load_recovered_metadata,
+        )
+
+        recovery_path = resolve_path(recovery_path_value)
+        assert recovery_path is not None
+        metadata = build_physical_metadata_manifest(
+            load_recovered_metadata(recovery_path),
+            processing_scale_factor=recovery_config.get("processing_scale_factor"),
+            trusted=recovery_config.get("trusted"),
+            metadata_status=recovery_config.get("metadata_status"),
+            source_path=recovery_path,
+        )
+        paths["run_config_dir"].mkdir(parents=True, exist_ok=True)
+        path_value = paths["run_config_dir"] / f"{run_id_for(config)}_physical_metadata.json"
+        path_value.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        return path_value
     metadata = config.get("physical_metadata")
     if not metadata:
         return None
