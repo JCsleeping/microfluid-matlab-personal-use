@@ -630,6 +630,59 @@ legacy_adapter_nonfinite_required_value_count = 0
 research_parameter_alignment rows = 62
 ```
 
+## 2026-06-03 Runner Postprocess Step Integration
+
+Extended `run_dnapl_branch_c_timeseries_tool.py` with standard postprocess
+steps:
+
+```text
+timeline -> tools/timeline/join_branch_c_realtime.py
+residual -> tools/residual/compute_residual_trapping_metrics.py
+analysis -> tools/analysis_package/build_branch_c_analysis_package.py
+```
+
+The runner now resolves default directories:
+
+```text
+<output_root>\timeline_postprocess\<run_id>
+<output_root>\residual_trapping_postprocess\<run_id>
+<output_root>\analysis_package_<run_suffix>
+```
+
+Mode-specific A1 run labels are recorded in
+`configs/a1_1bo_6ul_branch_c_timeseries.json`:
+
+```text
+A1 1-BO 6uL pilot100 Branch C/C2
+A1 1-BO 6uL full3585 Branch C/C2
+```
+
+Command used to verify the existing full3585 outputs:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate timeline residual analysis --manifest-dir "outputs\manifests_20260601\A1_1BO_6UL_manual_roi_page_expanded_full3585" --cache-dir "outputs\basicpy_hdf5_cache_page_expanded_full3585_20260601\A1_1BO_6UL_manual_roi" --matlab-dir "outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi" --segmentation-morphology-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585" --timeline-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585" --residual-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585" --analysis-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585"
+```
+
+Result:
+
+```text
+run_summary.status = pass
+timeline_join_summary.status = pass
+timeline rows = 3585
+residual_trapping_summary.status = pass
+residual timeseries rows = 3585
+analysis_package.status = pass
+analysis figures = 11 PNG + 11 SVG
+analysis_timeseries_derived rows = 3585
+branch_c_legacy_plot_timeseries rows = 3585
+run_summary.commands = 3 postprocess commands
+```
+
+The physical-metadata gate remains unchanged: postprocess integration does not
+promote proxy outputs to physical quantities. Pixel size, PV, mass-transfer,
+endpoint-validation, and mask-stack dependent metrics still require their own
+trusted metadata/validation inputs before they can be marked calibrated.
+
 ## Usage Notes
 
 For a new ROI, rerun at least:

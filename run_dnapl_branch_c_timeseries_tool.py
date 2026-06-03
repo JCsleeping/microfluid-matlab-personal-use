@@ -14,7 +14,8 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parent
 DEFAULT_CONFIG = REPO / "configs" / "a1_1bo_6ul_branch_c_timeseries.json"
-STEPS = ("manifest", "cache", "matlab", "segpilot", "segmorph", "validate")
+DEFAULT_STEPS = ("manifest", "cache", "matlab", "segpilot", "segmorph", "validate")
+STEPS = DEFAULT_STEPS + ("timeline", "residual", "analysis")
 SEGMORPH_INTERFACE_COLUMNS = (
     "dnapl_water_length_px",
     "dnapl_solid_length_px",
@@ -64,7 +65,7 @@ def command_text(command: list[str]) -> str:
 
 def parse_steps(raw_steps: list[str] | None) -> list[str]:
     if raw_steps is None:
-        return list(STEPS)
+        return list(DEFAULT_STEPS)
     parsed: list[str] = []
     for item in raw_steps:
         for step in item.split(","):
@@ -95,6 +96,8 @@ def load_effective_config(args: argparse.Namespace) -> dict[str, Any]:
         config["output_root"] = args.output_root
     if args.matlab_command:
         config["matlab_command"] = args.matlab_command
+    if args.analysis_run_label:
+        config.setdefault("analysis_package", {})["run_label"] = args.analysis_run_label
     if args.resume_cache is not None:
         config.setdefault("cache", {})["resume"] = args.resume_cache
 
@@ -125,6 +128,18 @@ def build_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, P
         resolve_path(args.segmentation_morphology_dir)
         or output_root / "segmentation_morphology" / run_id
     )
+    timeline_dir = (
+        resolve_path(args.timeline_dir)
+        or output_root / "timeline_postprocess" / run_id
+    )
+    residual_dir = (
+        resolve_path(args.residual_dir)
+        or output_root / "residual_trapping_postprocess" / run_id
+    )
+    analysis_dir = (
+        resolve_path(args.analysis_dir)
+        or output_root / f"analysis_package_{run_suffix or run_name}"
+    )
     run_config_dir = output_root / "run_configs"
     return {
         "output_root": output_root,
@@ -133,6 +148,9 @@ def build_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, P
         "matlab_dir": matlab_dir,
         "segmentation_pilot_dir": segmentation_pilot_dir,
         "segmentation_morphology_dir": segmentation_morphology_dir,
+        "timeline_dir": timeline_dir,
+        "residual_dir": residual_dir,
+        "analysis_dir": analysis_dir,
         "run_config_dir": run_config_dir,
     }
 
@@ -161,10 +179,21 @@ def write_endpoint_policy_input(config: dict[str, Any], manifest_dir: Path) -> P
     return path_value
 
 
+def write_water_endpoints_input(config: dict[str, Any], manifest_dir: Path) -> Path | None:
+    endpoints = config.get("water_endpoints")
+    if not endpoints:
+        return None
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    path_value = manifest_dir / "water_endpoints_input.json"
+    path_value.write_text(json.dumps(endpoints, indent=2), encoding="utf-8")
+    return path_value
+
+
 def manifest_command(
     config: dict[str, Any],
     paths: dict[str, Path],
     endpoint_policy_input: Path | None,
+    water_endpoints_input: Path | None,
 ) -> list[str]:
     manifest_config = config.get("manifest", {})
     command = [
@@ -190,6 +219,8 @@ def manifest_command(
         command.extend(["--time-start-s", str(manifest_config.get("time_start_s", 0.0))])
     if endpoint_policy_input is not None:
         command.extend(["--endpoint-policy", str(endpoint_policy_input)])
+    if water_endpoints_input is not None:
+        command.extend(["--water-endpoints", str(water_endpoints_input)])
     if config.get("force_manifest", False):
         command.append("--force")
     return command
@@ -257,6 +288,65 @@ def segmentation_command(
         "disp(outputs);"
     )
     return [str(config.get("matlab_command", "matlab")), "-batch", expression]
+
+
+def timeline_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
+    timeline_config = config.get("timeline_postprocess", {})
+    command = [
+        sys.executable,
+        str(REPO / "tools" / "timeline" / "join_branch_c_realtime.py"),
+        "--manifest",
+        str(paths["manifest_dir"] / "accepted_frames.csv"),
+        "--branch-c-dir",
+        str(paths["matlab_dir"]),
+        "--segmentation-dir",
+        str(paths["segmentation_morphology_dir"]),
+        "--out-dir",
+        str(paths["timeline_dir"]),
+    ]
+    if timeline_config.get("gap_policy") is not None:
+        command.extend(["--gap-policy", str(timeline_config["gap_policy"])])
+    return command
+
+
+def residual_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
+    residual_config = config.get("residual_postprocess", {})
+    command = [
+        sys.executable,
+        str(REPO / "tools" / "residual" / "compute_residual_trapping_metrics.py"),
+        "--timeline-dir",
+        str(paths["timeline_dir"]),
+        "--out-dir",
+        str(paths["residual_dir"]),
+    ]
+    if residual_config.get("full_role") is not None:
+        command.extend(["--full-role", str(residual_config["full_role"])])
+    if residual_config.get("residual_role") is not None:
+        command.extend(["--residual-role", str(residual_config["residual_role"])])
+    return command
+
+
+def analysis_run_label(config: dict[str, Any]) -> str:
+    analysis_config = config.get("analysis_package", {})
+    if analysis_config.get("run_label"):
+        return str(analysis_config["run_label"])
+    run_suffix = str(config.get("run_suffix", config["mode"]))
+    return f"{config['run_name']} {run_suffix} Branch C/C2"
+
+
+def analysis_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO / "tools" / "analysis_package" / "build_branch_c_analysis_package.py"),
+        "--timeline-dir",
+        str(paths["timeline_dir"]),
+        "--residual-dir",
+        str(paths["residual_dir"]),
+        "--out-dir",
+        str(paths["analysis_dir"]),
+        "--run-label",
+        analysis_run_label(config),
+    ]
 
 
 def run_command(command: list[str], dry_run: bool, commands: list[str]) -> None:
@@ -1038,6 +1128,14 @@ def validate_outputs(
             if segmorph_summary_path.is_file()
             else "",
             **regional_proxy.get("paths", {}),
+            "timeline_postprocess_dir": str(paths["timeline_dir"]),
+            "residual_trapping_postprocess_dir": str(paths["residual_dir"]),
+            "analysis_package_dir": str(paths["analysis_dir"]),
+            "analysis_package_provenance_json": str(
+                paths["analysis_dir"] / "analysis_package_provenance.json"
+            )
+            if (paths["analysis_dir"] / "analysis_package_provenance.json").is_file()
+            else "",
         },
         "row_counts": {
             "expected_timeseries_rows": expected_rows,
@@ -1120,7 +1218,8 @@ def main() -> None:
         nargs="+",
         default=None,
         help=(
-            "Steps to run: manifest cache matlab segpilot segmorph validate. "
+            "Steps to run: manifest cache matlab segpilot segmorph validate "
+            "timeline residual analysis. "
             "Comma-separated values are also accepted."
         ),
     )
@@ -1132,6 +1231,10 @@ def main() -> None:
     parser.add_argument("--matlab-dir", default=None)
     parser.add_argument("--segmentation-pilot-dir", default=None)
     parser.add_argument("--segmentation-morphology-dir", default=None)
+    parser.add_argument("--timeline-dir", default=None)
+    parser.add_argument("--residual-dir", default=None)
+    parser.add_argument("--analysis-dir", default=None)
+    parser.add_argument("--analysis-run-label", default=None)
     parser.add_argument("--matlab-command", default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--force-manifest", action="store_true")
@@ -1148,6 +1251,7 @@ def main() -> None:
     commands: list[str] = []
     selected_steps = config["steps"]
     effective_config_candidate = effective_config_path_for(config, paths)
+    validation_summary: dict[str, Any] | None = None
 
     compression = str(config.get("cache", {}).get("compression", "none"))
     if "matlab" in selected_steps and compression == "lzf" and not config["allow_lzf"]:
@@ -1167,6 +1271,7 @@ def main() -> None:
 
     effective_config_path = None
     endpoint_policy_input = None
+    water_endpoints_input = None
     if not args.dry_run:
         effective_config_path = write_effective_config(config, paths)
         if "manifest" in selected_steps:
@@ -1174,15 +1279,27 @@ def main() -> None:
                 config,
                 paths["manifest_dir"],
             )
-    elif "manifest" in selected_steps and config.get("endpoint_policy"):
-        endpoint_policy_input = paths["manifest_dir"] / "endpoint_policy_input.json"
+            water_endpoints_input = write_water_endpoints_input(
+                config,
+                paths["manifest_dir"],
+            )
+    elif "manifest" in selected_steps:
+        if config.get("endpoint_policy"):
+            endpoint_policy_input = paths["manifest_dir"] / "endpoint_policy_input.json"
+        if config.get("water_endpoints"):
+            water_endpoints_input = paths["manifest_dir"] / "water_endpoints_input.json"
 
     if effective_config_path is not None:
         print(f"EFFECTIVE_CONFIG {effective_config_path}")
 
     if "manifest" in selected_steps:
         run_command(
-            manifest_command(config, paths, endpoint_policy_input),
+            manifest_command(
+                config,
+                paths,
+                endpoint_policy_input,
+                water_endpoints_input,
+            ),
             args.dry_run,
             commands,
         )
@@ -1216,7 +1333,21 @@ def main() -> None:
         if args.dry_run:
             print("VALIDATE_SKIPPED_DRY_RUN")
         else:
-            validate_outputs(config, paths, commands)
+            validation_summary = validate_outputs(config, paths, commands)
+    if "timeline" in selected_steps:
+        run_command(timeline_command(config, paths), args.dry_run, commands)
+    if "residual" in selected_steps:
+        run_command(residual_command(config, paths), args.dry_run, commands)
+    if "analysis" in selected_steps:
+        run_command(analysis_command(config, paths), args.dry_run, commands)
+    if validation_summary is not None and not args.dry_run:
+        validation_summary["commands"] = commands
+        analysis_provenance = paths["analysis_dir"] / "analysis_package_provenance.json"
+        validation_summary.setdefault("paths", {})[
+            "analysis_package_provenance_json"
+        ] = str(analysis_provenance) if analysis_provenance.is_file() else ""
+        summary_path = paths["matlab_dir"] / "run_summary.json"
+        summary_path.write_text(json.dumps(validation_summary, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

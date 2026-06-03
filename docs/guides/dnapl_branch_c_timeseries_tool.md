@@ -28,6 +28,8 @@ logic:
    `S_NAPL_color(x,frame)` for endpoint A and B.
 4. The runner validates row counts, label alignment, NaNs, and endpoint
    sensitivity, then writes `run_summary.json`.
+5. Optional `timeline`, `residual`, and `analysis` steps run the realtime
+   joiner, residual trapping proxy postprocess, and analysis-package builder.
 
 Optional C2 segmentation/morphology stages use the same BasicPy HDF5 cache:
 
@@ -119,6 +121,24 @@ saturation until the endpoint and pore-volume calibration gates are complete.
 `manifest.time_step_s` remains available only for explicit diagnostic sequence
 axes. Do not use it as a substitute for reconstructed acquisition time.
 
+The standalone runner can execute the same postprocess chain after Branch C/C2
+outputs exist:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate timeline residual analysis
+```
+
+Use `timeline residual analysis` when realtime and residual outputs need to be
+rebuilt. If those outputs already exist and only the figure/report package needs
+rebuilding, run:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps analysis
+```
+
+Custom postprocess output locations can be supplied with `--timeline-dir`,
+`--residual-dir`, and `--analysis-dir`.
+
 ## Pilot Run
 
 Run a 100-page pilot first:
@@ -186,6 +206,13 @@ Rebuild the cache and MATLAB outputs from an existing manifest:
 python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps cache matlab validate
 ```
 
+Build realtime, residual, and analysis-package outputs from existing Branch C/C2
+results:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate timeline residual analysis
+```
+
 If you deliberately set `time_step_s` for a diagnostic sequence axis, rerun at
 least:
 
@@ -233,6 +260,9 @@ The runner creates:
 <output_root>\branch_c_timeseries\<run_id>
 <output_root>\segmentation_pilot\<run_id>
 <output_root>\segmentation_morphology\<run_id>
+<output_root>\timeline_postprocess\<run_id>
+<output_root>\residual_trapping_postprocess\<run_id>
+<output_root>\analysis_package_<run_suffix>
 <output_root>\run_configs\<run_id>_effective.json
 ```
 
@@ -242,6 +272,13 @@ To validate the already completed 3585-page run:
 
 ```powershell
 python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate --manifest-dir outputs\manifests_20260601\A1_1BO_6UL_manual_roi_page_expanded_full3585 --cache-dir outputs\basicpy_hdf5_cache_page_expanded_full3585_20260601\A1_1BO_6UL_manual_roi --matlab-dir outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi
+```
+
+To validate the same existing run and rebuild realtime/residual/analysis-package
+outputs in one call:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate timeline residual analysis --manifest-dir "outputs\manifests_20260601\A1_1BO_6UL_manual_roi_page_expanded_full3585" --cache-dir "outputs\basicpy_hdf5_cache_page_expanded_full3585_20260601\A1_1BO_6UL_manual_roi" --matlab-dir "outputs\hdf5_cache_branch_c_pipeline_page_expanded_full3585_combined_fast_20260601\A1_1BO_6UL_manual_roi" --segmentation-morphology-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\segmentation_morphology\a1_1bo_6ul_manual_roi_full3585" --timeline-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585" --residual-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585" --analysis-dir "outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585"
 ```
 
 ## Validation Rules
@@ -429,6 +466,14 @@ architecture classifier. `a_i_2D_proxy` is reported separately, but it is a
 
 After the full realtime join and residual postprocess pass, build the
 researcher-facing figure/report package:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps analysis
+```
+
+The runner calls `tools\analysis_package\build_branch_c_analysis_package.py`
+with the mode-specific default run label. The package builder can still be run
+directly for diagnostics:
 
 ```powershell
 python tools\analysis_package\build_branch_c_analysis_package.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --residual-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585 --run-label "A1 1-BO 6uL full3585 Branch C/C2"

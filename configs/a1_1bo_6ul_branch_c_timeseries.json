@@ -56,9 +56,15 @@
     "overlay_sample_max": 12,
     "write_blob_detail": false
   },
+  "analysis_package": {
+    "run_label": null
+  },
   "modes": {
     "pilot": {
       "run_suffix": "pilot100",
+      "analysis_package": {
+        "run_label": "A1 1-BO 6uL pilot100 Branch C/C2"
+      },
       "manifest": {
         "max_pages": 100,
         "page_selection": "uniform",
@@ -67,6 +73,9 @@
     },
     "full": {
       "run_suffix": "full3585",
+      "analysis_package": {
+        "run_label": "A1 1-BO 6uL full3585 Branch C/C2"
+      },
       "manifest": {
         "max_pages": null,
         "page_selection": "first",
