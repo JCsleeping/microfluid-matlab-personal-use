@@ -683,6 +683,49 @@ promote proxy outputs to physical quantities. Pixel size, PV, mass-transfer,
 endpoint-validation, and mask-stack dependent metrics still require their own
 trusted metadata/validation inputs before they can be marked calibrated.
 
+## 2026-06-03 Physical Metadata Gate and 3X Scale Update
+
+Added an optional physical metadata manifest path to the standalone runner and
+analysis-package builder:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps analysis --physical-metadata D:\path\to\physical_metadata.json
+```
+
+The A1 config now records the active processing-grid scale as provenance:
+
+```text
+physical_metadata.trusted = false
+physical_metadata.processing_scale_factor = 3
+```
+
+This reflects the 019e8b57-254a-7131-aa7f-20e379729629 update from 2X to 3X.
+Historical 2X preview plans remain historical notes; the current standalone A1
+Branch C/C2 processing contract is 3X.
+
+The metadata gate is intentionally conservative:
+
+```text
+trusted=false or missing metadata -> provenance only
+trusted=true or trusted/calibrated metadata_status -> physical derivations allowed
+```
+
+Trusted metadata can unlock:
+
+```text
+dnapl_water_length_m
+dnapl_solid_length_m
+PV
+dS_dPV
+velocity_m_per_s
+capillary_number
+```
+
+The package still does not infer physical Sn, mass-transfer coefficients, TOA,
+true fingering, or per-blob shape distributions from aggregate proxy CSVs.
+Those remain gated by endpoint audit, mass calibration, and per-frame mask/blob
+detail inputs.
+
 ## Usage Notes
 
 For a new ROI, rerun at least:

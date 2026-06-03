@@ -14,6 +14,7 @@ from run_dnapl_branch_c_timeseries_tool import (
     residual_command,
     segmorph_interface_quality,
     timeline_command,
+    write_physical_metadata_input,
 )
 
 
@@ -175,6 +176,40 @@ def test_manifest_command_passes_configured_water_endpoints(tmp_path) -> None:
 
     assert "--water-endpoints" in text
     assert str(endpoints_path) in text
+
+
+def test_runner_writes_and_passes_physical_metadata_manifest(tmp_path) -> None:
+    args = SimpleNamespace(
+        manifest_dir=None,
+        cache_dir=None,
+        matlab_dir=None,
+        segmentation_pilot_dir=None,
+        segmentation_morphology_dir=None,
+        timeline_dir=None,
+        residual_dir=None,
+        analysis_dir=None,
+    )
+    config = {
+        "run_name": "demo",
+        "run_suffix": "full3585",
+        "mode": "full",
+        "output_root": str(tmp_path),
+        "analysis_package": {"run_label": "Demo full Branch C/C2"},
+        "physical_metadata": {
+            "schema_version": 1,
+            "trusted": False,
+            "processing_scale_factor": 3,
+        },
+    }
+    paths = build_paths(args, config)
+
+    metadata_path = write_physical_metadata_input(config, paths)
+
+    assert metadata_path == tmp_path / "run_configs" / "demo_full3585_physical_metadata.json"
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["processing_scale_factor"] == 3
+    text = command_text(analysis_command(config, paths, metadata_path))
+    assert "--physical-metadata" in text
+    assert str(metadata_path) in text
 
 
 def test_parse_steps_accepts_analysis_postprocess_steps() -> None:

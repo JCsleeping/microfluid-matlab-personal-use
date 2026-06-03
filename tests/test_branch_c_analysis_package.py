@@ -50,7 +50,7 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     saved = json.loads((out_dir / "analysis_package_provenance.json").read_text(encoding="utf-8"))
     assert saved["row_counts"]["primary_rows"] == 4
     assert saved["figure_style"] == "nature_timeseries_v1"
-    assert saved["analysis_policy_version"] == "branch_c_proxy_alignment_v1"
+    assert saved["analysis_policy_version"] == "branch_c_proxy_alignment_v2_physical_metadata_gate"
     assert saved["outputs"]["parameter_summary_csv"].endswith("analysis_parameter_summary.csv")
     assert saved["outputs"]["derived_timeseries_csv"].endswith("analysis_timeseries_derived.csv")
     assert saved["outputs"]["legacy_plot_timeseries_csv"].endswith("branch_c_legacy_plot_timeseries.csv")
@@ -103,6 +103,70 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert alignment["AreaGini"]["status"] == "not_computable"
     assert alignment["DissolutionRate_mass_kg_per_s"]["status"] == "missing_metadata"
     assert alignment["true_fingering"]["status"] == "not_computable"
+
+
+def test_branch_c_analysis_package_applies_trusted_physical_metadata(tmp_path: Path) -> None:
+    timeline_dir = tmp_path / "timeline"
+    residual_dir = tmp_path / "residual"
+    out_dir = tmp_path / "analysis_package"
+    metadata_path = tmp_path / "physical_metadata.json"
+    timeline_dir.mkdir()
+    residual_dir.mkdir()
+    write_timeline_inputs(timeline_dir)
+    write_residual_inputs(residual_dir)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted": True,
+                "processing_scale_factor": 3,
+                "pixel_size_um": 2.0,
+                "flow_rate_ul_min": 6.0,
+                "pore_volume_ul": 3.0,
+                "channel_width_um": 1000.0,
+                "channel_depth_um": 100.0,
+                "viscosity_Pa_s": 0.001,
+                "IFT_mN_m": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    provenance = build_package(
+        PackageInputs(
+            timeline_dir=timeline_dir,
+            residual_dir=residual_dir,
+            out_dir=out_dir,
+            run_label="unit full3585",
+            physical_metadata_path=metadata_path,
+        )
+    )
+
+    assert provenance["physical_metadata"]["status"] == "trusted"
+    assert provenance["physical_metadata"]["values"]["processing_scale_factor"] == 3.0
+    assert provenance["physical_metadata"]["derived"]["pv_ready"] is True
+
+    derived_rows = read_csv(out_dir / "analysis_timeseries_derived.csv")
+    assert derived_rows[0]["processing_scale_factor"] == "3"
+    assert derived_rows[0]["pixel_size_um"] == "2"
+    assert derived_rows[1]["PV"] == "2"
+    assert derived_rows[0]["dnapl_water_length_m"] == "0.0009"
+    assert derived_rows[0]["capillary_number"] == "3.33333333333e-05"
+    assert derived_rows[1]["DissolutionRate_pv_lr_per_PV"] != "NaN"
+
+    qc_rows = read_csv(out_dir / "analysis_qc_summary.csv")
+    qc = {row["metric"]: row["value"] for row in qc_rows}
+    assert qc["physical_metadata_trusted"] == "true"
+    assert qc["pixel_size_ready"] == "true"
+    assert qc["pv_ready"] == "true"
+    assert qc["capillary_number_ready"] == "true"
+
+    alignment_rows = read_csv(out_dir / "research_parameter_alignment.csv")
+    alignment = {row["parameter"]: row for row in alignment_rows}
+    assert alignment["processing_scale_factor"]["status"] == "metadata_recorded"
+    assert alignment["pixel_size_um"]["status"] == "metadata_ready"
+    assert alignment["PV"]["status"] == "aligned_proxy"
+    assert alignment["capillary_number"]["status"] == "metadata_ready"
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:

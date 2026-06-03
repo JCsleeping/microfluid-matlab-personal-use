@@ -32,7 +32,7 @@ WONG = {
 }
 
 FIGURE_STYLE = "nature_timeseries_v1"
-ANALYSIS_POLICY_VERSION = "branch_c_proxy_alignment_v1"
+ANALYSIS_POLICY_VERSION = "branch_c_proxy_alignment_v2_physical_metadata_gate"
 MM_PER_INCH = 25.4
 WIDE_SIZE = (180 / MM_PER_INCH, 82 / MM_PER_INCH)
 TALL_SIZE = (180 / MM_PER_INCH, 132 / MM_PER_INCH)
@@ -63,6 +63,137 @@ class PackageInputs:
     residual_dir: Path
     out_dir: Path
     run_label: str
+    physical_metadata_path: Path | None = None
+
+
+POSITIVE_METADATA_FIELDS = {
+    "pixel_size_um",
+    "native_pixel_size_um",
+    "processing_pixel_size_um",
+    "processing_scale_factor",
+    "flow_rate_ul_min",
+    "pore_volume_ul",
+    "channel_depth_um",
+    "channel_width_um",
+    "viscosity_Pa_s",
+    "IFT_mN_m",
+    "temperature_C",
+    "diffusion_coefficient_m2_s",
+}
+
+
+def positive_number(value: object) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return math.nan
+    return result if math.isfinite(result) and result > 0 else math.nan
+
+
+def metadata_is_trusted(raw: dict[str, Any]) -> bool:
+    status = str(raw.get("metadata_status", raw.get("status", ""))).strip().lower()
+    return bool(raw.get("trusted", False)) or status in {
+        "trusted",
+        "calibrated",
+        "validated",
+        "physical_metadata_validated",
+    }
+
+
+def normalize_physical_metadata(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {
+            "status": "not_provided",
+            "trusted": False,
+            "path": "",
+            "raw": {},
+            "values": {},
+            "derived": {},
+            "warnings": [],
+        }
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing physical metadata manifest: {path}")
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if "physical_metadata" in raw and isinstance(raw["physical_metadata"], dict):
+        raw = raw["physical_metadata"]
+    if not isinstance(raw, dict):
+        raise ValueError(f"Physical metadata manifest must be a JSON object: {path}")
+
+    trusted = metadata_is_trusted(raw)
+    values = {key: positive_number(raw.get(key)) for key in POSITIVE_METADATA_FIELDS}
+    warnings: list[str] = []
+
+    scale = values["processing_scale_factor"]
+    if not math.isfinite(scale):
+        scale = positive_number(raw.get("upscale_factor"))
+        values["processing_scale_factor"] = scale
+    if math.isfinite(scale) and abs(scale - round(scale)) > 1.0e-9:
+        warnings.append("processing_scale_factor should be an integer processing-grid scale.")
+
+    pixel_size_um = values["pixel_size_um"]
+    if not math.isfinite(pixel_size_um):
+        pixel_size_um = values["native_pixel_size_um"]
+    if (
+        not math.isfinite(pixel_size_um)
+        and math.isfinite(values["processing_pixel_size_um"])
+        and math.isfinite(scale)
+    ):
+        pixel_size_um = values["processing_pixel_size_um"] * scale
+    values["pixel_size_um"] = pixel_size_um
+    values["native_pixel_size_um"] = pixel_size_um
+    if not math.isfinite(values["processing_pixel_size_um"]) and math.isfinite(pixel_size_um) and math.isfinite(scale):
+        values["processing_pixel_size_um"] = pixel_size_um / scale
+
+    flow_rate = values["flow_rate_ul_min"]
+    pore_volume = values["pore_volume_ul"]
+    width_um = values["channel_width_um"]
+    depth_um = values["channel_depth_um"]
+    viscosity = values["viscosity_Pa_s"]
+    ift_mn_m = values["IFT_mN_m"]
+
+    velocity = math.nan
+    if math.isfinite(flow_rate) and math.isfinite(width_um) and math.isfinite(depth_um):
+        flow_m3_s = flow_rate * 1.0e-9 / 60.0
+        area_m2 = width_um * 1.0e-6 * depth_um * 1.0e-6
+        velocity = flow_m3_s / area_m2 if area_m2 > 0 else math.nan
+
+    capillary_number = math.nan
+    if math.isfinite(velocity) and math.isfinite(viscosity) and math.isfinite(ift_mn_m):
+        gamma_n_m = ift_mn_m * 1.0e-3
+        capillary_number = viscosity * velocity / gamma_n_m if gamma_n_m > 0 else math.nan
+
+    derived = {
+        "pixel_size_m": pixel_size_um * 1.0e-6 if trusted and math.isfinite(pixel_size_um) else math.nan,
+        "pv_ready": bool(trusted and math.isfinite(flow_rate) and math.isfinite(pore_volume)),
+        "velocity_m_per_s": velocity if trusted else math.nan,
+        "capillary_number": capillary_number if trusted else math.nan,
+    }
+    return {
+        "status": "trusted" if trusted else "provided_untrusted",
+        "trusted": trusted,
+        "path": str(path),
+        "raw": raw,
+        "values": {
+            key: (value if math.isfinite(value) else None)
+            for key, value in values.items()
+        },
+        "derived": {
+            key: (value if isinstance(value, bool) or math.isfinite(value) else None)
+            for key, value in derived.items()
+        },
+        "strings": {
+            "surfactant_name": str(raw.get("surfactant_name", "")),
+            "surfactant_concentration": str(raw.get("surfactant_concentration", "")),
+            "notes": str(raw.get("notes", "")),
+        },
+        "warnings": warnings,
+    }
+
+
+def metadata_number(metadata: dict[str, Any], section: str, key: str) -> float:
+    value = metadata.get(section, {}).get(key)
+    return positive_number(value)
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -206,7 +337,13 @@ def load_inputs(inputs: PackageInputs) -> dict[str, Any]:
         ],
         "residual timeseries",
     )
-    return {"timeline": timeline, "residual": residual, "summary_json": summary_json}
+    physical_metadata = normalize_physical_metadata(inputs.physical_metadata_path)
+    return {
+        "timeline": timeline,
+        "residual": residual,
+        "summary_json": summary_json,
+        "physical_metadata": physical_metadata,
+    }
 
 
 def time_min(rows: list[dict[str, str]]) -> list[float]:
@@ -661,6 +798,7 @@ def summary_raw(summary_json: dict[str, Any], key: str) -> object:
 def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     timeline = data["timeline"]
     summary_json = data["summary_json"]
+    physical_metadata = data.get("physical_metadata", {})
     primary = timeline["primary"]
     comparison = timeline["comparison"]
     xzone = timeline["xzone"]
@@ -685,6 +823,21 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     add_parameter(rows, "run", "time_start_min", start_min, "min")
     add_parameter(rows, "run", "time_end_min", end_min, "min")
     add_parameter(rows, "run", "duration_min", duration_min, "min")
+    add_parameter(rows, "metadata", "physical_metadata_status", physical_metadata.get("status", "not_provided"))
+    add_parameter(rows, "metadata", "physical_metadata_trusted", bool(physical_metadata.get("trusted", False)))
+    add_parameter(rows, "metadata", "processing_scale_factor", metadata_number(physical_metadata, "values", "processing_scale_factor"), "scale", "A1 current segmentation/morphology processing uses 3X upscale.")
+    add_parameter(rows, "metadata", "pixel_size_um", metadata_number(physical_metadata, "values", "pixel_size_um"), "um/native-px")
+    add_parameter(rows, "metadata", "processing_pixel_size_um", metadata_number(physical_metadata, "values", "processing_pixel_size_um"), "um/processing-px")
+    add_parameter(rows, "metadata", "flow_rate_ul_min", metadata_number(physical_metadata, "values", "flow_rate_ul_min"), "uL/min")
+    add_parameter(rows, "metadata", "pore_volume_ul", metadata_number(physical_metadata, "values", "pore_volume_ul"), "uL")
+    add_parameter(rows, "metadata", "channel_width_um", metadata_number(physical_metadata, "values", "channel_width_um"), "um")
+    add_parameter(rows, "metadata", "channel_depth_um", metadata_number(physical_metadata, "values", "channel_depth_um"), "um")
+    add_parameter(rows, "metadata", "viscosity_Pa_s", metadata_number(physical_metadata, "values", "viscosity_Pa_s"), "Pa*s")
+    add_parameter(rows, "metadata", "IFT_mN_m", metadata_number(physical_metadata, "values", "IFT_mN_m"), "mN/m")
+    add_parameter(rows, "metadata", "velocity_m_per_s", metadata_number(physical_metadata, "derived", "velocity_m_per_s"), "m/s")
+    add_parameter(rows, "metadata", "capillary_number", metadata_number(physical_metadata, "derived", "capillary_number"), "unitless")
+    add_parameter(rows, "metadata", "temperature_C", metadata_number(physical_metadata, "values", "temperature_C"), "degC")
+    add_parameter(rows, "metadata", "diffusion_coefficient_m2_s", metadata_number(physical_metadata, "values", "diffusion_coefficient_m2_s"), "m2/s")
 
     for role, role_rows in (("full_napl", full_primary), ("residual", residual_primary)):
         role_start, role_end, role_duration = time_range(role_rows)
@@ -867,6 +1020,7 @@ def finite_or_zero(row: dict[str, str], column: str) -> float:
 
 def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
     timeline = data["timeline"]
+    physical_metadata = data.get("physical_metadata", {})
     primary = timeline["primary"]
     sensitivity_by_label = row_by_label(timeline["sensitivity"])
     comparison_by_label = row_by_label(timeline["comparison"])
@@ -877,6 +1031,14 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
     baseline = normalization_baseline(primary, "S_NAPL_color")
     if not math.isfinite(baseline) or baseline == 0:
         baseline = 1.0
+    metadata_trusted = bool(physical_metadata.get("trusted", False))
+    pixel_size_m = metadata_number(physical_metadata, "derived", "pixel_size_m")
+    processing_scale_factor = metadata_number(physical_metadata, "values", "processing_scale_factor")
+    flow_rate_ul_min = metadata_number(physical_metadata, "values", "flow_rate_ul_min")
+    pore_volume_ul = metadata_number(physical_metadata, "values", "pore_volume_ul")
+    pixel_size_um = metadata_number(physical_metadata, "values", "pixel_size_um")
+    capillary_number = metadata_number(physical_metadata, "derived", "capillary_number")
+    pv_ready = bool(physical_metadata.get("derived", {}).get("pv_ready", False))
 
     rows: list[dict[str, object]] = []
     for index, primary_row in enumerate(primary, start=1):
@@ -918,13 +1080,28 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
             architecture_type = "ganglia-rich"
         else:
             architecture_type = "mixed"
+        water_length_m = finite_or_nan(mask, "dnapl_water_length_m")
+        if not math.isfinite(water_length_m) and metadata_trusted and math.isfinite(pixel_size_m):
+            water_length_px = finite_or_nan(mask, "dnapl_water_length_px")
+            water_length_m = water_length_px * pixel_size_m if math.isfinite(water_length_px) else math.nan
+        solid_length_m = finite_or_nan(mask, "dnapl_solid_length_m")
+        if not math.isfinite(solid_length_m) and metadata_trusted and math.isfinite(pixel_size_m):
+            solid_length_px = finite_or_nan(mask, "dnapl_solid_length_px")
+            solid_length_m = solid_length_px * pixel_size_m if math.isfinite(solid_length_px) else math.nan
+        real_time_s = finite_or_nan(primary_row, "RealTime_s")
+        pv_value = (
+            flow_rate_ul_min * real_time_s / 60.0 / pore_volume_ul
+            if pv_ready and math.isfinite(real_time_s)
+            else math.nan
+        )
         row = {
             "FrameIndex": number(primary_row, "frame_index") or index,
             "frame_index": number(primary_row, "frame_index") or index,
             "label": label,
             "role": text_value(primary_row, "role"),
-            "RealTime_s": finite_or_nan(primary_row, "RealTime_s"),
+            "RealTime_s": real_time_s,
             "Time_min": finite_or_nan(primary_row, "Time_min"),
+            "PV": pv_value,
             "Interval_s": finite_or_nan(primary_row, "Interval_s"),
             "TifFile": text_value(primary_row, "TifFile"),
             "PageInTif": finite_or_nan(primary_row, "PageInTif"),
@@ -970,8 +1147,8 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
             "areaFracClusters_proxy": finite_or_nan(blob, "frac_clusters"),
             "dnapl_water_length_px": finite_or_nan(mask, "dnapl_water_length_px"),
             "dnapl_solid_length_px": finite_or_nan(mask, "dnapl_solid_length_px"),
-            "dnapl_water_length_m": finite_or_nan(mask, "dnapl_water_length_m"),
-            "dnapl_solid_length_m": finite_or_nan(mask, "dnapl_solid_length_m"),
+            "dnapl_water_length_m": water_length_m,
+            "dnapl_solid_length_m": solid_length_m,
             "InterfaceArea": finite_or_nan(mask, "InterfaceArea"),
             "solid_contact_fraction": finite_or_nan(mask, "solid_contact_fraction"),
             "a_i_2D_proxy": finite_or_nan(mask, "a_i_2D_proxy"),
@@ -993,6 +1170,11 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
             "score_water_ref_B": finite_or_nan(sensitivity, "score_water_ref"),
             "score_napl_ref_A": finite_or_nan(primary_row, "score_napl_ref"),
             "score_napl_ref_B": finite_or_nan(sensitivity, "score_napl_ref"),
+            "pixel_size_um": pixel_size_um if metadata_trusted else math.nan,
+            "processing_scale_factor": processing_scale_factor,
+            "flow_rate_ul_min": flow_rate_ul_min if metadata_trusted else math.nan,
+            "pore_volume_ul": pore_volume_ul if metadata_trusted else math.nan,
+            "capillary_number": capillary_number if metadata_trusted else math.nan,
             "DissolutionStage_proxy": stage,
             "DissolutionStage": stage,
             "Stage": stage,
@@ -1010,10 +1192,12 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
 
     s_norm_values = [float(row["S_color_norm"]) for row in rows]
     time_values = [float(row["Time_min"]) for row in rows]
+    pv_values = [float(row["PV"]) for row in rows]
     s_mono = cumulative_min(s_norm_values)
     raw_rate = nearest_rate(time_values, s_norm_values)
     lr_rate = nearest_rate(time_values, s_mono)
-    for row, mono, raw, lr in zip(rows, s_mono, raw_rate, lr_rate):
+    pv_lr_rate = nearest_rate(pv_values, s_mono)
+    for row, mono, raw, lr, pv_lr in zip(rows, s_mono, raw_rate, lr_rate, pv_lr_rate):
         row["S_color_mono"] = mono
         row["Sn_rate_input"] = mono
         row["DissolutionRate_raw_per_min"] = raw
@@ -1028,6 +1212,8 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
         row["NormalizedDissolutionRate_Sn_time_lr"] = normalized_rate
         row["NormalizedDissolutionRate_Sn_movmed"] = raw / max(s_norm, 1.0e-12) if math.isfinite(raw) and math.isfinite(s_norm) else math.nan
         row["NormalizedDissolutionRate_Sn_lr"] = normalized_rate
+        row["DissolutionRate_pv_lr_per_PV"] = pv_lr
+        row["dS_dPV"] = pv_lr
     return rows
 
 
@@ -1038,6 +1224,7 @@ DERIVED_FIELDNAMES = [
     "role",
     "RealTime_s",
     "Time_min",
+    "PV",
     "Interval_s",
     "TifFile",
     "PageInTif",
@@ -1058,6 +1245,8 @@ DERIVED_FIELDNAMES = [
     "DissolutionRate_Sn_time_lr",
     "DissolutionRate_Sn_movmed",
     "DissolutionRate_Sn_lr",
+    "DissolutionRate_pv_lr_per_PV",
+    "dS_dPV",
     "NormalizedDissolutionRate_time_lr",
     "NormalizedDissolutionRate_Sn_time_lr",
     "NormalizedDissolutionRate_Sn_movmed",
@@ -1129,6 +1318,11 @@ DERIVED_FIELDNAMES = [
     "score_water_ref_B",
     "score_napl_ref_A",
     "score_napl_ref_B",
+    "pixel_size_um",
+    "processing_scale_factor",
+    "flow_rate_ul_min",
+    "pore_volume_ul",
+    "capillary_number",
     "Sn_semantics",
 ]
 
@@ -1343,6 +1537,7 @@ def compute_qc_summary(
     legacy_nonfinite_count: int,
 ) -> list[dict[str, object]]:
     summary_json = data["summary_json"]
+    physical_metadata = data.get("physical_metadata", {})
     rows: list[dict[str, object]] = []
 
     def add(metric: str, value: object, units: str = "", notes: str = "") -> None:
@@ -1357,13 +1552,25 @@ def compute_qc_summary(
         add(f"TimelineStatus.{status or 'blank'}", count, "rows")
     for status, count in count_values(derived_rows, "qc_status").items():
         add(f"qc_status.{status or 'blank'}", count, "rows")
-    for column in ["S_NAPL_color_A", "S_color_norm", "DissolutionRate_time_lr_per_min", "InterfaceArea", "a_i_2D_proxy"]:
+    for column in [
+        "S_NAPL_color_A",
+        "S_color_norm",
+        "DissolutionRate_time_lr_per_min",
+        "DissolutionRate_pv_lr_per_PV",
+        "PV",
+        "InterfaceArea",
+        "a_i_2D_proxy",
+    ]:
         add(f"nonfinite.{column}", nonfinite_count(derived_rows, column), "rows")
     legacy_schema_ready = all(column in legacy_rows[0] for column in LEGACY_REQUIRED_COLUMNS) if legacy_rows else False
     legacy_plot_ready = legacy_schema_ready and legacy_nonfinite_count == 0
     add("legacy_adapter_schema_ready", legacy_schema_ready, "", "Required legacy columns are present.")
     add("legacy_plot_timeseries_ready", legacy_plot_ready, "", "Required legacy columns are present and finite.")
     add("legacy_adapter_nonfinite_required_value_count", legacy_nonfinite_count, "cells", "Nonfinite legacy numeric values are preserved as NaN, not filled.")
+    metadata_trusted = bool(physical_metadata.get("trusted", False))
+    pixel_size_um = metadata_number(physical_metadata, "values", "pixel_size_um")
+    processing_scale_factor = metadata_number(physical_metadata, "values", "processing_scale_factor")
+    capillary_number = metadata_number(physical_metadata, "derived", "capillary_number")
     meter_values = []
     for row in derived_rows:
         try:
@@ -1372,9 +1579,20 @@ def compute_qc_summary(
             meter_value = math.nan
         if math.isfinite(meter_value):
             meter_values.append(meter_value)
-    meter_ready = bool(meter_values) and all(value > 0 for value in meter_values)
+    meter_ready = (
+        metadata_trusted
+        and math.isfinite(pixel_size_um)
+        and bool(meter_values)
+        and all(value > 0 for value in meter_values)
+    )
+    pv_ready = bool(physical_metadata.get("derived", {}).get("pv_ready", False))
+    capillary_number_ready = metadata_trusted and math.isfinite(capillary_number)
+    add("physical_metadata_status", physical_metadata.get("status", "not_provided"), "", "Trusted metadata is required before proxy fields are promoted to physical quantities.")
+    add("physical_metadata_trusted", metadata_trusted, "", "True only when the metadata manifest has trusted=true or a trusted/calibrated status.")
+    add("processing_scale_factor", processing_scale_factor, "scale", "Processing-grid upscale factor recorded in metadata/provenance; current A1 branch uses 3X.")
     add("pixel_size_ready", meter_ready, "", "True only when metre interface fields are finite positive.")
-    add("pv_ready", False, "", "Missing flow_rate_ul_min and pore_volume_ul in current package inputs.")
+    add("pv_ready", pv_ready, "", "Requires trusted flow_rate_ul_min and pore_volume_ul.")
+    add("capillary_number_ready", capillary_number_ready, "", "Requires trusted flow rate, channel width/depth, viscosity, and IFT.")
     add("mass_ready", False, "", "Missing mass calibration / MassDissolvedKg.")
     add("mask_stack_ready", False, "", "Current package reads aggregate CSVs, not per-frame masks.")
     add("true_fingering_ready", False, "", "Requires connected per-frame masks, not only x-zone color proxies.")
@@ -1383,7 +1601,7 @@ def compute_qc_summary(
     add("multi_experiment_ready", legacy_plot_ready, "", "Legacy adapter exposes finite standard comparison columns.")
     add("architecture_ready", True, "", "Only proxy architecture labels are available.")
     add("InterfaceArea_unit", "px_length", "", "Legacy name; projected interface length L_ow, not area.")
-    add("Req_unit", "px", "", "No pixel-size metadata applied.")
+    add("Req_unit", "um" if meter_ready else "px", "", "Uses physical units only when trusted pixel-size metadata is applied.")
     add("a_i_2D_unit", "px_per_px2_proxy", "", "2D mask-derived proxy.")
     return rows
 
@@ -1391,7 +1609,19 @@ def compute_qc_summary(
 QC_FIELDNAMES = ["metric", "value", "units", "notes"]
 
 
-def make_alignment_rows() -> list[dict[str, object]]:
+def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list[dict[str, object]]:
+    physical_metadata = physical_metadata or {}
+    metadata_trusted = bool(physical_metadata.get("trusted", False))
+    pixel_size_ready = metadata_trusted and math.isfinite(
+        metadata_number(physical_metadata, "values", "pixel_size_um")
+    )
+    pv_ready = bool(physical_metadata.get("derived", {}).get("pv_ready", False))
+    ca_ready = metadata_trusted and math.isfinite(
+        metadata_number(physical_metadata, "derived", "capillary_number")
+    )
+    scale_recorded = math.isfinite(
+        metadata_number(physical_metadata, "values", "processing_scale_factor")
+    )
     rows: list[dict[str, object]] = []
 
     def add(parameter: str, legacy: str, source: str, status: str, semantics: str, missing: str = "", requirement: str = "") -> None:
@@ -1416,7 +1646,15 @@ def make_alignment_rows() -> list[dict[str, object]]:
     add("Sn_lower/Sn_mid/Sn_upper", "utilities/build_solubilization_timeseries_table.m", "S_NAPL_color_A/B sensitivity envelope", "partial_proxy", "endpoint A/B sensitivity can bound proxy Sn", "not statistical confidence interval", "define uncertainty model after endpoint audit")
     add("Sn_uncertainty", "utilities/build_solubilization_timeseries_table.m", "abs_endpoint_sensitivity", "aligned_proxy", "endpoint A/B absolute sensitivity")
     add("validation_status/processing_branch", "utilities/build_solubilization_timeseries_table.m", "TimelineStatus/qc_status/analysis_policy_version", "partial_proxy", "QC and policy status are recorded", "legacy names not fully replicated", "add exact legacy columns if importing back into MATLAB result table")
-    add("processing_scale_factor", "utilities/build_solubilization_timeseries_table.m", "", "missing_metadata", "image processing scale", "not present in aggregate CSV inputs", "record in manifest/provenance during Branch C/C2 generation")
+    add(
+        "processing_scale_factor",
+        "utilities/build_solubilization_timeseries_table.m",
+        "physical_metadata.processing_scale_factor",
+        "metadata_recorded" if scale_recorded else "missing_metadata",
+        "image processing scale; A1 current Branch C/C2 processing uses 3X upscale",
+        "" if scale_recorded else "not present in aggregate CSV inputs",
+        "record in manifest/provenance during Branch C/C2 generation",
+    )
     add("regional_bin_columns", "visualization/plot_timeseries_pv_common.py", "S_x_inlet/S_x_mid/S_x_outlet and x-zone extent fields", "aligned_proxy", "flow-direction x-zone color-index proxies", "not geometric core/edge", "provide solid/core mask for geometric core/edge")
     add("RemovalFraction", "plot_timeseries.py", "RemovalFraction", "aligned_proxy", "1 - S_color_norm", "not physical removal fraction", "physical Sn endpoint calibration")
     add("DissolutionRate_per_min", "plot_timeseries.py; plot_rate_correlations.py", "DissolutionRate_time_lr_per_min", "aligned_proxy", "-dS_color_norm/dt", "not physical dissolution rate", "physical Sn or mass calibration")
@@ -1442,25 +1680,57 @@ def make_alignment_rows() -> list[dict[str, object]]:
     add("fracDroplets/Columns/Clusters", "plot_timeseries.py", "frac_droplets/columns/clusters", "aligned_proxy", "classification fractions copied from C2 summary")
     add("areaFrac*/countFrac*Valid", "plot_timeseries.py; analyze_blob_population_morphology.py", "area/count proxy copies", "partial_proxy", "valid variants masked by ValidStructure_proxy", "no per-blob area/count recomputation", "provide blob_detail_all_frames.csv")
     add("InterfaceArea", "utilities/build_solubilization_timeseries_table.m", "dnapl_water_length_px", "aligned_proxy", "legacy alias of L_ow projected length, not area", "", "pixel_size_um for metre units")
-    add("dnapl_water_length_m", "new Branch C/C2 contract", "dnapl_water_length_m", "missing_metadata", "metre L_ow", "missing trusted pixel_size", "provide processing pixel size")
+    add(
+        "dnapl_water_length_m",
+        "new Branch C/C2 contract",
+        "dnapl_water_length_m",
+        "aligned" if pixel_size_ready else "missing_metadata",
+        "metre L_ow",
+        "" if pixel_size_ready else "missing trusted pixel_size",
+        "provide trusted native pixel size",
+    )
     add("dnapl_solid_length_px", "new Branch C/C2 contract", "dnapl_solid_length_px", "aligned", "DNAPL-solid projected contact length")
-    add("dnapl_solid_length_m", "new Branch C/C2 contract", "dnapl_solid_length_m", "missing_metadata", "metre DNAPL-solid contact length", "missing trusted pixel_size", "provide processing pixel size")
+    add(
+        "dnapl_solid_length_m",
+        "new Branch C/C2 contract",
+        "dnapl_solid_length_m",
+        "aligned" if pixel_size_ready else "missing_metadata",
+        "metre DNAPL-solid contact length",
+        "" if pixel_size_ready else "missing trusted pixel_size",
+        "provide trusted native pixel size",
+    )
     add("a_i_2D", "plot_timeseries.py", "a_i_2D_proxy", "aligned_proxy", "2D mask-derived L_ow/red-area proxy")
     add("ArchitectureType/PoolScore/GangliaScore", "analyze_architecture_vs_time.py", "ArchitectureType_proxy/PoolScore_proxy/GangliaScore_proxy", "partial_proxy", "Level-A proxy from blob count and largest-component fraction", "not legacy threshold-calibrated architecture", "run architecture classifier on physical Sn + full morphology")
-    add("pixel_size_um", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "pixel-to-length calibration", "not present in aggregate CSV inputs", "provide trusted calibration or processing manifest")
-    add("pore_volume_ul", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "pore volume", "not present in aggregate CSV inputs", "provide pore-volume metadata")
+    add(
+        "pixel_size_um",
+        "visualization/recover_experiment_metadata.py",
+        "physical_metadata.pixel_size_um",
+        "metadata_ready" if pixel_size_ready else "missing_metadata",
+        "pixel-to-length calibration",
+        "" if pixel_size_ready else "not present as trusted metadata",
+        "provide trusted calibration or processing manifest",
+    )
+    add(
+        "pore_volume_ul",
+        "visualization/recover_experiment_metadata.py",
+        "physical_metadata.pore_volume_ul",
+        "metadata_ready" if pv_ready else "missing_metadata",
+        "pore volume",
+        "" if pv_ready else "not present as trusted metadata",
+        "provide pore-volume metadata",
+    )
     add("pore_area_px", "visualization/recover_experiment_metadata.py", "domain_area_px", "partial_proxy", "2D ROI/domain pixel area", "not physical pore area unless ROI/domain mask is calibrated", "provide calibrated pore mask and pixel size")
     add("channel_depth_um/channel_width_um", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "chip geometry", "not present in aggregate CSV inputs", "provide experiment metadata")
-    add("flow_rate_ul_min", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "flow rate", "not present in aggregate CSV inputs", "provide pump/experiment metadata")
-    add("velocity_m_per_s", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "Darcy/interstitial velocity", "requires flow rate and pore geometry", "provide flow rate, pore area, and porosity/depth")
-    add("viscosity_Pa_s", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "fluid viscosity", "not present in aggregate CSV inputs", "provide fluid metadata")
-    add("IFT_mN_m", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "interfacial tension", "not present in aggregate CSV inputs", "provide fluid metadata")
-    add("capillary_number", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "Ca = mu*v/gamma", "requires viscosity, velocity, and IFT", "provide physical metadata")
+    add("flow_rate_ul_min", "visualization/recover_experiment_metadata.py", "physical_metadata.flow_rate_ul_min", "metadata_ready" if pv_ready else "missing_metadata", "flow rate", "" if pv_ready else "not present as trusted metadata", "provide pump/experiment metadata")
+    add("velocity_m_per_s", "visualization/recover_experiment_metadata.py", "physical_metadata derived velocity_m_per_s", "metadata_ready" if ca_ready else "missing_metadata", "Darcy/interstitial velocity", "" if ca_ready else "requires flow rate and pore geometry", "provide flow rate, pore area, and porosity/depth")
+    add("viscosity_Pa_s", "visualization/recover_experiment_metadata.py", "physical_metadata.viscosity_Pa_s", "metadata_ready" if ca_ready else "missing_metadata", "fluid viscosity", "" if ca_ready else "not present as trusted metadata", "provide fluid metadata")
+    add("IFT_mN_m", "visualization/recover_experiment_metadata.py", "physical_metadata.IFT_mN_m", "metadata_ready" if ca_ready else "missing_metadata", "interfacial tension", "" if ca_ready else "not present as trusted metadata", "provide fluid metadata")
+    add("capillary_number", "visualization/recover_experiment_metadata.py", "physical_metadata derived capillary_number", "metadata_ready" if ca_ready else "missing_metadata", "Ca = mu*v/gamma", "" if ca_ready else "requires viscosity, velocity, and IFT", "provide physical metadata")
     add("temperature_C", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "temperature", "not present in aggregate CSV inputs", "provide experiment metadata")
     add("diffusion_coefficient_m2_s", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "diffusion coefficient", "not present in aggregate CSV inputs", "provide solute/fluid metadata")
     add("surfactant_name/concentration", "visualization/recover_experiment_metadata.py", "", "missing_metadata", "surfactant condition", "not present in aggregate CSV inputs", "provide experiment metadata")
-    add("PV", "plot_timeseries_pv_common.py", "", "missing_metadata", "pore-volume axis", "missing flow_rate_ul_min and pore_volume_ul", "provide flow rate and pore volume metadata")
-    add("dS/dPV", "compute_dissolution_rate_windows.py", "", "missing_metadata", "PV-normalized proxy rate", "missing PV axis", "provide flow rate and pore volume metadata")
+    add("PV", "plot_timeseries_pv_common.py", "PV", "aligned_proxy" if pv_ready else "missing_metadata", "pore-volume axis", "" if pv_ready else "missing trusted flow_rate_ul_min and pore_volume_ul", "provide flow rate and pore volume metadata")
+    add("dS/dPV", "compute_dissolution_rate_windows.py", "dS_dPV", "aligned_proxy" if pv_ready else "missing_metadata", "PV-normalized proxy rate", "" if pv_ready else "missing PV axis", "provide flow rate and pore volume metadata")
     add("MassDissolvedKg", "plot_rate_correlations.py", "", "missing_metadata", "mass-based dissolution", "missing mass calibration", "provide mass calibration")
     add("DissolutionRate_mass_kg_per_s", "plot_rate_correlations.py", "", "missing_metadata", "mass dissolution rate", "missing mass calibration", "provide mass calibration and time/PV basis")
     add("projected_interface_mass_flux", "plot_rate_correlations.py", "", "missing_metadata", "mass flux normalized by projected L_ow or area convention", "missing mass calibration and physical interface units", "provide mass calibration and pixel size/depth convention")
@@ -1494,6 +1764,8 @@ def write_run_commands(inputs: PackageInputs, path: Path) -> None:
         f"--out-dir \"{inputs.out_dir}\" "
         f"--run-label \"{inputs.run_label}\""
     )
+    if inputs.physical_metadata_path is not None:
+        command += f" --physical-metadata \"{inputs.physical_metadata_path}\""
     text = "\n".join(
         [
             "# Analysis Package Run Commands",
@@ -1539,6 +1811,7 @@ def write_report(
         "",
         f"- timeline_dir: `{inputs.timeline_dir}`",
         f"- residual_dir: `{inputs.residual_dir}`",
+        f"- physical_metadata: `{inputs.physical_metadata_path or ''}`",
         "",
         "## Row Counts",
         "",
@@ -1559,6 +1832,7 @@ def write_report(
     ]
     report_sections = {
         "run",
+        "metadata",
         "phase",
         "saturation",
         "endpoint_sensitivity",
@@ -1601,6 +1875,8 @@ def write_report(
             "- `dnapl_water_length_px` is DNAPL-water projected interface length, L_ow.",
             "- `InterfaceArea` is a legacy alias of `dnapl_water_length_px`; it is not area.",
             "- `a_i_2D_proxy` is a 2D mask-derived proxy, not calibrated interfacial area.",
+            "- Physical-unit fields are emitted only when a trusted physical metadata manifest is supplied.",
+            "- Current A1 Branch C/C2 processing records `processing_scale_factor = 3`; historical 2X preview notes are not the active processing-grid contract.",
             "",
         ]
     )
@@ -1613,7 +1889,7 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
     derived_rows = compute_derived_timeseries(data)
     legacy_rows, legacy_nonfinite_count = make_legacy_rows(derived_rows)
     qc_rows = compute_qc_summary(data, derived_rows, legacy_rows, legacy_nonfinite_count)
-    alignment_rows = make_alignment_rows()
+    alignment_rows = make_alignment_rows(data.get("physical_metadata", {}))
     figures = create_figures(data, inputs.out_dir, derived_rows, qc_rows)
     parameter_rows = compute_parameter_summary(data)
     report_path = inputs.out_dir / "analysis_report.md"
@@ -1644,6 +1920,7 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
     write_run_commands(inputs, commands_path)
 
     summary_json = data["summary_json"]
+    physical_metadata = data.get("physical_metadata", {})
     figure_counts = {
         "figure_count": len(figures),
         "png_count": sum(1 for outputs in figures.values() if outputs.get("png")),
@@ -1661,6 +1938,7 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
         "input_paths": {
             "timeline_dir": str(inputs.timeline_dir),
             "residual_dir": str(inputs.residual_dir),
+            "physical_metadata": str(inputs.physical_metadata_path or ""),
         },
         "outputs": {
             "report_md": str(report_path),
@@ -1675,6 +1953,7 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
         "row_counts": summary_json.get("row_counts", {}),
         "missing_label_counts": summary_json.get("missing_label_counts", {}),
         "summary_metrics": summary_json.get("summary_metrics", {}),
+        "physical_metadata": physical_metadata,
         "derived_parameters": parameter_rows_to_dict(parameter_rows),
         "qc_summary": parameter_rows_to_dict(
             [{"section": "qc", "parameter": row["metric"], "value": format_value(row["value"])} for row in qc_rows]
@@ -1697,6 +1976,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--residual-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--run-label", default="DNAPL Branch C full3585")
+    parser.add_argument("--physical-metadata", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -1708,6 +1988,7 @@ def main() -> int:
             residual_dir=args.residual_dir,
             out_dir=args.out_dir,
             run_label=args.run_label,
+            physical_metadata_path=args.physical_metadata,
         )
     )
     print(f"ANALYSIS_PACKAGE {provenance['outputs']['provenance_json']}")

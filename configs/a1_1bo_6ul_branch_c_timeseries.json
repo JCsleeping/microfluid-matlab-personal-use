@@ -59,6 +59,24 @@
   "analysis_package": {
     "run_label": null
   },
+  "physical_metadata": {
+    "schema_version": 1,
+    "trusted": false,
+    "metadata_status": "provenance_only",
+    "processing_scale_factor": 3,
+    "pixel_size_um": null,
+    "flow_rate_ul_min": null,
+    "pore_volume_ul": null,
+    "channel_depth_um": null,
+    "channel_width_um": null,
+    "viscosity_Pa_s": null,
+    "IFT_mN_m": null,
+    "temperature_C": null,
+    "diffusion_coefficient_m2_s": null,
+    "surfactant_name": "",
+    "surfactant_concentration": "",
+    "notes": "A1 Branch C/C2 active processing-grid upscale is 3X. This manifest is provenance-only until trusted physical calibration values are filled."
+  },
   "modes": {
     "pilot": {
       "run_suffix": "pilot100",

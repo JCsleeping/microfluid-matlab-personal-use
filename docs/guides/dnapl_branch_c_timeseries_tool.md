@@ -79,6 +79,18 @@ B: water_ep_00_napl_01_1s   -> full_00_water_3s_2_p001
 When `expand_pages` is enabled, the manifest builder appends `_p001` to
 production NAPL endpoint labels unless the suffix is already present.
 
+Default processing metadata:
+
+```text
+physical_metadata.trusted = false
+physical_metadata.processing_scale_factor = 3
+```
+
+The active A1 Branch C/C2 segmentation and morphology path records 3X
+processing-grid upscale. This is provenance-only until physical calibration
+fields are filled and marked trusted. Older 2X preview notes in historical
+plans are not the active processing-grid contract for this runner.
+
 Default timeline policy:
 
 ```text
@@ -138,6 +150,54 @@ python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_
 
 Custom postprocess output locations can be supplied with `--timeline-dir`,
 `--residual-dir`, and `--analysis-dir`.
+
+## Physical Metadata Manifest
+
+The runner can pass a physical metadata manifest to the analysis-package step:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps analysis --physical-metadata D:\path\to\physical_metadata.json
+```
+
+The A1 config also contains a provenance-only template. To unlock physical
+derived fields, the manifest must be explicitly trusted:
+
+```json
+{
+  "schema_version": 1,
+  "trusted": true,
+  "processing_scale_factor": 3,
+  "pixel_size_um": 2.0,
+  "flow_rate_ul_min": 6.0,
+  "pore_volume_ul": 3.0,
+  "channel_width_um": 1000.0,
+  "channel_depth_um": 100.0,
+  "viscosity_Pa_s": 0.001,
+  "IFT_mN_m": 30.0,
+  "temperature_C": 25.0,
+  "diffusion_coefficient_m2_s": 4.3e-10,
+  "surfactant_name": "",
+  "surfactant_concentration": ""
+}
+```
+
+Without `trusted=true` or a trusted/calibrated `metadata_status`, the package
+records metadata as provenance only. It will not promote proxy outputs to
+physical quantities.
+
+Trusted metadata enables only fields with explicit formulas:
+
+```text
+dnapl_water_length_m = dnapl_water_length_px * pixel_size_m
+dnapl_solid_length_m = dnapl_solid_length_px * pixel_size_m
+PV = flow_rate_ul_min * RealTime_s / 60 / pore_volume_ul
+dS_dPV = -dS_color_norm/dPV, using the existing monotone proxy rate convention
+velocity_m_per_s = flow_rate / (channel_width * channel_depth)
+capillary_number = viscosity * velocity / IFT
+```
+
+Mass-transfer coefficients, physical Sn, TOA, true fingering, and per-blob
+shape statistics still require their own calibration or mask-stack inputs.
 
 ## Pilot Run
 
@@ -561,7 +621,8 @@ toa_ready = false
 ```
 
 Those fields stay false until the required physical metadata or mask-stack
-inputs are supplied. Missing physical quantities are written as `NaN`,
+inputs are supplied. `processing_scale_factor = 3` is recorded separately as
+processing-grid provenance. Missing physical quantities are written as `NaN`,
 `missing_metadata`, or `not_computable`; they are not guessed from filenames or
 proxy curves.
 

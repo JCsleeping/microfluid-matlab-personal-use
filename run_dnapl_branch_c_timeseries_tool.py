@@ -98,6 +98,8 @@ def load_effective_config(args: argparse.Namespace) -> dict[str, Any]:
         config["matlab_command"] = args.matlab_command
     if args.analysis_run_label:
         config.setdefault("analysis_package", {})["run_label"] = args.analysis_run_label
+    if args.physical_metadata:
+        config["physical_metadata_path"] = args.physical_metadata
     if args.resume_cache is not None:
         config.setdefault("cache", {})["resume"] = args.resume_cache
 
@@ -160,6 +162,11 @@ def effective_config_path_for(config: dict[str, Any], paths: dict[str, Path]) ->
     return paths["run_config_dir"] / f"{run_id}_effective.json"
 
 
+def run_id_for(config: dict[str, Any]) -> str:
+    run_suffix = str(config.get("run_suffix", config["mode"]))
+    return f'{config["run_name"]}_{run_suffix}' if run_suffix else str(config["run_name"])
+
+
 def write_effective_config(config: dict[str, Any], paths: dict[str, Path]) -> Path:
     paths["run_config_dir"].mkdir(parents=True, exist_ok=True)
     config_path = effective_config_path_for(config, paths)
@@ -186,6 +193,18 @@ def write_water_endpoints_input(config: dict[str, Any], manifest_dir: Path) -> P
     manifest_dir.mkdir(parents=True, exist_ok=True)
     path_value = manifest_dir / "water_endpoints_input.json"
     path_value.write_text(json.dumps(endpoints, indent=2), encoding="utf-8")
+    return path_value
+
+
+def write_physical_metadata_input(config: dict[str, Any], paths: dict[str, Path]) -> Path | None:
+    if config.get("physical_metadata_path"):
+        return resolve_path(config["physical_metadata_path"])
+    metadata = config.get("physical_metadata")
+    if not metadata:
+        return None
+    paths["run_config_dir"].mkdir(parents=True, exist_ok=True)
+    path_value = paths["run_config_dir"] / f"{run_id_for(config)}_physical_metadata.json"
+    path_value.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return path_value
 
 
@@ -334,8 +353,12 @@ def analysis_run_label(config: dict[str, Any]) -> str:
     return f"{config['run_name']} {run_suffix} Branch C/C2"
 
 
-def analysis_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
-    return [
+def analysis_command(
+    config: dict[str, Any],
+    paths: dict[str, Path],
+    physical_metadata_input: Path | None = None,
+) -> list[str]:
+    command = [
         sys.executable,
         str(REPO / "tools" / "analysis_package" / "build_branch_c_analysis_package.py"),
         "--timeline-dir",
@@ -347,6 +370,9 @@ def analysis_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str
         "--run-label",
         analysis_run_label(config),
     ]
+    if physical_metadata_input is not None:
+        command.extend(["--physical-metadata", str(physical_metadata_input)])
+    return command
 
 
 def run_command(command: list[str], dry_run: bool, commands: list[str]) -> None:
@@ -1136,6 +1162,12 @@ def validate_outputs(
             )
             if (paths["analysis_dir"] / "analysis_package_provenance.json").is_file()
             else "",
+            "physical_metadata_json": str(
+                resolve_path(config.get("physical_metadata_path"))
+                or paths["run_config_dir"] / f"{run_id_for(config)}_physical_metadata.json"
+            )
+            if config.get("physical_metadata_path") or config.get("physical_metadata")
+            else "",
         },
         "row_counts": {
             "expected_timeseries_rows": expected_rows,
@@ -1235,6 +1267,7 @@ def main() -> None:
     parser.add_argument("--residual-dir", default=None)
     parser.add_argument("--analysis-dir", default=None)
     parser.add_argument("--analysis-run-label", default=None)
+    parser.add_argument("--physical-metadata", default=None)
     parser.add_argument("--matlab-command", default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--force-manifest", action="store_true")
@@ -1272,8 +1305,10 @@ def main() -> None:
     effective_config_path = None
     endpoint_policy_input = None
     water_endpoints_input = None
+    physical_metadata_input = None
     if not args.dry_run:
         effective_config_path = write_effective_config(config, paths)
+        physical_metadata_input = write_physical_metadata_input(config, paths)
         if "manifest" in selected_steps:
             endpoint_policy_input = write_endpoint_policy_input(
                 config,
@@ -1288,6 +1323,10 @@ def main() -> None:
             endpoint_policy_input = paths["manifest_dir"] / "endpoint_policy_input.json"
         if config.get("water_endpoints"):
             water_endpoints_input = paths["manifest_dir"] / "water_endpoints_input.json"
+    elif config.get("physical_metadata_path"):
+        physical_metadata_input = resolve_path(config["physical_metadata_path"])
+    elif config.get("physical_metadata"):
+        physical_metadata_input = paths["run_config_dir"] / f"{run_id_for(config)}_physical_metadata.json"
 
     if effective_config_path is not None:
         print(f"EFFECTIVE_CONFIG {effective_config_path}")
@@ -1339,7 +1378,11 @@ def main() -> None:
     if "residual" in selected_steps:
         run_command(residual_command(config, paths), args.dry_run, commands)
     if "analysis" in selected_steps:
-        run_command(analysis_command(config, paths), args.dry_run, commands)
+        run_command(
+            analysis_command(config, paths, physical_metadata_input),
+            args.dry_run,
+            commands,
+        )
     if validation_summary is not None and not args.dry_run:
         validation_summary["commands"] = commands
         analysis_provenance = paths["analysis_dir"] / "analysis_package_provenance.json"
