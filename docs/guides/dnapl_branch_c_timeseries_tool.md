@@ -501,10 +501,34 @@ Production C2 outputs are written separately:
 ```text
 segmentation_morphology\<run_id>\red_mask_timeseries.csv
 segmentation_morphology\<run_id>\red_blob_summary_timeseries.csv
-segmentation_morphology\<run_id>\red_blob_detail_all_frames.csv  (optional)
+segmentation_morphology\<run_id>\red_mask_stack.h5
+segmentation_morphology\<run_id>\red_mask_stack_manifest.csv
+segmentation_morphology\<run_id>\red_blob_detail_all_frames.csv
 segmentation_morphology\<run_id>\segmentation_manifest.json
 segmentation_morphology\<run_id>\mask_qc_overlays_sample\
 ```
+
+For the current A1 config, C2 writes the mask stack as one HDF5 file:
+
+```text
+dataset: /red_mask
+type: uint8, values 0/1
+grid: processing_grid
+processing_scale_factor: 3
+frame order: same as red_mask_timeseries.csv
+```
+
+`red_mask_stack_manifest.csv` records one row per frame with label, role,
+time, mask shape, HDF5 dataset name, HDF5 frame index, score mode, threshold,
+and `processing_scale_factor`. This stack is the future source for strict TOA,
+fingering, and connected-mask analyses.
+
+`red_blob_detail_all_frames.csv` records per-blob morphology on the same 3X
+processing grid. Required downstream fields include `Area`,
+`Area_processing_px2`, `Area_native_equiv_px2`, `AspectRatio`, `Solidity`,
+`EulerNumber`, `TopologyType`, `mask_grid`, and `processing_scale_factor`.
+Shape entropy, AreaGini, and stricter blob-population statistics should be
+computed from this per-blob table, not from aggregate frame summaries.
 
 `segmorph` requires `segmentation_metrics.locked_threshold`. If it is `null`,
 the MATLAB stage stops and tells you to run/review `segpilot` first.

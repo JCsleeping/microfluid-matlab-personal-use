@@ -12,6 +12,7 @@ from run_dnapl_branch_c_timeseries_tool import (
     manifest_command,
     parse_steps,
     residual_command,
+    segmorph_artifact_quality,
     segmorph_interface_quality,
     timeline_command,
     write_physical_metadata_input,
@@ -219,3 +220,132 @@ def test_parse_steps_accepts_analysis_postprocess_steps() -> None:
         "residual",
         "analysis",
     ]
+
+
+def write_csv(path, rows):
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    columns = list(rows[0])
+    lines = [",".join(columns)]
+    for row in rows:
+        lines.append(",".join(str(row.get(column, "")) for column in columns))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_segmorph_artifact_quality_accepts_mask_stack_and_blob_detail(tmp_path) -> None:
+    seg_dir = tmp_path / "segmentation"
+    seg_dir.mkdir()
+    write_csv(
+        seg_dir / "red_mask_timeseries.csv",
+        [
+            {
+                "frame_index": "1",
+                "label": "frame1",
+                "role": "residual",
+                "red_mask_area_px": "4",
+            }
+        ],
+    )
+    write_csv(
+        seg_dir / "red_mask_stack_manifest.csv",
+        [
+            {
+                "frame_index": "1",
+                "label": "frame1",
+                "role": "residual",
+                "h5_dataset": "/red_mask",
+                "h5_frame_index": "1",
+                "mask_grid": "processing_grid",
+                "mask_height": "10",
+                "mask_width": "12",
+                "processing_scale_factor": "3",
+                "score_mode": "lab_a",
+                "threshold_value": "13",
+                "threshold_source": "unit",
+                "red_mask_area_px": "4",
+                "domain_area_px": "100",
+            }
+        ],
+    )
+    write_csv(
+        seg_dir / "red_blob_detail_all_frames.csv",
+        [
+            {
+                "frame_index": "1",
+                "label": "frame1",
+                "role": "residual",
+                "mask_grid": "processing_grid",
+                "processing_scale_factor": "3",
+                "Area": "4",
+                "Area_processing_px2": "4",
+                "Area_native_equiv_px2": "0.4444444444",
+                "AspectRatio": "1.5",
+                "Solidity": "0.9",
+                "EulerNumber": "1",
+                "TopologyType": "droplet",
+            }
+        ],
+    )
+    (seg_dir / "red_mask_stack.h5").write_bytes(b"placeholder")
+
+    quality = segmorph_artifact_quality(
+        seg_dir,
+        timeseries_row_count=1,
+        config={
+            "write_mask_stack": True,
+            "write_blob_detail": True,
+            "processing_scale_factor": 3,
+        },
+    )
+
+    assert quality["failures"] == []
+    assert quality["mask_stack_ready"] is True
+    assert quality["blob_detail_ready"] is True
+
+
+def test_segmorph_artifact_quality_rejects_missing_stack_and_bad_scale(tmp_path) -> None:
+    seg_dir = tmp_path / "segmentation"
+    seg_dir.mkdir()
+    write_csv(
+        seg_dir / "red_mask_stack_manifest.csv",
+        [
+            {
+                "frame_index": "1",
+                "mask_grid": "processing_grid",
+                "processing_scale_factor": "2",
+            }
+        ],
+    )
+    write_csv(
+        seg_dir / "red_blob_detail_all_frames.csv",
+        [
+            {
+                "frame_index": "1",
+                "label": "frame1",
+                "role": "residual",
+                "mask_grid": "processing_grid",
+                "processing_scale_factor": "2",
+                "Area": "4",
+                "Area_processing_px2": "4",
+                "Area_native_equiv_px2": "1",
+                "AspectRatio": "1.5",
+                "Solidity": "0.9",
+                "EulerNumber": "1",
+                "TopologyType": "droplet",
+            }
+        ],
+    )
+
+    quality = segmorph_artifact_quality(
+        seg_dir,
+        timeseries_row_count=1,
+        config={
+            "write_mask_stack": True,
+            "write_blob_detail": True,
+            "processing_scale_factor": 3,
+        },
+    )
+
+    assert any("red_mask_stack.h5" in failure for failure in quality["failures"])
+    assert any("processing_scale_factor" in failure for failure in quality["failures"])

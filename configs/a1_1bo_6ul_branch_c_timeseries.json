@@ -54,7 +54,13 @@
     "min_area_px": 20,
     "morph_radius": 1,
     "overlay_sample_max": 12,
-    "write_blob_detail": false
+    "write_blob_detail": true,
+    "write_mask_stack": true,
+    "mask_stack_format": "hdf5",
+    "mask_stack_dataset": "/red_mask",
+    "mask_stack_deflate": 4,
+    "mask_grid": "processing_grid",
+    "processing_scale_factor": 3
   },
   "analysis_package": {
     "run_label": null

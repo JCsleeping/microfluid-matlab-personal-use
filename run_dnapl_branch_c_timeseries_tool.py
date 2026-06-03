@@ -26,6 +26,36 @@ SEGMORPH_INTERFACE_COLUMNS = (
     "a_i_2D_proxy",
     "interface_semantics",
 )
+SEGMORPH_MASK_STACK_COLUMNS = (
+    "frame_index",
+    "label",
+    "role",
+    "h5_dataset",
+    "h5_frame_index",
+    "mask_grid",
+    "mask_height",
+    "mask_width",
+    "processing_scale_factor",
+    "score_mode",
+    "threshold_value",
+    "threshold_source",
+    "red_mask_area_px",
+    "domain_area_px",
+)
+SEGMORPH_BLOB_DETAIL_COLUMNS = (
+    "frame_index",
+    "label",
+    "role",
+    "mask_grid",
+    "processing_scale_factor",
+    "Area",
+    "Area_processing_px2",
+    "Area_native_equiv_px2",
+    "AspectRatio",
+    "Solidity",
+    "EulerNumber",
+    "TopologyType",
+)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -410,6 +440,12 @@ def read_csv_rows(path_value: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def read_csv_fieldnames(path_value: Path) -> list[str]:
+    with path_value.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        return list(reader.fieldnames or [])
+
+
 def finite_float(value: str) -> float | None:
     try:
         number = float(value)
@@ -525,6 +561,160 @@ def segmorph_interface_quality(rows: list[dict[str, str]]) -> dict[str, Any]:
         "solid_contact_fraction_by_role": metric_by_role(rows, "solid_contact_fraction"),
         "a_i_2D_proxy_by_role": metric_by_role(rows, "a_i_2D_proxy"),
     }
+    return quality
+
+
+def expected_processing_scale(config: dict[str, Any]) -> float | None:
+    value = config.get("processing_scale_factor")
+    number = finite_float(str(value)) if value is not None else None
+    if number is None or number <= 0:
+        return None
+    return number
+
+
+def count_bad_processing_scale(rows: list[dict[str, str]], expected_scale: float | None) -> int:
+    if expected_scale is None:
+        return 0
+    bad = 0
+    for row in rows:
+        value = finite_float(row.get("processing_scale_factor", ""))
+        if value is None or abs(value - expected_scale) > 1.0e-9:
+            bad += 1
+    return bad
+
+
+def count_bad_mask_grid(rows: list[dict[str, str]]) -> int:
+    return sum(row.get("mask_grid", "") != "processing_grid" for row in rows)
+
+
+def segmorph_artifact_quality(
+    segmentation_dir: Path,
+    *,
+    timeseries_row_count: int | None,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate optional C2 per-frame mask stack and blob-detail artifacts."""
+
+    stack_path = segmentation_dir / "red_mask_stack.h5"
+    stack_manifest_path = segmentation_dir / "red_mask_stack_manifest.csv"
+    blob_detail_path = segmentation_dir / "red_blob_detail_all_frames.csv"
+    write_mask_stack = bool(config.get("write_mask_stack", False))
+    write_blob_detail = bool(config.get("write_blob_detail", False))
+    expected_scale = expected_processing_scale(config)
+    failures: list[str] = []
+    quality: dict[str, Any] = {
+        "write_mask_stack": write_mask_stack,
+        "write_blob_detail": write_blob_detail,
+        "mask_stack_ready": False,
+        "blob_detail_ready": False,
+        "paths": {
+            "red_mask_stack_h5": str(stack_path) if stack_path.is_file() else "",
+            "red_mask_stack_manifest_csv": str(stack_manifest_path)
+            if stack_manifest_path.is_file()
+            else "",
+            "red_blob_detail_all_frames_csv": str(blob_detail_path)
+            if blob_detail_path.is_file()
+            else "",
+        },
+        "row_counts": {
+            "timeseries": timeseries_row_count,
+            "mask_stack_manifest": 0,
+            "blob_detail": 0,
+        },
+        "missing_columns": {
+            "mask_stack_manifest": [],
+            "blob_detail": [],
+        },
+        "scale_mismatch_counts": {
+            "mask_stack_manifest": 0,
+            "blob_detail": 0,
+        },
+        "mask_grid_bad_counts": {
+            "mask_stack_manifest": 0,
+            "blob_detail": 0,
+        },
+        "failures": failures,
+    }
+
+    if write_mask_stack:
+        if not stack_path.is_file():
+            failures.append(f"Segmentation morphology red_mask_stack.h5 is missing: {stack_path}")
+        if not stack_manifest_path.is_file():
+            failures.append(
+                "Segmentation morphology red_mask_stack_manifest.csv is missing: "
+                f"{stack_manifest_path}"
+            )
+        else:
+            stack_rows = read_csv_rows(stack_manifest_path)
+            stack_fields = read_csv_fieldnames(stack_manifest_path)
+            quality["row_counts"]["mask_stack_manifest"] = len(stack_rows)
+            missing = [col for col in SEGMORPH_MASK_STACK_COLUMNS if col not in stack_fields]
+            quality["missing_columns"]["mask_stack_manifest"] = missing
+            if missing:
+                failures.append(
+                    "Segmentation morphology mask-stack manifest columns are missing: "
+                    + ", ".join(missing)
+                )
+            if timeseries_row_count is not None and len(stack_rows) != timeseries_row_count:
+                failures.append(
+                    "Segmentation morphology mask-stack manifest row count "
+                    f"{len(stack_rows)} != timeseries rows {timeseries_row_count}."
+                )
+            scale_bad = count_bad_processing_scale(stack_rows, expected_scale)
+            grid_bad = count_bad_mask_grid(stack_rows)
+            quality["scale_mismatch_counts"]["mask_stack_manifest"] = scale_bad
+            quality["mask_grid_bad_counts"]["mask_stack_manifest"] = grid_bad
+            if scale_bad:
+                failures.append(
+                    "Segmentation morphology mask-stack manifest processing_scale_factor "
+                    f"mismatch count={scale_bad}."
+                )
+            if grid_bad:
+                failures.append(
+                    "Segmentation morphology mask-stack manifest mask_grid mismatch "
+                    f"count={grid_bad}."
+                )
+
+    if write_blob_detail:
+        if not blob_detail_path.is_file():
+            failures.append(
+                "Segmentation morphology red_blob_detail_all_frames.csv is missing: "
+                f"{blob_detail_path}"
+            )
+        else:
+            blob_rows = read_csv_rows(blob_detail_path)
+            blob_fields = read_csv_fieldnames(blob_detail_path)
+            quality["row_counts"]["blob_detail"] = len(blob_rows)
+            missing = [col for col in SEGMORPH_BLOB_DETAIL_COLUMNS if col not in blob_fields]
+            quality["missing_columns"]["blob_detail"] = missing
+            if missing:
+                failures.append(
+                    "Segmentation morphology blob-detail columns are missing: "
+                    + ", ".join(missing)
+                )
+            scale_bad = count_bad_processing_scale(blob_rows, expected_scale)
+            grid_bad = count_bad_mask_grid(blob_rows)
+            quality["scale_mismatch_counts"]["blob_detail"] = scale_bad
+            quality["mask_grid_bad_counts"]["blob_detail"] = grid_bad
+            if scale_bad:
+                failures.append(
+                    "Segmentation morphology blob-detail processing_scale_factor "
+                    f"mismatch count={scale_bad}."
+                )
+            if grid_bad:
+                failures.append(
+                    "Segmentation morphology blob-detail mask_grid mismatch "
+                    f"count={grid_bad}."
+                )
+
+    quality["mask_stack_ready"] = write_mask_stack and not any(
+        "mask-stack" in failure or "red_mask_stack" in failure
+        for failure in failures
+    )
+    quality["blob_detail_ready"] = write_blob_detail and not any(
+        "blob-detail" in failure or "red_blob_detail" in failure
+        for failure in failures
+    )
     return quality
 
 
@@ -1104,6 +1294,16 @@ def validate_outputs(
         if segmorph_timeseries
         else {}
     )
+    segmorph_artifact_quality_summary = {}
+    if "segmorph" in selected_steps:
+        segmorph_artifact_quality_summary = segmorph_artifact_quality(
+            paths["segmentation_morphology_dir"],
+            timeseries_row_count=len(segmorph_timeseries)
+            if segmorph_timeseries
+            else expected_rows,
+            config=config.get("segmentation_metrics", {}),
+        )
+        failures.extend(segmorph_artifact_quality_summary["failures"])
     if segmorph_area_metric and segmorph_area_metric["nan_or_missing_count"]:
         failures.append(
             "Segmentation morphology red_mask_area_fraction contains NaN or missing values."
@@ -1237,6 +1437,7 @@ def validate_outputs(
             "red_mask_area_fraction": segmorph_area_metric,
             "num_blobs": segmorph_blob_metric,
             "interface_contact": segmorph_interface_quality_summary,
+            "artifacts": segmorph_artifact_quality_summary,
             "by_role": metric_by_role(segmorph_timeseries, "red_mask_area_fraction")
             if segmorph_timeseries
             else {},

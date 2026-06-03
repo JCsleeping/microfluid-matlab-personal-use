@@ -48,6 +48,67 @@ function test_morphology_outputs_interface_contact_columns(testCase)
 end
 
 
+function test_morphology_writes_mask_stack_and_blob_detail_provenance(testCase)
+    repo_root = fileparts(fileparts(mfilename('fullpath')));
+    addpath(genpath(repo_root));
+    cache_dir = fullfile(tempdir, ['segmorph_stack_cache_' char(java.util.UUID.randomUUID)]);
+    out_dir = fullfile(tempdir, ['segmorph_stack_out_' char(java.util.UUID.randomUUID)]);
+    mkdir(cache_dir);
+    mkdir(out_dir);
+    cleanup = onCleanup(@() cleanup_dirs({cache_dir, out_dir}));
+
+    h = 10;
+    w = 12;
+    flow_domain = true(h, w);
+    flow_domain(1:2, :) = false;
+    frame_path = fullfile(cache_dir, 'frame_001.h5');
+    mask_path = fullfile(cache_dir, 'mask_crop.h5');
+    write_test_frame(frame_path, h, w);
+    write_test_mask(mask_path, flow_domain);
+    write_test_manifest(fullfile(cache_dir, 'manifest.csv'), frame_path);
+    config_path = write_test_config(cache_dir, true);
+
+    outputs = run_a1_1bo_6ul_hdf5_cache_segmentation_morphology( ...
+        cache_dir, out_dir, config_path, 'morphology');
+
+    verifyTrue(testCase, isfield(outputs, 'red_mask_stack_h5'));
+    verifyTrue(testCase, isfield(outputs, 'red_mask_stack_manifest_csv'));
+    verifyTrue(testCase, isfield(outputs, 'red_blob_detail_csv'));
+    verifyTrue(testCase, isfile(outputs.red_mask_stack_h5));
+    verifyTrue(testCase, isfile(outputs.red_mask_stack_manifest_csv));
+    verifyTrue(testCase, isfile(outputs.red_blob_detail_csv));
+
+    mask_stack = h5read(outputs.red_mask_stack_h5, '/red_mask');
+    verifyEqual(testCase, size(mask_stack, 1), h);
+    verifyEqual(testCase, size(mask_stack, 2), w);
+    verifyEqual(testCase, class(mask_stack), 'uint8');
+    verifyGreaterThan(testCase, nnz(mask_stack), 0);
+
+    stack_manifest = readtable(outputs.red_mask_stack_manifest_csv, ...
+        'TextType', 'string');
+    verifyEqual(testCase, height(stack_manifest), 1);
+    verifyEqual(testCase, stack_manifest.mask_grid(1), "processing_grid");
+    verifyEqual(testCase, stack_manifest.processing_scale_factor(1), 3);
+    verifyEqual(testCase, stack_manifest.h5_dataset(1), "/red_mask");
+    verifyEqual(testCase, stack_manifest.h5_frame_index(1), 1);
+    verifyEqual(testCase, stack_manifest.mask_height(1), h);
+    verifyEqual(testCase, stack_manifest.mask_width(1), w);
+
+    detail = readtable(outputs.red_blob_detail_csv, 'TextType', 'string');
+    required = ["frame_index", "label", "role", "mask_grid", ...
+        "processing_scale_factor", "Area", "Area_processing_px2", ...
+        "Area_native_equiv_px2", "AspectRatio", "Solidity", ...
+        "EulerNumber", "TopologyType"];
+    verifyTrue(testCase, all(ismember(required, ...
+        string(detail.Properties.VariableNames))));
+    verifyGreaterThan(testCase, height(detail), 0);
+    verifyEqual(testCase, detail.mask_grid(1), "processing_grid");
+    verifyEqual(testCase, detail.processing_scale_factor(1), 3);
+    verifyEqual(testCase, detail.Area_native_equiv_px2(1), ...
+        detail.Area_processing_px2(1) / 9, 'RelTol', 1e-12);
+end
+
+
 function write_test_frame(path_value, h, w)
     raw = zeros(3, w, h, 'single');
     for y = 3:6
@@ -81,7 +142,10 @@ function write_test_manifest(path_value, frame_path)
 end
 
 
-function config_path = write_test_config(cache_dir)
+function config_path = write_test_config(cache_dir, write_outputs)
+    if nargin < 2
+        write_outputs = false;
+    end
     config_path = fullfile(cache_dir, 'config.json');
     config = struct();
     config.segmentation_metrics = struct( ...
@@ -91,7 +155,9 @@ function config_path = write_test_config(cache_dir)
         'min_area_px', 0, ...
         'morph_radius', 0, ...
         'overlay_sample_max', 0, ...
-        'write_blob_detail', false);
+        'write_blob_detail', write_outputs, ...
+        'write_mask_stack', write_outputs, ...
+        'processing_scale_factor', 3);
     fid = fopen(config_path, 'w');
     cleaner = onCleanup(@() fclose(fid));
     fwrite(fid, jsonencode(config), 'char');

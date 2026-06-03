@@ -136,7 +136,17 @@ function outputs = run_segmentation_morphology(frame_rows, flow_domain, ...
     end
     overlay_frames = sample_frame_indices(height(frame_rows), config.overlay_sample_max);
     ts_rows = repmat(empty_morphology_row(), height(frame_rows), 1);
-    detail_rows = table();
+    detail_path = fullfile(out_dir, 'red_blob_detail_all_frames.csv');
+    mask_stack_path = fullfile(out_dir, 'red_mask_stack.h5');
+    mask_stack_manifest_path = fullfile(out_dir, 'red_mask_stack_manifest.csv');
+    stack_rows = repmat(empty_mask_stack_row(), height(frame_rows), 1);
+    if config.write_blob_detail
+        initialize_blob_detail_csv(detail_path);
+    end
+    if config.write_mask_stack
+        initialize_mask_stack_h5(mask_stack_path, size(flow_domain), ...
+            height(frame_rows), config, score_mode, threshold);
+    end
 
     for frame_idx = 1:height(frame_rows)
         rgb = read_hdf5_rgb(frame_rows.h5_path(frame_idx));
@@ -152,8 +162,14 @@ function outputs = run_segmentation_morphology(frame_rows, flow_domain, ...
             score_mode, threshold, metrics);
         if config.write_blob_detail
             blob_table = add_blob_detail_context(blob_table, frame_idx, time_s, ...
-                label, role, score_mode, threshold);
-            detail_rows = [detail_rows; blob_table]; %#ok<AGROW>
+                label, role, score_mode, threshold, config);
+            append_blob_detail_csv(detail_path, blob_table);
+        end
+        if config.write_mask_stack
+            h5write(mask_stack_path, config.mask_stack_dataset, uint8(mask), ...
+                [1, 1, frame_idx], [size(mask, 1), size(mask, 2), 1]);
+            stack_rows(frame_idx) = mask_stack_row(frame_idx, time_s, ...
+                label, role, config, threshold, metrics, size(mask));
         end
         if ismember(frame_idx, overlay_frames)
             write_overlay(overlays_dir, score_mode, threshold, frame_idx, ...
@@ -166,24 +182,30 @@ function outputs = run_segmentation_morphology(frame_rows, flow_domain, ...
 
     timeseries_path = fullfile(out_dir, 'red_mask_timeseries.csv');
     summary_path = fullfile(out_dir, 'red_blob_summary_timeseries.csv');
-    detail_path = fullfile(out_dir, 'red_blob_detail_all_frames.csv');
     manifest_path = fullfile(out_dir, 'segmentation_manifest.json');
     ts_table = struct2table(ts_rows);
     writetable(ts_table, timeseries_path);
     writetable(ts_table, summary_path);
-    if config.write_blob_detail && ~isempty(detail_rows)
-        writetable(detail_rows, detail_path);
-    else
+    if ~config.write_blob_detail
         detail_path = '';
     end
+    if config.write_mask_stack
+        writetable(struct2table(stack_rows), mask_stack_manifest_path);
+    else
+        mask_stack_path = '';
+        mask_stack_manifest_path = '';
+    end
     write_segmentation_manifest(manifest_path, 'morphology', config, cache_dir, ...
-        out_dir, config_path, timeseries_path, summary_path, detail_path);
+        out_dir, config_path, timeseries_path, summary_path, detail_path, ...
+        mask_stack_path, mask_stack_manifest_path);
 
     outputs = struct();
     outputs.output_dir = out_dir;
     outputs.red_mask_timeseries_csv = timeseries_path;
     outputs.red_blob_summary_csv = summary_path;
     outputs.red_blob_detail_csv = detail_path;
+    outputs.red_mask_stack_h5 = mask_stack_path;
+    outputs.red_mask_stack_manifest_csv = mask_stack_manifest_path;
     outputs.manifest_json = manifest_path;
 end
 
@@ -222,9 +244,15 @@ function config = default_segmentation_config()
     config.morph_radius = 1;
     config.overlay_sample_max = 12;
     config.write_blob_detail = false;
+    config.write_mask_stack = false;
+    config.mask_stack_format = "hdf5";
+    config.mask_stack_dataset = "/red_mask";
+    config.mask_stack_deflate = 4;
+    config.mask_grid = "processing_grid";
     config.threshold_source = "pilot_locked";
     config.output_semantics = "segmentation-derived red DNAPL 2D occupancy";
     config.processing_pixel_size_m = [];
+    config.processing_scale_factor = 1;
     config.interface_solid_dilation = 1;
 end
 
@@ -239,7 +267,45 @@ function config = normalize_segmentation_config(config)
     config.morph_radius = max(0, round(double(config.morph_radius)));
     config.overlay_sample_max = max(0, round(double(config.overlay_sample_max)));
     config.write_blob_detail = logical(config.write_blob_detail);
+    if ~isfield(config, 'write_mask_stack') || isempty(config.write_mask_stack)
+        config.write_mask_stack = false;
+    end
+    config.write_mask_stack = logical(config.write_mask_stack);
+    if ~isfield(config, 'mask_stack_format') || isempty(config.mask_stack_format)
+        config.mask_stack_format = "hdf5";
+    end
+    config.mask_stack_format = string(config.mask_stack_format);
+    if config.mask_stack_format ~= "hdf5"
+        error('segmentation_morphology:badMaskStackFormat', ...
+            'Only HDF5 mask stack output is supported, got %s.', ...
+            char(config.mask_stack_format));
+    end
+    if ~isfield(config, 'mask_stack_dataset') || isempty(config.mask_stack_dataset)
+        config.mask_stack_dataset = "/red_mask";
+    end
+    config.mask_stack_dataset = string(config.mask_stack_dataset);
+    if ~startsWith(config.mask_stack_dataset, "/")
+        config.mask_stack_dataset = "/" + config.mask_stack_dataset;
+    end
+    if ~isfield(config, 'mask_stack_deflate') || isempty(config.mask_stack_deflate)
+        config.mask_stack_deflate = 4;
+    end
+    config.mask_stack_deflate = max(0, min(9, round(double(config.mask_stack_deflate))));
+    if ~isfield(config, 'mask_grid') || isempty(config.mask_grid)
+        config.mask_grid = "processing_grid";
+    end
+    config.mask_grid = string(config.mask_grid);
     config.threshold_source = string(config.threshold_source);
+    if ~isfield(config, 'processing_scale_factor') || ...
+            isempty(config.processing_scale_factor)
+        config.processing_scale_factor = 1;
+    end
+    config.processing_scale_factor = double(config.processing_scale_factor);
+    if ~isscalar(config.processing_scale_factor) || ...
+            ~isfinite(config.processing_scale_factor) || ...
+            config.processing_scale_factor <= 0
+        config.processing_scale_factor = 1;
+    end
     if ~isfield(config, 'processing_pixel_size_m') || ...
             isempty(config.processing_pixel_size_m)
         config.processing_pixel_size_m = [];
@@ -325,7 +391,8 @@ function [metrics, blob_table] = mask_summary_metrics(mask, flow_domain, solid_m
     opts = struct();
     opts.mode = 'core_only';
     opts.object_connectivity = 8;
-    opts.processing_scale_factor = 1;
+    opts.scale_factor = config.processing_scale_factor;
+    opts.processing_pixel_size_m = config.processing_pixel_size_m;
     opts.primary_branch = 'C2_red_segmentation_morphology';
     opts.sn_semantics_version = 'segmentation_2d_occupancy_v1';
     opts.frame_validation_status = 'not_ground_truth_validated';
@@ -735,9 +802,93 @@ function write_overlay(root_dir, score_mode, threshold, frame_index, label, rgb,
 end
 
 
+function initialize_mask_stack_h5(path_value, mask_shape, frame_count, config, ...
+        score_mode, threshold)
+    if isfile(path_value)
+        delete(path_value);
+    end
+    dataset = char(string(config.mask_stack_dataset));
+    h = mask_shape(1);
+    w = mask_shape(2);
+    create_args = {'Datatype', 'uint8', 'ChunkSize', [h, w, 1]};
+    if config.mask_stack_deflate > 0
+        create_args = [create_args, {'Deflate', config.mask_stack_deflate}]; %#ok<AGROW>
+    end
+    h5create(path_value, dataset, [h, w, frame_count], create_args{:});
+    h5writeatt(path_value, dataset, 'mask_grid', char(string(config.mask_grid)));
+    h5writeatt(path_value, dataset, 'processing_scale_factor', ...
+        config.processing_scale_factor);
+    h5writeatt(path_value, dataset, 'score_mode', char(string(score_mode)));
+    h5writeatt(path_value, dataset, 'threshold_value', threshold.value);
+    h5writeatt(path_value, dataset, 'threshold_source', ...
+        char(string(threshold.source)));
+    h5writeatt(path_value, dataset, 'min_area_px', config.min_area_px);
+    h5writeatt(path_value, dataset, 'morph_radius', config.morph_radius);
+end
+
+
+function row = empty_mask_stack_row()
+    row = struct( ...
+        'frame_index', NaN, ...
+        'label', "", ...
+        'role', "", ...
+        'time_s', NaN, ...
+        'h5_dataset', "", ...
+        'h5_frame_index', NaN, ...
+        'mask_grid', "", ...
+        'mask_height', NaN, ...
+        'mask_width', NaN, ...
+        'processing_scale_factor', NaN, ...
+        'score_mode', "", ...
+        'threshold_value', NaN, ...
+        'threshold_source', "", ...
+        'red_mask_area_px', NaN, ...
+        'domain_area_px', NaN);
+end
+
+
+function row = mask_stack_row(frame_index, time_s, label, role, config, ...
+        threshold, metrics, mask_shape)
+    row = empty_mask_stack_row();
+    row.frame_index = frame_index;
+    row.label = string(label);
+    row.role = string(role);
+    row.time_s = time_s;
+    row.h5_dataset = string(config.mask_stack_dataset);
+    row.h5_frame_index = frame_index;
+    row.mask_grid = string(config.mask_grid);
+    row.mask_height = mask_shape(1);
+    row.mask_width = mask_shape(2);
+    row.processing_scale_factor = config.processing_scale_factor;
+    row.score_mode = string(config.production_score_mode);
+    row.threshold_value = threshold.value;
+    row.threshold_source = string(threshold.source);
+    row.red_mask_area_px = metrics.red_mask_area_px;
+    row.domain_area_px = metrics.domain_area_px;
+end
+
+
+function initialize_blob_detail_csv(path_value)
+    if isfile(path_value)
+        delete(path_value);
+    end
+    writetable(empty_c2_blob_detail_table(), path_value);
+end
+
+
+function append_blob_detail_csv(path_value, blob_table)
+    if isempty(blob_table) || height(blob_table) == 0
+        return;
+    end
+    writetable(blob_table, path_value, 'WriteMode', 'append', ...
+        'WriteVariableNames', false);
+end
+
+
 function blob_table = add_blob_detail_context(blob_table, frame_index, time_s, ...
-        label, role, score_mode, threshold)
+        label, role, score_mode, threshold, config)
     if isempty(blob_table)
+        blob_table = empty_c2_blob_detail_table();
         return;
     end
     blob_table.frame_index = repmat(frame_index, height(blob_table), 1);
@@ -747,11 +898,61 @@ function blob_table = add_blob_detail_context(blob_table, frame_index, time_s, .
     blob_table.score_mode = repmat(string(score_mode), height(blob_table), 1);
     blob_table.threshold_value = repmat(threshold.value, height(blob_table), 1);
     blob_table.threshold_source = repmat(string(threshold.source), height(blob_table), 1);
+    blob_table.mask_grid = repmat(string(config.mask_grid), height(blob_table), 1);
+    blob_table.processing_scale_factor = repmat( ...
+        config.processing_scale_factor, height(blob_table), 1);
+    blob_table = normalize_c2_blob_detail_table(blob_table);
+end
+
+
+function T = empty_c2_blob_detail_table()
+    schema = get_blob_detail_legacy_schema();
+    T = schema.empty_table;
+    T.frame_index = zeros(0, 1);
+    T.time_s = zeros(0, 1);
+    T.label = strings(0, 1);
+    T.role = strings(0, 1);
+    T.score_mode = strings(0, 1);
+    T.threshold_value = zeros(0, 1);
+    T.threshold_source = strings(0, 1);
+    T.mask_grid = strings(0, 1);
+end
+
+
+function T = normalize_c2_blob_detail_table(T)
+    template = empty_c2_blob_detail_table();
+    target_names = template.Properties.VariableNames;
+    n_rows = height(T);
+    for idx = 1:numel(target_names)
+        name = target_names{idx};
+        if ~ismember(name, T.Properties.VariableNames)
+            T.(name) = default_table_column(template.(name), n_rows);
+        end
+    end
+    T = T(:, target_names);
+end
+
+
+function values = default_table_column(template_values, n_rows)
+    if isstring(template_values)
+        values = strings(n_rows, 1);
+    elseif islogical(template_values)
+        values = false(n_rows, 1);
+    else
+        values = zeros(n_rows, 1);
+    end
 end
 
 
 function write_segmentation_manifest(path_value, run_mode, config, cache_dir, ...
-        out_dir, config_path, primary_path, secondary_path, detail_path)
+        out_dir, config_path, primary_path, secondary_path, detail_path, ...
+        mask_stack_path, mask_stack_manifest_path)
+    if nargin < 10
+        mask_stack_path = '';
+    end
+    if nargin < 11
+        mask_stack_manifest_path = '';
+    end
     manifest = struct();
     manifest.pipeline = 'A1_1BO_6UL_HDF5_cache_C2_red_segmentation_morphology';
     manifest.created_at = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
@@ -764,6 +965,8 @@ function write_segmentation_manifest(path_value, run_mode, config, cache_dir, ..
     manifest.interface_semantics = ...
         'InterfaceArea is a legacy alias of dnapl_water_length_px/L_ow, not area';
     manifest.endpoint_dependency = 'none';
+    manifest.mask_grid = char(string(config.mask_grid));
+    manifest.processing_scale_factor = config.processing_scale_factor;
     manifest.score_modes = cellstr(string(config.score_modes));
     manifest.production_score_mode = char(string(config.production_score_mode));
     manifest.locked_threshold = config.locked_threshold;
@@ -776,7 +979,9 @@ function write_segmentation_manifest(path_value, run_mode, config, cache_dir, ..
     manifest.files = struct( ...
         'primary_csv', primary_path, ...
         'secondary_csv', secondary_path, ...
-        'blob_detail_csv', detail_path);
+        'blob_detail_csv', detail_path, ...
+        'red_mask_stack_h5', mask_stack_path, ...
+        'red_mask_stack_manifest_csv', mask_stack_manifest_path);
 
     fid = fopen(path_value, 'w');
     if fid < 0
