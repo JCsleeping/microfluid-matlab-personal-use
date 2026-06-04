@@ -11,7 +11,7 @@ from run_dnapl_branch_c_timeseries_tool import (
     command_text,
     mask_stack_analysis_command,
 )
-from tools.mask_stack_analysis.analyze_c2_mask_stack import run_analysis
+from tools.mask_stack_analysis.analyze_c2_mask_stack import chain_code_length_px, run_analysis
 
 
 def test_runner_builds_maskanalysis_and_analysis_commands(tmp_path: Path) -> None:
@@ -174,12 +174,21 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
     assert geometry_rows[-1]["edge_mask_area_px"] == "3"
     assert geometry_rows[-1]["core_red_mask_fraction"] == "0.6"
     assert geometry_rows[-1]["edge_red_mask_fraction"] == "0.6"
+    assert float(geometry_rows[-1]["core_dnapl_water_length_px"]) > float(geometry_rows[-1]["core_dnapl_water_boundary_px"])
+    assert float(geometry_rows[-1]["edge_dnapl_solid_length_px"]) > 0
+    assert (out_dir / "core_edge_qc_overlays" / "core_edge_regions.png").is_file()
+    assert (out_dir / "core_edge_qc_overlays" / "solid_distance_preview.png").is_file()
 
     blob_rows = read_csv(out_dir / "blob_morphology_timeseries.csv")
     by_label = {row["label"]: row for row in blob_rows}
     assert by_label["r1"]["blob_count_detail"] == "2"
     assert float(by_label["r1"]["AreaGini"]) > 0
     assert by_label["r1"]["TopologyType_cluster_count_fraction"] == "0.5"
+
+
+def test_chain_code_length_uses_diagonal_weights() -> None:
+    boundary = np.eye(3, dtype=bool)
+    assert chain_code_length_px(boundary) == 2 * np.sqrt(2)
 
 
 def manifest_row(frame_index: int, label: str, role: str, height: int, width: int, area: int) -> dict[str, object]:

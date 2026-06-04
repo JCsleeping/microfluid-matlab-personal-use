@@ -145,6 +145,10 @@ GEOMETRY_CORE_EDGE_FIELDS = [
     "edge_retained_from_full_fraction",
     "core_depleted_from_full_fraction",
     "edge_depleted_from_full_fraction",
+    "core_dnapl_water_length_px",
+    "edge_dnapl_water_length_px",
+    "core_dnapl_solid_length_px",
+    "edge_dnapl_solid_length_px",
     "core_dnapl_water_boundary_px",
     "edge_dnapl_water_boundary_px",
     "core_dnapl_solid_boundary_px",
@@ -565,6 +569,15 @@ def analyze_stack(
             if geometry_context is not None
             else []
         )
+        if geometry_context is not None:
+            geometry_outputs.update(
+                save_core_edge_qc_overlays(
+                    out_dir,
+                    geometry_context,
+                    dataset,
+                    manifest_rows,
+                )
+            )
     write_csv(out_dir / "mask_stack_analysis_timeseries.csv", mask_rows, MASK_TIMESERIES_FIELDS)
     write_csv(out_dir / "toa_x_summary.csv", toa_x_rows, TOA_X_FIELDS)
     write_csv(out_dir / "phase_mask_timeseries.csv", phase_rows, PHASE_TIMESERIES_FIELDS)
@@ -786,6 +799,34 @@ def binary_boundary(mask: np.ndarray) -> np.ndarray:
     return mask & ~eroded
 
 
+def chain_code_length_px(boundary_mask: np.ndarray) -> float:
+    boundary_mask = np.asarray(boundary_mask, dtype=bool)
+    if not np.any(boundary_mask):
+        return 0.0
+    orthogonal = 0
+    diagonal = 0
+    for dy, dx in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        if dy == 0:
+            a = boundary_mask[:, :-1]
+            b = boundary_mask[:, 1:]
+        elif dx == 0:
+            a = boundary_mask[:-1, :]
+            b = boundary_mask[1:, :]
+        elif dx == 1:
+            a = boundary_mask[:-1, :-1]
+            b = boundary_mask[1:, 1:]
+        else:
+            a = boundary_mask[:-1, 1:]
+            b = boundary_mask[1:, :-1]
+        count = int(np.count_nonzero(a & b))
+        if dy and dx:
+            diagonal += count
+        else:
+            orthogonal += count
+    length = float(orthogonal) + math.sqrt(2.0) * float(diagonal)
+    return length if length > 0 else float(np.count_nonzero(boundary_mask))
+
+
 def build_core_edge_context(
     flow_domain: np.ndarray,
     *,
@@ -828,6 +869,82 @@ def save_core_edge_maps(out_dir: Path, context: dict[str, Any]) -> dict[str, str
     return {key: str(value) for key, value in outputs.items()}
 
 
+def sanitize_token(value: object) -> str:
+    text = str(value or "").strip()
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text)
+    return cleaned.strip("_") or "frame"
+
+
+def core_edge_base_rgb(context: dict[str, Any]) -> np.ndarray:
+    flow_domain = context["flow_domain"]
+    core_flow = context["core_flow"]
+    edge_band = context["edge_band"]
+    solid_contact_zone = context["solid_contact_zone"]
+    image = np.zeros((*flow_domain.shape, 3), dtype=np.uint8)
+    image[flow_domain] = np.array([228, 228, 228], dtype=np.uint8)
+    image[core_flow] = np.array([126, 177, 213], dtype=np.uint8)
+    image[edge_band] = np.array([245, 174, 111], dtype=np.uint8)
+    image[solid_contact_zone] = np.array([220, 135, 96], dtype=np.uint8)
+    return image
+
+
+def overlay_red_mask(base: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    image = base.copy()
+    mask = np.asarray(mask, dtype=bool)
+    image[mask] = np.array([215, 48, 39], dtype=np.uint8)
+    boundary = binary_boundary(mask)
+    image[boundary] = np.array([128, 0, 0], dtype=np.uint8)
+    return image
+
+
+def save_png(path: Path, image: np.ndarray) -> str:
+    from matplotlib import pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.imsave(path, image)
+    return str(path)
+
+
+def save_core_edge_qc_overlays(
+    out_dir: Path,
+    context: dict[str, Any],
+    dataset: h5py.Dataset,
+    manifest_rows: list[dict[str, str]],
+    *,
+    sample_max: int = 5,
+) -> dict[str, str]:
+    overlay_dir = out_dir / "core_edge_qc_overlays"
+    outputs: dict[str, str] = {}
+    base = core_edge_base_rgb(context)
+    outputs["core_edge_regions_png"] = save_png(overlay_dir / "core_edge_regions.png", base)
+
+    distance = np.asarray(context["solid_distance"], dtype=float)
+    distance_norm = distance / float(np.nanmax(distance)) if np.isfinite(distance).any() and np.nanmax(distance) > 0 else distance
+    distance_rgb = np.stack(
+        [
+            np.clip(distance_norm * 255, 0, 255),
+            np.clip(np.sqrt(distance_norm) * 255, 0, 255),
+            np.clip((1.0 - distance_norm) * 180, 0, 255),
+        ],
+        axis=2,
+    ).astype(np.uint8)
+    distance_rgb[~context["flow_domain"]] = 0
+    outputs["solid_distance_preview_png"] = save_png(overlay_dir / "solid_distance_preview.png", distance_rgb)
+
+    if manifest_rows and sample_max > 0:
+        sample_count = min(sample_max, len(manifest_rows))
+        indices = sorted(set(int(round(value)) for value in np.linspace(0, len(manifest_rows) - 1, sample_count)))
+        for idx in indices:
+            manifest_row = manifest_rows[idx]
+            mask = aligned_mask(dataset, manifest_row) & context["flow_domain"]
+            label = sanitize_token(manifest_row.get("label", f"frame_{idx + 1}"))
+            frame_index = int_value(manifest_row.get("frame_index"), default=idx + 1)
+            key = f"core_edge_overlay_frame_{frame_index:06d}_png"
+            path = overlay_dir / f"frame_{frame_index:06d}_{label}_core_edge_overlay.png"
+            outputs[key] = save_png(path, overlay_red_mask(base, mask))
+    return outputs
+
+
 def build_geometry_core_edge_rows(
     dataset: h5py.Dataset,
     manifest_rows: list[dict[str, str]],
@@ -856,6 +973,10 @@ def build_geometry_core_edge_rows(
         boundary = binary_boundary(mask)
         water_boundary = boundary & ~solid_contact_zone
         solid_boundary = boundary & solid_contact_zone
+        core_water_boundary = water_boundary & core_flow
+        edge_water_boundary = water_boundary & edge_band
+        core_solid_boundary = solid_boundary & core_flow
+        edge_solid_boundary = solid_boundary & edge_band
         current_area = int(mask.sum())
         core_mask_area = int((mask & core_flow).sum())
         edge_mask_area = int((mask & edge_band).sum())
@@ -888,10 +1009,14 @@ def build_geometry_core_edge_rows(
             "edge_retained_from_full_fraction": safe_fraction(float(edge_retained), float(edge_full_area)),
             "core_depleted_from_full_fraction": 1 - safe_fraction(float(core_retained), float(core_full_area)) if core_full_area else math.nan,
             "edge_depleted_from_full_fraction": 1 - safe_fraction(float(edge_retained), float(edge_full_area)) if edge_full_area else math.nan,
-            "core_dnapl_water_boundary_px": int((water_boundary & core_flow).sum()),
-            "edge_dnapl_water_boundary_px": int((water_boundary & edge_band).sum()),
-            "core_dnapl_solid_boundary_px": int((solid_boundary & core_flow).sum()),
-            "edge_dnapl_solid_boundary_px": int((solid_boundary & edge_band).sum()),
+            "core_dnapl_water_length_px": chain_code_length_px(core_water_boundary),
+            "edge_dnapl_water_length_px": chain_code_length_px(edge_water_boundary),
+            "core_dnapl_solid_length_px": chain_code_length_px(core_solid_boundary),
+            "edge_dnapl_solid_length_px": chain_code_length_px(edge_solid_boundary),
+            "core_dnapl_water_boundary_px": int(core_water_boundary.sum()),
+            "edge_dnapl_water_boundary_px": int(edge_water_boundary.sum()),
+            "core_dnapl_solid_boundary_px": int(core_solid_boundary.sum()),
+            "edge_dnapl_solid_boundary_px": int(edge_solid_boundary.sum()),
         }
         rows.append(row)
     return rows
@@ -930,11 +1055,15 @@ def geometry_core_edge_summary(
         "residual_core_red_mask_fraction_median": median_finite(residual_rows, "core_red_mask_fraction"),
         "residual_edge_red_mask_fraction_median": median_finite(residual_rows, "edge_red_mask_fraction"),
         "residual_core_to_edge_red_mask_fraction_ratio_median": median_finite(residual_rows, "core_to_edge_red_mask_fraction_ratio"),
+        "residual_core_dnapl_water_length_px_median": median_finite(residual_rows, "core_dnapl_water_length_px"),
+        "residual_edge_dnapl_water_length_px_median": median_finite(residual_rows, "edge_dnapl_water_length_px"),
+        "residual_core_dnapl_solid_length_px_median": median_finite(residual_rows, "core_dnapl_solid_length_px"),
+        "residual_edge_dnapl_solid_length_px_median": median_finite(residual_rows, "edge_dnapl_solid_length_px"),
         "final_residual_core_retained_from_full_fraction": finite_or_nan(final_residual.get("core_retained_from_full_fraction")),
         "final_residual_edge_retained_from_full_fraction": finite_or_nan(final_residual.get("edge_retained_from_full_fraction")),
         "final_residual_core_depleted_from_full_fraction": finite_or_nan(final_residual.get("core_depleted_from_full_fraction")),
         "final_residual_edge_depleted_from_full_fraction": finite_or_nan(final_residual.get("edge_depleted_from_full_fraction")),
-        "boundary_length_semantics": "core/edge boundary fields are C2 boundary-pixel proxies split by geometric region and solid-contact zone",
+        "length_semantics": "core/edge length fields use chain-code adjacency over C2 boundary masks split by geometric region and solid-contact zone; boundary_px fields are retained as pixel-count QC",
     }
 
 
@@ -1146,6 +1275,7 @@ def build_summary(
     }
     outputs.update(stack_summary.get("phase_outputs", {}))
     outputs.update(stack_summary.get("geometry_outputs", {}))
+    geometry_outputs = stack_summary.get("geometry_outputs", {})
     readiness = {
         "mask_stack_ready": stack_summary["mask_timeseries_rows"] > 0,
         "toa_ready": stack_summary["toa_x_summary_rows"] > 0 and Path(stack_summary["toa_frame_index_npy"]).is_file(),
@@ -1156,7 +1286,9 @@ def build_summary(
         "geometric_core_edge_ready": stack_summary["geometry_core_edge_timeseries_rows"] > 0
         and stack_summary.get("geometry_core_edge", {}).get("geometry_status") == "ok"
         and stack_summary.get("geometry_core_edge", {}).get("core_flow_area_px", 0) > 0
-        and stack_summary.get("geometry_core_edge", {}).get("edge_band_area_px", 0) > 0,
+        and stack_summary.get("geometry_core_edge", {}).get("edge_band_area_px", 0) > 0
+        and Path(geometry_outputs.get("core_edge_regions_png", "")).is_file()
+        and Path(geometry_outputs.get("solid_distance_preview_png", "")).is_file(),
         "blob_detail_distribution_ready": blob_summary["blob_detail_frames_with_rows"] > 0,
     }
     return {
@@ -1187,7 +1319,7 @@ def build_summary(
             "phase_aware": "full-NAPL union defines the baseline; residual metrics report retained, depleted, transient, and new-outside-full mask support",
             "phase_retention_class": "0 background/not-full-baseline, 1 full baseline absent in residual, 2 residual transient but absent final, 3 retained in final residual, 4 residual outside full baseline",
             "geometric_core_edge": "core_flow and edge_band are split from flow_domain_mask by distance_transform_edt(flow_domain) on the 3X processing grid",
-            "core_edge_boundary_px": "core/edge DNAPL-water and DNAPL-solid fields are boundary-pixel proxies, not chain-code MATLAB global L_ow",
+            "core_edge_length_px": "core/edge DNAPL-water and DNAPL-solid length fields use chain-code adjacency over C2 boundary masks; boundary_px fields are retained as pixel-count QC",
             "AreaGini": "per-frame inequality of C2 per-blob Area_processing_px2 distribution",
         },
     }

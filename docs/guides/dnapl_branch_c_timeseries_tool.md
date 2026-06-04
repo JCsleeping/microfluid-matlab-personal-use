@@ -74,6 +74,7 @@ mask_stack_analysis\<run_id>\core_flow_mask.npy
 mask_stack_analysis\<run_id>\edge_band_mask.npy
 mask_stack_analysis\<run_id>\solid_distance_px.npy
 mask_stack_analysis\<run_id>\solid_contact_zone_mask.npy
+mask_stack_analysis\<run_id>\core_edge_qc_overlays\
 mask_stack_analysis\<run_id>\mask_stack_analysis_summary.json
 ```
 
@@ -514,10 +515,19 @@ edge_band = flow_domain & ~core_flow
 For A1, the default `core_flow_min_dist_px = 3` is on the 3X processing grid.
 These geometric fields are separate from x-zone fields and are written to
 `geometry_core_edge_timeseries.csv` as red-mask occupancy, retained/depleted
-fraction relative to the full-NAPL baseline, and boundary-pixel contact
-proxies split by core/edge. The core/edge boundary fields are not MATLAB
-chain-code `L_ow` by region; they are conservative C2 boundary-pixel proxies
-until exact regional chain-code length is ported.
+fraction relative to the full-NAPL baseline, and regional DNAPL-water /
+DNAPL-solid chain-code length split by core/edge. Boundary pixel counts are
+kept as `*_boundary_px` QC fields, while the primary contact fields are:
+
+```text
+core_dnapl_water_length_px
+edge_dnapl_water_length_px
+core_dnapl_solid_length_px
+edge_dnapl_solid_length_px
+```
+
+`core_edge_qc_overlays\` contains a core/edge region preview, a distance-map
+preview, and sampled red-mask overlays on the geometric regions.
 
 ## C2 Segmentation Pilot
 

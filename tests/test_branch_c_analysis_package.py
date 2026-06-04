@@ -141,6 +141,8 @@ def test_branch_c_analysis_package_consumes_mask_stack_analysis(tmp_path: Path) 
     assert derived_rows[-1]["phase_depleted_from_full_fraction"] == "0.8"
     assert derived_rows[-1]["geom_core_red_mask_fraction"] == "0.22"
     assert derived_rows[-1]["geom_edge_retained_from_full_fraction"] == "0.18"
+    assert derived_rows[-1]["geom_core_dnapl_water_length_px"] == "31"
+    assert derived_rows[-1]["geom_edge_dnapl_solid_length_px"] == "19"
     assert derived_rows[-1]["AreaGini"] == "0.4"
     assert derived_rows[-1]["AspectRatio_median"] == "2.5"
     assert derived_rows[-1]["EulerNumber_median"] == "-1"
@@ -162,6 +164,7 @@ def test_branch_c_analysis_package_consumes_mask_stack_analysis(tmp_path: Path) 
     assert alignment["residual_persistence_map"]["status"] == "aligned_phase_mask"
     assert alignment["geometric_core_edge_regions"]["status"] == "aligned_geometric_mask"
     assert alignment["edge_retention"]["status"] == "aligned_geometric_mask"
+    assert alignment["core_edge_contact_boundary"]["status"] == "aligned_geometric_mask"
     assert alignment["AreaGini"]["status"] == "aligned_blob_detail"
     assert alignment["AspectRatio*"]["status"] == "aligned_blob_detail"
     assert alignment["true_fingering"]["status"] == "aligned_mask_stack_proxy"
@@ -454,6 +457,10 @@ def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
                 "edge_retained_from_full_fraction": [0.8, 0.8, 0.25, 0.18][idx],
                 "core_depleted_from_full_fraction": [0.1, 0.0, 0.7, 0.8][idx],
                 "edge_depleted_from_full_fraction": [0.2, 0.2, 0.75, 0.82][idx],
+                "core_dnapl_water_length_px": [15, 16, 30, 31][idx],
+                "edge_dnapl_water_length_px": [12, 13, 24, 25][idx],
+                "core_dnapl_solid_length_px": [2, 2, 8, 9][idx],
+                "edge_dnapl_solid_length_px": [4, 5, 18, 19][idx],
                 "core_dnapl_water_boundary_px": [10, 11, 20, 21][idx],
                 "edge_dnapl_water_boundary_px": [12, 13, 25, 26][idx],
                 "core_dnapl_solid_boundary_px": [1, 1, 5, 6][idx],
@@ -541,6 +548,10 @@ def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
             "residual_core_red_mask_fraction_median": 0.235,
             "residual_edge_red_mask_fraction_median": 0.19,
             "residual_core_to_edge_red_mask_fraction_ratio_median": 1.235,
+            "residual_core_dnapl_water_length_px_median": 30.5,
+            "residual_edge_dnapl_water_length_px_median": 24.5,
+            "residual_core_dnapl_solid_length_px_median": 8.5,
+            "residual_edge_dnapl_solid_length_px_median": 18.5,
             "final_residual_core_retained_from_full_fraction": 0.2,
             "final_residual_edge_retained_from_full_fraction": 0.18,
         },

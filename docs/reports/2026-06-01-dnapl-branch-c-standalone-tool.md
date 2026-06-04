@@ -790,6 +790,7 @@ core_flow_mask.npy
 edge_band_mask.npy
 solid_distance_px.npy
 solid_contact_zone_mask.npy
+core_edge_qc_overlays\
 mask_stack_analysis_summary.json
 ```
 
@@ -838,7 +839,7 @@ TOA/front/finger fields come from C2 red_mask_stack.h5, not x-zone color proxies
 finger_count_proxy is a mask-stack leading-front-band proxy, not pore-graph branch density.
 phase-aware residual metrics use the union of full_napl role C2 masks as the baseline.
 geometric core/edge metrics use flow_domain distance on the 3X C2 processing grid.
-core/edge boundary contact fields are boundary-pixel proxies, not MATLAB chain-code L_ow.
+core/edge contact length fields use C2 chain-code adjacency; boundary-pixel counts remain QC fields.
 pore_graph_fingering_ready remains false until graph/skeleton analysis is added.
 ```
 
@@ -883,4 +884,9 @@ residual_edge_red_mask_fraction_median = 0.022005
 residual_core_to_edge_red_mask_fraction_ratio_median = 3.258645
 final_residual_core_retained_from_full_fraction = 0.155099
 final_residual_edge_retained_from_full_fraction = 0.042787
+residual_core_dnapl_water_length_px_median = 99055.790125
+residual_edge_dnapl_water_length_px_median = 104.840620
+residual_core_dnapl_solid_length_px_median = 0.000000
+residual_edge_dnapl_solid_length_px_median = 72.384776
+core_edge_qc_overlays PNG count = 7
 ```
