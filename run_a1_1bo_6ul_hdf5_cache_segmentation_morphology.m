@@ -130,25 +130,59 @@ end
 function outputs = run_segmentation_morphology(frame_rows, flow_domain, ...
         solid_mask, out_dir, config, cache_dir, config_path)
     [score_mode, threshold] = locked_production_threshold(config);
+    total_frames = height(frame_rows);
+    run_indices = morphology_run_indices(total_frames, config);
     overlays_dir = fullfile(out_dir, 'mask_qc_overlays_sample');
     if ~isfolder(overlays_dir)
         mkdir(overlays_dir);
     end
-    overlay_frames = sample_frame_indices(height(frame_rows), config.overlay_sample_max);
-    ts_rows = repmat(empty_morphology_row(), height(frame_rows), 1);
+    overlay_frames = sample_frame_indices(total_frames, config.overlay_sample_max);
     detail_path = fullfile(out_dir, 'red_blob_detail_all_frames.csv');
+    detail_chunks_dir = fullfile(out_dir, char(config.blob_detail_chunks_dir_name));
+    detail_chunk_path = '';
+    use_chunked_blob_detail = config.write_blob_detail && ...
+        config.blob_detail_output_mode == "chunked_csv";
     mask_stack_path = fullfile(out_dir, 'red_mask_stack.h5');
     mask_stack_manifest_path = fullfile(out_dir, 'red_mask_stack_manifest.csv');
-    stack_rows = repmat(empty_mask_stack_row(), height(frame_rows), 1);
+    timeseries_path = fullfile(out_dir, 'red_mask_timeseries.csv');
+    summary_path = fullfile(out_dir, 'red_blob_summary_timeseries.csv');
+    manifest_path = fullfile(out_dir, 'segmentation_manifest.json');
+    replace_outputs = ~config.resume_outputs;
+
+    initialize_struct_csv(timeseries_path, empty_morphology_row(), replace_outputs);
+    initialize_struct_csv(summary_path, empty_morphology_row(), replace_outputs);
     if config.write_blob_detail
-        initialize_blob_detail_csv(detail_path);
+        if use_chunked_blob_detail
+            if replace_outputs
+                if isfile(detail_path)
+                    delete(detail_path);
+                end
+                if isfolder(detail_chunks_dir)
+                    rmdir(detail_chunks_dir, 's');
+                end
+            end
+            if ~isfolder(detail_chunks_dir)
+                mkdir(detail_chunks_dir);
+            end
+            detail_chunk_path = fullfile(detail_chunks_dir, sprintf( ...
+                'red_blob_detail_%06d_%06d.csv', run_indices(1), run_indices(end)));
+            initialize_blob_detail_csv(detail_chunk_path, true);
+        else
+            initialize_blob_detail_csv(detail_path, replace_outputs);
+        end
     end
     if config.write_mask_stack
-        initialize_mask_stack_h5(mask_stack_path, size(flow_domain), ...
-            height(frame_rows), config, score_mode, threshold);
+        if replace_outputs || ~isfile(mask_stack_path)
+            initialize_mask_stack_h5(mask_stack_path, size(flow_domain), ...
+                total_frames, config, score_mode, threshold);
+        end
+        initialize_struct_csv(mask_stack_manifest_path, empty_mask_stack_row(), ...
+            replace_outputs);
     end
 
-    for frame_idx = 1:height(frame_rows)
+    fprintf('SEG_MORPH_CHUNK %d/%d-%d/%d\n', run_indices(1), total_frames, ...
+        run_indices(end), total_frames);
+    for frame_idx = run_indices
         rgb = read_hdf5_rgb(frame_rows.h5_path(frame_idx));
         score = red_score_map(rgb, score_mode);
         mask = cleanup_red_mask(score >= threshold.value & flow_domain, ...
@@ -158,52 +192,59 @@ function outputs = run_segmentation_morphology(frame_rows, flow_domain, ...
         time_s = frame_time_s(frame_rows, frame_idx);
         [metrics, blob_table] = mask_summary_metrics(mask, flow_domain, ...
             solid_mask, config);
-        ts_rows(frame_idx) = morphology_row(frame_idx, time_s, label, role, ...
+        ts_row = morphology_row(frame_idx, time_s, label, role, ...
             score_mode, threshold, metrics);
+        append_struct_row_csv(timeseries_path, ts_row);
+        append_struct_row_csv(summary_path, ts_row);
         if config.write_blob_detail
             blob_table = add_blob_detail_context(blob_table, frame_idx, time_s, ...
                 label, role, score_mode, threshold, config);
-            append_blob_detail_csv(detail_path, blob_table);
+            if use_chunked_blob_detail
+                append_blob_detail_csv(detail_chunk_path, blob_table);
+            else
+                append_blob_detail_csv(detail_path, blob_table);
+            end
         end
         if config.write_mask_stack
             h5write(mask_stack_path, config.mask_stack_dataset, uint8(mask), ...
                 [1, 1, frame_idx], [size(mask, 1), size(mask, 2), 1]);
-            stack_rows(frame_idx) = mask_stack_row(frame_idx, time_s, ...
+            stack_row = mask_stack_row(frame_idx, time_s, ...
                 label, role, config, threshold, metrics, size(mask));
+            append_struct_row_csv(mask_stack_manifest_path, stack_row);
         end
         if ismember(frame_idx, overlay_frames)
             write_overlay(overlays_dir, score_mode, threshold, frame_idx, ...
                 label, rgb, mask);
         end
-        if frame_idx == 1 || frame_idx == height(frame_rows) || mod(frame_idx, 100) == 0
-            fprintf('SEG_MORPH_PROGRESS %d/%d\n', frame_idx, height(frame_rows));
+        if frame_idx == run_indices(1) || frame_idx == run_indices(end) || mod(frame_idx, 100) == 0
+            fprintf('SEG_MORPH_PROGRESS %d/%d\n', frame_idx, total_frames);
         end
     end
 
-    timeseries_path = fullfile(out_dir, 'red_mask_timeseries.csv');
-    summary_path = fullfile(out_dir, 'red_blob_summary_timeseries.csv');
-    manifest_path = fullfile(out_dir, 'segmentation_manifest.json');
-    ts_table = struct2table(ts_rows);
-    writetable(ts_table, timeseries_path);
-    writetable(ts_table, summary_path);
     if ~config.write_blob_detail
         detail_path = '';
+        detail_chunks_dir = '';
+        detail_chunk_path = '';
+    elseif ~use_chunked_blob_detail
+        detail_chunks_dir = '';
+        detail_chunk_path = '';
     end
-    if config.write_mask_stack
-        writetable(struct2table(stack_rows), mask_stack_manifest_path);
-    else
+    if ~config.write_mask_stack
         mask_stack_path = '';
         mask_stack_manifest_path = '';
     end
     write_segmentation_manifest(manifest_path, 'morphology', config, cache_dir, ...
         out_dir, config_path, timeseries_path, summary_path, detail_path, ...
-        mask_stack_path, mask_stack_manifest_path);
+        mask_stack_path, mask_stack_manifest_path, detail_chunks_dir, ...
+        detail_chunk_path);
 
     outputs = struct();
     outputs.output_dir = out_dir;
     outputs.red_mask_timeseries_csv = timeseries_path;
     outputs.red_blob_summary_csv = summary_path;
     outputs.red_blob_detail_csv = detail_path;
+    outputs.red_blob_detail_chunks_dir = detail_chunks_dir;
+    outputs.red_blob_detail_chunk_csv = detail_chunk_path;
     outputs.red_mask_stack_h5 = mask_stack_path;
     outputs.red_mask_stack_manifest_csv = mask_stack_manifest_path;
     outputs.manifest_json = manifest_path;
@@ -244,6 +285,8 @@ function config = default_segmentation_config()
     config.morph_radius = 1;
     config.overlay_sample_max = 12;
     config.write_blob_detail = false;
+    config.blob_detail_output_mode = "single_csv";
+    config.blob_detail_chunks_dir_name = "red_blob_detail_chunks";
     config.write_mask_stack = false;
     config.mask_stack_format = "hdf5";
     config.mask_stack_dataset = "/red_mask";
@@ -254,6 +297,9 @@ function config = default_segmentation_config()
     config.processing_pixel_size_m = [];
     config.processing_scale_factor = 1;
     config.interface_solid_dilation = 1;
+    config.frame_start_index = 1;
+    config.frame_end_index = [];
+    config.resume_outputs = false;
 end
 
 
@@ -267,6 +313,27 @@ function config = normalize_segmentation_config(config)
     config.morph_radius = max(0, round(double(config.morph_radius)));
     config.overlay_sample_max = max(0, round(double(config.overlay_sample_max)));
     config.write_blob_detail = logical(config.write_blob_detail);
+    if ~isfield(config, 'blob_detail_output_mode') || ...
+            isempty(config.blob_detail_output_mode)
+        config.blob_detail_output_mode = "single_csv";
+    end
+    blob_mode = lower(strrep(char(string(config.blob_detail_output_mode)), ...
+        '-', '_'));
+    if strcmp(blob_mode, 'chunked')
+        blob_mode = 'chunked_csv';
+    elseif strcmp(blob_mode, 'single') || strcmp(blob_mode, 'singlecsv')
+        blob_mode = 'single_csv';
+    end
+    if ~ismember(blob_mode, {'single_csv', 'chunked_csv'})
+        error('segmentation_morphology:badBlobDetailOutputMode', ...
+            'Unsupported blob_detail_output_mode: %s.', blob_mode);
+    end
+    config.blob_detail_output_mode = string(blob_mode);
+    if ~isfield(config, 'blob_detail_chunks_dir_name') || ...
+            isempty(config.blob_detail_chunks_dir_name)
+        config.blob_detail_chunks_dir_name = "red_blob_detail_chunks";
+    end
+    config.blob_detail_chunks_dir_name = string(config.blob_detail_chunks_dir_name);
     if ~isfield(config, 'write_mask_stack') || isempty(config.write_mask_stack)
         config.write_mask_stack = false;
     end
@@ -323,6 +390,19 @@ function config = normalize_segmentation_config(config)
     end
     config.interface_solid_dilation = max(0, round(double( ...
         config.interface_solid_dilation)));
+    if ~isfield(config, 'frame_start_index') || isempty(config.frame_start_index)
+        config.frame_start_index = 1;
+    end
+    config.frame_start_index = max(1, round(double(config.frame_start_index)));
+    if ~isfield(config, 'frame_end_index') || isempty(config.frame_end_index)
+        config.frame_end_index = [];
+    else
+        config.frame_end_index = max(1, round(double(config.frame_end_index)));
+    end
+    if ~isfield(config, 'resume_outputs') || isempty(config.resume_outputs)
+        config.resume_outputs = false;
+    end
+    config.resume_outputs = logical(config.resume_outputs);
 end
 
 
@@ -704,6 +784,26 @@ function frame_rows = timeseries_frame_rows(manifest)
 end
 
 
+function indices = morphology_run_indices(total_frames, config)
+    if total_frames < 1
+        error('segmentation_morphology:noFrames', ...
+            'No full_napl/residual/production frames are available for C2 morphology.');
+    end
+    start_idx = min(max(1, config.frame_start_index), total_frames);
+    if isempty(config.frame_end_index)
+        end_idx = total_frames;
+    else
+        end_idx = min(max(1, config.frame_end_index), total_frames);
+    end
+    if start_idx > end_idx
+        error('segmentation_morphology:badFrameRange', ...
+            'frame_start_index (%d) must be <= frame_end_index (%d).', ...
+            start_idx, end_idx);
+    end
+    indices = start_idx:end_idx;
+end
+
+
 function values = truthy_vector(raw)
     values = false(size(raw));
     for idx = 1:numel(raw)
@@ -802,6 +902,23 @@ function write_overlay(root_dir, score_mode, threshold, frame_index, label, rgb,
 end
 
 
+function initialize_struct_csv(path_value, empty_row, replace_existing)
+    if replace_existing && isfile(path_value)
+        delete(path_value);
+    end
+    if ~isfile(path_value)
+        empty_rows = repmat(empty_row, 0, 1);
+        writetable(struct2table(empty_rows), path_value);
+    end
+end
+
+
+function append_struct_row_csv(path_value, row)
+    writetable(struct2table(row), path_value, 'WriteMode', 'append', ...
+        'WriteVariableNames', false);
+end
+
+
 function initialize_mask_stack_h5(path_value, mask_shape, frame_count, config, ...
         score_mode, threshold)
     if isfile(path_value)
@@ -868,11 +985,13 @@ function row = mask_stack_row(frame_index, time_s, label, role, config, ...
 end
 
 
-function initialize_blob_detail_csv(path_value)
-    if isfile(path_value)
+function initialize_blob_detail_csv(path_value, replace_existing)
+    if replace_existing && isfile(path_value)
         delete(path_value);
     end
-    writetable(empty_c2_blob_detail_table(), path_value);
+    if ~isfile(path_value)
+        writetable(empty_c2_blob_detail_table(), path_value);
+    end
 end
 
 
@@ -946,12 +1065,19 @@ end
 
 function write_segmentation_manifest(path_value, run_mode, config, cache_dir, ...
         out_dir, config_path, primary_path, secondary_path, detail_path, ...
-        mask_stack_path, mask_stack_manifest_path)
+        mask_stack_path, mask_stack_manifest_path, detail_chunks_dir, ...
+        detail_chunk_path)
     if nargin < 10
         mask_stack_path = '';
     end
     if nargin < 11
         mask_stack_manifest_path = '';
+    end
+    if nargin < 12
+        detail_chunks_dir = '';
+    end
+    if nargin < 13
+        detail_chunk_path = '';
     end
     manifest = struct();
     manifest.pipeline = 'A1_1BO_6UL_HDF5_cache_C2_red_segmentation_morphology';
@@ -976,10 +1102,18 @@ function write_segmentation_manifest(path_value, run_mode, config, cache_dir, ..
     manifest.morph_radius = config.morph_radius;
     manifest.processing_pixel_size_m = config.processing_pixel_size_m;
     manifest.interface_solid_dilation = config.interface_solid_dilation;
+    manifest.frame_start_index = config.frame_start_index;
+    manifest.frame_end_index = config.frame_end_index;
+    manifest.resume_outputs = config.resume_outputs;
+    manifest.blob_detail_output_mode = char(string(config.blob_detail_output_mode));
+    manifest.blob_detail_chunks_dir_name = char(string( ...
+        config.blob_detail_chunks_dir_name));
     manifest.files = struct( ...
         'primary_csv', primary_path, ...
         'secondary_csv', secondary_path, ...
         'blob_detail_csv', detail_path, ...
+        'blob_detail_chunks_dir', detail_chunks_dir, ...
+        'blob_detail_chunk_csv', detail_chunk_path, ...
         'red_mask_stack_h5', mask_stack_path, ...
         'red_mask_stack_manifest_csv', mask_stack_manifest_path);
 

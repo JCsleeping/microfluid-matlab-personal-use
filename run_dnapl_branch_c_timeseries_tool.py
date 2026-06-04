@@ -56,6 +56,7 @@ SEGMORPH_BLOB_DETAIL_COLUMNS = (
     "EulerNumber",
     "TopologyType",
 )
+BLOB_DETAIL_CHUNK_DIR_NAME = "red_blob_detail_chunks"
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -226,6 +227,16 @@ def write_water_endpoints_input(config: dict[str, Any], manifest_dir: Path) -> P
     return path_value
 
 
+def write_napl_endpoints_input(config: dict[str, Any], manifest_dir: Path) -> Path | None:
+    endpoints = config.get("napl_endpoints")
+    if not endpoints:
+        return None
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    path_value = manifest_dir / "napl_endpoints_input.json"
+    path_value.write_text(json.dumps(endpoints, indent=2), encoding="utf-8")
+    return path_value
+
+
 def write_physical_metadata_input(config: dict[str, Any], paths: dict[str, Path]) -> Path | None:
     if config.get("physical_metadata_path"):
         return resolve_path(config["physical_metadata_path"])
@@ -264,6 +275,7 @@ def manifest_command(
     paths: dict[str, Path],
     endpoint_policy_input: Path | None,
     water_endpoints_input: Path | None,
+    napl_endpoints_input: Path | None = None,
 ) -> list[str]:
     manifest_config = config.get("manifest", {})
     command = [
@@ -291,6 +303,8 @@ def manifest_command(
         command.extend(["--endpoint-policy", str(endpoint_policy_input)])
     if water_endpoints_input is not None:
         command.extend(["--water-endpoints", str(water_endpoints_input)])
+    if napl_endpoints_input is not None:
+        command.extend(["--napl-endpoints", str(napl_endpoints_input)])
     if config.get("force_manifest", False):
         command.append("--force")
     return command
@@ -360,6 +374,337 @@ def segmentation_command(
     return [str(config.get("matlab_command", "matlab")), "-batch", expression]
 
 
+def segmentation_command_specs(
+    config: dict[str, Any],
+    paths: dict[str, Path],
+    effective_config_path: Path,
+    run_mode: str,
+    *,
+    write_chunk_configs: bool = True,
+) -> list[dict[str, Any]]:
+    if run_mode != "morphology":
+        return [
+            {
+                "command": segmentation_command(
+                    config,
+                    paths,
+                    effective_config_path,
+                    run_mode,
+                )
+            }
+        ]
+    segmentation_config = config.get("segmentation_metrics", {})
+    chunk_size = int(segmentation_config.get("chunk_size_frames") or 0)
+    if chunk_size <= 0:
+        return [
+            {
+                "command": segmentation_command(
+                    config,
+                    paths,
+                    effective_config_path,
+                    run_mode,
+                )
+            }
+        ]
+
+    manifest_path = paths["cache_dir"] / "manifest.csv"
+    if not manifest_path.is_file():
+        if not write_chunk_configs:
+            return [
+                {
+                    "command": segmentation_command(
+                        config,
+                        paths,
+                        effective_config_path,
+                        run_mode,
+                    )
+                }
+            ]
+        raise FileNotFoundError(
+            "Chunked segmorph requires the HDF5 cache manifest: "
+            f"{manifest_path}"
+        )
+    frame_count = segmentation_timeseries_frame_count(manifest_path)
+    if frame_count < 1:
+        raise ValueError(f"No C2 timeseries frames found in {manifest_path}.")
+
+    specs: list[dict[str, Any]] = []
+    run_config_dir = paths["run_config_dir"]
+    resume_existing = bool(segmentation_config.get("resume_existing_outputs"))
+    completed_frame = (
+        segmorph_completed_frame(
+            paths["segmentation_morphology_dir"],
+            config=segmentation_config,
+        )
+        if resume_existing
+        else 0
+    )
+    if write_chunk_configs:
+        run_config_dir.mkdir(parents=True, exist_ok=True)
+    for start_frame in range(1, frame_count + 1, chunk_size):
+        end_frame = min(start_frame + chunk_size - 1, frame_count)
+        if resume_existing and end_frame <= completed_frame:
+            print(f"SEGMORPH_CHUNK_SKIP_COMPLETED {start_frame}-{end_frame}")
+            continue
+        if resume_existing and start_frame <= completed_frame < end_frame:
+            start_frame = completed_frame + 1
+        chunk_config = deepcopy(config)
+        chunk_metrics = chunk_config.setdefault("segmentation_metrics", {})
+        chunk_metrics["frame_start_index"] = start_frame
+        chunk_metrics["frame_end_index"] = end_frame
+        chunk_metrics["resume_outputs"] = start_frame != 1 or resume_existing
+        chunk_config["segmentation_morphology_chunk"] = {
+            "frame_start_index": start_frame,
+            "frame_end_index": end_frame,
+            "frame_count_total": frame_count,
+            "chunk_size_frames": chunk_size,
+        }
+        chunk_path = run_config_dir / (
+            f"{run_id_for(config)}_segmorph_"
+            f"{start_frame:06d}_{end_frame:06d}.json"
+        )
+        if write_chunk_configs:
+            chunk_path.write_text(
+                json.dumps(chunk_config, indent=2),
+                encoding="utf-8",
+            )
+        specs.append(
+            {
+                "command": segmentation_command(
+                    chunk_config,
+                    paths,
+                    chunk_path,
+                    run_mode,
+                ),
+                "frame_start_index": start_frame,
+                "frame_end_index": end_frame,
+                "frame_count_total": frame_count,
+            }
+        )
+    return specs
+
+
+def segmentation_commands(
+    config: dict[str, Any],
+    paths: dict[str, Path],
+    effective_config_path: Path,
+    run_mode: str,
+    *,
+    write_chunk_configs: bool = True,
+) -> list[list[str]]:
+    return [
+        spec["command"]
+        for spec in segmentation_command_specs(
+            config,
+            paths,
+            effective_config_path,
+            run_mode,
+            write_chunk_configs=write_chunk_configs,
+        )
+    ]
+
+
+def segmentation_timeseries_frame_count(manifest_path: Path) -> int:
+    rows = read_csv_rows(manifest_path)
+    roles = {"full_napl", "residual", "production"}
+    count = 0
+    for row in rows:
+        if str(row.get("role", "")).strip() not in roles:
+            continue
+        if "include_in_timeseries" in row and not csv_truthy(row["include_in_timeseries"]):
+            continue
+        count += 1
+    return count
+
+
+def csv_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y"}
+
+
+def blob_detail_output_mode(config: dict[str, Any]) -> str:
+    mode = str(config.get("blob_detail_output_mode", "single_csv")).strip().lower()
+    mode = mode.replace("-", "_")
+    if mode == "chunked":
+        return "chunked_csv"
+    if mode in {"single", "singlecsv"}:
+        return "single_csv"
+    return mode or "single_csv"
+
+
+def is_chunked_blob_detail(config: dict[str, Any]) -> bool:
+    return blob_detail_output_mode(config) == "chunked_csv"
+
+
+def blob_detail_chunk_paths(segmentation_dir: Path) -> list[Path]:
+    chunk_dir = segmentation_dir / BLOB_DETAIL_CHUNK_DIR_NAME
+    return sorted(chunk_dir.glob("red_blob_detail_*.csv"), key=lambda path: path.name)
+
+
+def segmorph_chunk_complete(
+    segmentation_dir: Path,
+    *,
+    expected_end_frame: int,
+    config: dict[str, Any],
+) -> bool:
+    if expected_end_frame < 1:
+        return False
+    frame_csvs = [
+        segmentation_dir / "red_mask_timeseries.csv",
+        segmentation_dir / "red_blob_summary_timeseries.csv",
+    ]
+    for path_value in frame_csvs:
+        if not csv_has_exact_frame_rows(path_value, expected_end_frame, "frame_index"):
+            return False
+    if config.get("write_mask_stack"):
+        if not (segmentation_dir / "red_mask_stack.h5").is_file():
+            return False
+        if not csv_has_exact_frame_rows(
+            segmentation_dir / "red_mask_stack_manifest.csv",
+            expected_end_frame,
+            "h5_frame_index",
+        ):
+            return False
+    if config.get("write_blob_detail"):
+        if is_chunked_blob_detail(config):
+            if not blob_detail_chunk_paths(segmentation_dir):
+                return False
+        else:
+            if not (segmentation_dir / "red_blob_detail_all_frames.csv").is_file():
+                return False
+    return True
+
+
+def segmorph_completed_frame(segmentation_dir: Path, *, config: dict[str, Any]) -> int:
+    frame_counts = [
+        csv_completed_frame(segmentation_dir / "red_mask_timeseries.csv", "frame_index"),
+        csv_completed_frame(
+            segmentation_dir / "red_blob_summary_timeseries.csv",
+            "frame_index",
+        ),
+    ]
+    if config.get("write_mask_stack"):
+        if not (segmentation_dir / "red_mask_stack.h5").is_file():
+            return 0
+        frame_counts.append(
+            csv_completed_frame(
+                segmentation_dir / "red_mask_stack_manifest.csv",
+                "h5_frame_index",
+            )
+        )
+    if config.get("write_blob_detail"):
+        if is_chunked_blob_detail(config):
+            if not blob_detail_chunk_paths(segmentation_dir):
+                return 0
+        else:
+            if not (segmentation_dir / "red_blob_detail_all_frames.csv").is_file():
+                return 0
+    frame_counts = [value for value in frame_counts if value is not None]
+    if not frame_counts:
+        return 0
+    return max(0, min(frame_counts))
+
+
+def finalize_blob_detail_chunks(
+    segmentation_dir: Path,
+    *,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    output_csv = segmentation_dir / "red_blob_detail_all_frames.csv"
+    if not config.get("write_blob_detail"):
+        return {
+            "enabled": False,
+            "chunk_count": 0,
+            "row_count": 0,
+            "output_csv": str(output_csv),
+        }
+    if not is_chunked_blob_detail(config):
+        return {
+            "enabled": True,
+            "chunk_count": 0,
+            "row_count": 0,
+            "output_csv": str(output_csv),
+        }
+
+    chunk_paths = blob_detail_chunk_paths(segmentation_dir)
+    if not chunk_paths:
+        return {
+            "enabled": True,
+            "chunk_count": 0,
+            "row_count": 0,
+            "output_csv": str(output_csv),
+        }
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    row_count = 0
+    fieldnames: list[str] | None = None
+    with output_csv.open("w", newline="", encoding="utf-8") as out_handle:
+        writer: csv.DictWriter[str] | None = None
+        for chunk_path in chunk_paths:
+            with chunk_path.open("r", newline="", encoding="utf-8-sig") as in_handle:
+                reader = csv.DictReader(in_handle)
+                if fieldnames is None:
+                    fieldnames = list(reader.fieldnames or [])
+                    writer = csv.DictWriter(out_handle, fieldnames=fieldnames)
+                    writer.writeheader()
+                elif list(reader.fieldnames or []) != fieldnames:
+                    raise ValueError(
+                        "Blob-detail chunk schema mismatch: "
+                        f"{chunk_path} has {reader.fieldnames}, expected {fieldnames}."
+                    )
+                assert writer is not None
+                for row in reader:
+                    writer.writerow(row)
+                    row_count += 1
+    return {
+        "enabled": True,
+        "chunk_count": len(chunk_paths),
+        "row_count": row_count,
+        "output_csv": str(output_csv),
+    }
+
+
+def csv_completed_frame(path_value: Path, index_column: str) -> int | None:
+    if not path_value.is_file():
+        return 0
+    rows = read_csv_rows(path_value)
+    if not rows:
+        return 0
+    last_index = csv_int(rows[-1].get(index_column))
+    if last_index is None:
+        return 0
+    if len(rows) != last_index:
+        return 0
+    return last_index
+
+
+def csv_has_exact_frame_rows(
+    path_value: Path,
+    expected_end_frame: int,
+    index_column: str,
+) -> bool:
+    if not path_value.is_file():
+        return False
+    rows = read_csv_rows(path_value)
+    if len(rows) != expected_end_frame:
+        return False
+    if not rows:
+        return False
+    return csv_int(rows[-1].get(index_column)) == expected_end_frame
+
+
+def csv_int(value: Any) -> int | None:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number)
+
+
 def timeline_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
     timeline_config = config.get("timeline_postprocess", {})
     command = [
@@ -426,13 +771,38 @@ def analysis_command(
     return command
 
 
-def run_command(command: list[str], dry_run: bool, commands: list[str]) -> None:
+def run_command(
+    command: list[str],
+    dry_run: bool,
+    commands: list[str],
+    *,
+    completion_check: Any | None = None,
+    partial_progress_check: Any | None = None,
+    completion_label: str = "",
+) -> str:
     rendered = command_text(command)
     commands.append(rendered)
     print(rendered)
     if dry_run:
-        return
-    subprocess.run(command, cwd=REPO, check=True)
+        return "dry_run"
+    result = subprocess.run(command, cwd=REPO, check=False)
+    if result.returncode == 0:
+        return "completed"
+    if completion_check is not None and completion_check():
+        label = completion_label or rendered
+        print(
+            "COMMAND_EXIT_TOLERATED "
+            f"returncode={result.returncode} completion={label}"
+        )
+        return "completed_with_nonzero"
+    if partial_progress_check is not None and partial_progress_check():
+        label = completion_label or rendered
+        print(
+            "COMMAND_PARTIAL_PROGRESS_TOLERATED "
+            f"returncode={result.returncode} completion={label}"
+        )
+        return "partial_with_nonzero"
+    raise subprocess.CalledProcessError(result.returncode, command)
 
 
 def read_csv_rows(path_value: Path) -> list[dict[str, str]]:
@@ -1544,6 +1914,7 @@ def main() -> None:
     effective_config_path = None
     endpoint_policy_input = None
     water_endpoints_input = None
+    napl_endpoints_input = None
     physical_metadata_input = None
     if not args.dry_run:
         effective_config_path = write_effective_config(config, paths)
@@ -1557,11 +1928,17 @@ def main() -> None:
                 config,
                 paths["manifest_dir"],
             )
+            napl_endpoints_input = write_napl_endpoints_input(
+                config,
+                paths["manifest_dir"],
+            )
     elif "manifest" in selected_steps:
         if config.get("endpoint_policy"):
             endpoint_policy_input = paths["manifest_dir"] / "endpoint_policy_input.json"
         if config.get("water_endpoints"):
             water_endpoints_input = paths["manifest_dir"] / "water_endpoints_input.json"
+        if config.get("napl_endpoints"):
+            napl_endpoints_input = paths["manifest_dir"] / "napl_endpoints_input.json"
     elif config.get("physical_metadata_path"):
         physical_metadata_input = resolve_path(config["physical_metadata_path"])
     elif config.get("physical_metadata"):
@@ -1577,6 +1954,7 @@ def main() -> None:
                 paths,
                 endpoint_policy_input,
                 water_endpoints_input,
+                napl_endpoints_input,
             ),
             args.dry_run,
             commands,
@@ -1597,16 +1975,63 @@ def main() -> None:
             commands,
         )
     if "segmorph" in selected_steps:
-        run_command(
-            segmentation_command(
+        while True:
+            specs = segmentation_command_specs(
                 config,
                 paths,
                 effective_config_path or effective_config_candidate,
                 "morphology",
-            ),
-            args.dry_run,
-            commands,
-        )
+                write_chunk_configs=not args.dry_run,
+            )
+            if not specs:
+                break
+            if args.dry_run:
+                for dry_spec in specs:
+                    run_command(dry_spec["command"], args.dry_run, commands)
+                break
+            spec = specs[0]
+            end_frame = spec.get("frame_end_index")
+            if end_frame is None:
+                run_command(spec["command"], args.dry_run, commands)
+                break
+            else:
+                before_frame = segmorph_completed_frame(
+                    paths["segmentation_morphology_dir"],
+                    config=config.get("segmentation_metrics", {}),
+                )
+                run_command(
+                    spec["command"],
+                    args.dry_run,
+                    commands,
+                    completion_check=lambda end_frame=end_frame: segmorph_chunk_complete(
+                        paths["segmentation_morphology_dir"],
+                        expected_end_frame=int(end_frame),
+                        config=config.get("segmentation_metrics", {}),
+                    ),
+                    partial_progress_check=lambda before_frame=before_frame: segmorph_completed_frame(
+                        paths["segmentation_morphology_dir"],
+                        config=config.get("segmentation_metrics", {}),
+                    )
+                    > before_frame,
+                    completion_label=(
+                        "segmorph chunk "
+                        f"{spec.get('frame_start_index')}-{end_frame}"
+                    ),
+                )
+        if not args.dry_run:
+            merge_summary = finalize_blob_detail_chunks(
+                paths["segmentation_morphology_dir"],
+                config=config.get("segmentation_metrics", {}),
+            )
+            if merge_summary["enabled"] and merge_summary["chunk_count"]:
+                merge_message = (
+                    "FINALIZE_BLOB_DETAIL_CHUNKS "
+                    f"chunks={merge_summary['chunk_count']} "
+                    f"rows={merge_summary['row_count']} "
+                    f"output={merge_summary['output_csv']}"
+                )
+                print(merge_message)
+                commands.append(merge_message)
     if "validate" in selected_steps:
         if args.dry_run:
             print("VALIDATE_SKIPPED_DRY_RUN")
