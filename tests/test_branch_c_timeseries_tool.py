@@ -11,8 +11,10 @@ from run_dnapl_branch_c_timeseries_tool import (
     analysis_command,
     build_paths,
     command_text,
+    endpoint_consistency_command,
     finalize_blob_detail_chunks,
     manifest_command,
+    mask_stack_analysis_command,
     parse_steps,
     run_command,
     residual_command,
@@ -75,6 +77,7 @@ def test_runner_builds_timeline_residual_analysis_commands(tmp_path) -> None:
         segmentation_morphology_dir=None,
         timeline_dir=None,
         residual_dir=None,
+        mask_stack_analysis_dir=None,
         analysis_dir=None,
     )
     config = {
@@ -89,6 +92,8 @@ def test_runner_builds_timeline_residual_analysis_commands(tmp_path) -> None:
 
     assert paths["timeline_dir"] == tmp_path / "timeline_postprocess" / "demo_full3585"
     assert paths["residual_dir"] == tmp_path / "residual_trapping_postprocess" / "demo_full3585"
+    assert paths["endpoint_audit_dir"] == tmp_path / "endpoint_audit" / "demo_full3585"
+    assert paths["mask_stack_analysis_dir"] == tmp_path / "mask_stack_analysis" / "demo_full3585"
     assert paths["analysis_dir"] == tmp_path / "analysis_package_full3585"
 
     timeline_text = command_text(timeline_command(config, paths))
@@ -103,10 +108,24 @@ def test_runner_builds_timeline_residual_analysis_commands(tmp_path) -> None:
     assert str(paths["timeline_dir"]) in residual_text
     assert str(paths["residual_dir"]) in residual_text
 
+    endpoint_text = command_text(endpoint_consistency_command(config, paths))
+    assert "tools\\reference_audit\\endpoint_consistency_postprocess.py" in endpoint_text
+    assert str(paths["manifest_dir"] / "accepted_frames.csv") in endpoint_text
+    assert str(paths["matlab_dir"]) in endpoint_text
+    assert str(paths["endpoint_audit_dir"]) in endpoint_text
+    assert str(paths["manifest_dir"] / "endpoint_policy.json") in endpoint_text
+
+    maskanalysis_text = command_text(mask_stack_analysis_command(config, paths))
+    assert "tools\\mask_stack_analysis\\analyze_c2_mask_stack.py" in maskanalysis_text
+    assert str(paths["segmentation_morphology_dir"]) in maskanalysis_text
+    assert str(paths["timeline_dir"]) in maskanalysis_text
+    assert str(paths["mask_stack_analysis_dir"]) in maskanalysis_text
+
     analysis_text = command_text(analysis_command(config, paths))
     assert "tools\\analysis_package\\build_branch_c_analysis_package.py" in analysis_text
     assert str(paths["timeline_dir"]) in analysis_text
     assert str(paths["residual_dir"]) in analysis_text
+    assert str(paths["mask_stack_analysis_dir"]) in analysis_text
     assert str(paths["analysis_dir"]) in analysis_text
     assert "Demo full Branch C/C2" in analysis_text
 
@@ -626,10 +645,11 @@ def test_runner_writes_and_passes_physical_metadata_manifest(tmp_path) -> None:
 
 
 def test_parse_steps_accepts_analysis_postprocess_steps() -> None:
-    assert parse_steps(["validate,timeline", "residual", "analysis"]) == [
+    assert parse_steps(["validate,timeline", "residual", "endpointaudit", "analysis"]) == [
         "validate",
         "timeline",
         "residual",
+        "endpointaudit",
         "analysis",
     ]
 

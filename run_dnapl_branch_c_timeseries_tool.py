@@ -15,7 +15,13 @@ from typing import Any
 REPO = Path(__file__).resolve().parent
 DEFAULT_CONFIG = REPO / "configs" / "a1_1bo_6ul_branch_c_timeseries.json"
 DEFAULT_STEPS = ("manifest", "cache", "matlab", "segpilot", "segmorph", "validate")
-STEPS = DEFAULT_STEPS + ("timeline", "residual", "maskanalysis", "analysis")
+STEPS = DEFAULT_STEPS + (
+    "timeline",
+    "residual",
+    "endpointaudit",
+    "maskanalysis",
+    "analysis",
+)
 SEGMORPH_INTERFACE_COLUMNS = (
     "dnapl_water_length_px",
     "dnapl_solid_length_px",
@@ -173,6 +179,10 @@ def build_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, P
         resolve_path(getattr(args, "mask_stack_analysis_dir", None))
         or output_root / "mask_stack_analysis" / run_id
     )
+    endpoint_audit_dir = (
+        resolve_path(getattr(args, "endpoint_audit_dir", None))
+        or output_root / "endpoint_audit" / run_id
+    )
     analysis_dir = (
         resolve_path(args.analysis_dir)
         or output_root / f"analysis_package_{run_suffix or run_name}"
@@ -188,6 +198,7 @@ def build_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, P
         "timeline_dir": timeline_dir,
         "residual_dir": residual_dir,
         "mask_stack_analysis_dir": mask_stack_analysis_dir,
+        "endpoint_audit_dir": endpoint_audit_dir,
         "analysis_dir": analysis_dir,
         "run_config_dir": run_config_dir,
     }
@@ -743,6 +754,39 @@ def residual_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str
         command.extend(["--full-role", str(residual_config["full_role"])])
     if residual_config.get("residual_role") is not None:
         command.extend(["--residual-role", str(residual_config["residual_role"])])
+    return command
+
+
+def endpoint_consistency_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
+    endpoint_config = config.get("endpoint_consistency", {})
+    command = [
+        sys.executable,
+        str(
+            REPO
+            / "tools"
+            / "reference_audit"
+            / "endpoint_consistency_postprocess.py"
+        ),
+        "--manifest",
+        str(paths["manifest_dir"] / "accepted_frames.csv"),
+        "--branch-c-dir",
+        str(paths["matlab_dir"]),
+        "--out-dir",
+        str(paths["endpoint_audit_dir"]),
+        "--endpoint-policy",
+        str(paths["manifest_dir"] / "endpoint_policy.json"),
+    ]
+    if endpoint_config.get("full_pass_threshold") is not None:
+        command.extend(
+            ["--full-pass-threshold", str(endpoint_config["full_pass_threshold"])]
+        )
+    if endpoint_config.get("residual_max_threshold") is not None:
+        command.extend(
+            [
+                "--residual-max-threshold",
+                str(endpoint_config["residual_max_threshold"]),
+            ]
+        )
     return command
 
 
@@ -1894,7 +1938,7 @@ def main() -> None:
         default=None,
         help=(
             "Steps to run: manifest cache matlab segpilot segmorph validate "
-            "timeline residual maskanalysis analysis. "
+            "timeline residual endpointaudit maskanalysis analysis. "
             "Comma-separated values are also accepted."
         ),
     )
@@ -1908,6 +1952,7 @@ def main() -> None:
     parser.add_argument("--segmentation-morphology-dir", default=None)
     parser.add_argument("--timeline-dir", default=None)
     parser.add_argument("--residual-dir", default=None)
+    parser.add_argument("--endpoint-audit-dir", default=None)
     parser.add_argument("--mask-stack-analysis-dir", default=None)
     parser.add_argument("--analysis-dir", default=None)
     parser.add_argument("--analysis-run-label", default=None)
@@ -2076,6 +2121,8 @@ def main() -> None:
         run_command(timeline_command(config, paths), args.dry_run, commands)
     if "residual" in selected_steps:
         run_command(residual_command(config, paths), args.dry_run, commands)
+    if "endpointaudit" in selected_steps:
+        run_command(endpoint_consistency_command(config, paths), args.dry_run, commands)
     if "maskanalysis" in selected_steps:
         run_command(mask_stack_analysis_command(config, paths), args.dry_run, commands)
     if "analysis" in selected_steps:
@@ -2090,6 +2137,12 @@ def main() -> None:
         validation_summary.setdefault("paths", {})[
             "analysis_package_provenance_json"
         ] = str(analysis_provenance) if analysis_provenance.is_file() else ""
+        endpoint_summary = (
+            paths["endpoint_audit_dir"] / "endpoint_consistency_summary.json"
+        )
+        validation_summary.setdefault("paths", {})[
+            "endpoint_consistency_summary_json"
+        ] = str(endpoint_summary) if endpoint_summary.is_file() else ""
         summary_path = paths["matlab_dir"] / "run_summary.json"
         summary_path.write_text(json.dumps(validation_summary, indent=2), encoding="utf-8")
 

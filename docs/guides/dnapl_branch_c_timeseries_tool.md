@@ -28,21 +28,46 @@ logic:
    `S_NAPL_color(x,frame)` for endpoint A and B.
 4. The runner validates row counts, label alignment, NaNs, and endpoint
    sensitivity, then writes `run_summary.json`.
-5. Optional `timeline`, `residual`, `maskanalysis`, and `analysis` steps run
-   the realtime joiner, residual trapping proxy postprocess, strict C2
-   mask-stack analysis, and analysis-package builder.
+5. Optional `timeline`, `residual`, `endpointaudit`, `maskanalysis`, and
+   `analysis` steps run the realtime joiner, residual trapping proxy
+   postprocess, endpoint consistency postprocess, strict C2 mask-stack
+   analysis, and analysis-package builder.
 
 Optional C2 segmentation/morphology stages use the same BasicPy HDF5 cache:
 
 ```text
 segpilot  -> MATLAB red-mask score/threshold sweep for pilot review
 segmorph  -> MATLAB locked-threshold red-mask morphology time series
+endpointaudit -> Python Branch C endpoint consistency flags from A/B CSVs
 maskanalysis -> Python strict TOA/front/blob-detail postprocess from C2 HDF5/CSV
 ```
 
 These stages produce segmentation-derived 2D occupancy, morphology, and
 projected interface/contact metrics. They do not replace Branch C
 `S_NAPL_color`.
+
+`endpointaudit` is a postprocess for the masked endpoint-audit gate. It reads
+the manifest and existing Branch C A/B CSVs; it does not rerun RGB correction or
+generate new masks. Its purpose is to catch cases where a file-level
+`full_napl` role spans a transition, so page 1 can pass as an endpoint while
+later pages in the same TIFF are no longer full-NAPL-like.
+
+```text
+endpoint_audit\<run_id>\endpoint_consistency_timeseries.csv
+endpoint_audit\<run_id>\endpoint_consistency_flags.csv
+endpoint_audit\<run_id>\endpoint_consistency_source_summary.csv
+endpoint_audit\<run_id>\endpoint_consistency_summary.json
+```
+
+Default gate values are:
+
+```text
+full_napl pages: S_NAPL_color_A/B >= 0.9
+residual pages:  S_NAPL_color_A/B <= 0.35
+```
+
+Rows flagged by `endpointaudit` mean the expanded role label needs review. They
+do not invalidate the page-1 masked endpoint audit by themselves.
 
 `maskanalysis` reads the `segmorph` outputs directly:
 
@@ -210,11 +235,19 @@ The standalone runner can execute the same postprocess chain after Branch C/C2
 outputs exist:
 
 ```powershell
-python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate timeline residual analysis
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps validate timeline residual endpointaudit analysis
 ```
 
-Use `timeline residual analysis` when realtime and residual outputs need to be
-rebuilt. If those outputs already exist and only the figure/report package needs
+Use `timeline residual endpointaudit analysis` when realtime, residual, endpoint
+consistency, and analysis-package outputs need to be rebuilt. If Branch C
+outputs already exist and only expanded-role endpoint consistency needs review,
+run:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps endpointaudit
+```
+
+If postprocess outputs already exist and only the figure/report package needs
 rebuilding, run:
 
 ```powershell
@@ -222,7 +255,7 @@ python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_
 ```
 
 Custom postprocess output locations can be supplied with `--timeline-dir`,
-`--residual-dir`, and `--analysis-dir`.
+`--residual-dir`, `--endpoint-audit-dir`, and `--analysis-dir`.
 
 ## Physical Metadata Manifest
 
