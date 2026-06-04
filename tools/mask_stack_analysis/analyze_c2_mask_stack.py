@@ -14,6 +14,7 @@ from typing import Any
 
 import h5py
 import numpy as np
+from scipy import ndimage as ndi
 
 
 MASK_TIMESERIES_FIELDS = [
@@ -114,6 +115,40 @@ PHASE_TIMESERIES_FIELDS = [
     "residual_cumulative_union_px",
     "residual_cumulative_union_fraction_of_full",
     "phase_is_residual",
+]
+
+GEOMETRY_CORE_EDGE_FIELDS = [
+    "frame_index",
+    "label",
+    "role",
+    "RealTime_s",
+    "Time_min",
+    "mask_grid",
+    "processing_scale_factor",
+    "core_edge_definition",
+    "core_flow_min_dist_px",
+    "interface_solid_dilation_px",
+    "flow_domain_area_px",
+    "core_flow_area_px",
+    "edge_band_area_px",
+    "current_mask_area_px",
+    "core_mask_area_px",
+    "edge_mask_area_px",
+    "core_red_mask_fraction",
+    "edge_red_mask_fraction",
+    "core_fraction_of_mask",
+    "edge_fraction_of_mask",
+    "core_to_edge_red_mask_fraction_ratio",
+    "core_retained_from_full_px",
+    "core_retained_from_full_fraction",
+    "edge_retained_from_full_px",
+    "edge_retained_from_full_fraction",
+    "core_depleted_from_full_fraction",
+    "edge_depleted_from_full_fraction",
+    "core_dnapl_water_boundary_px",
+    "edge_dnapl_water_boundary_px",
+    "core_dnapl_solid_boundary_px",
+    "edge_dnapl_solid_boundary_px",
 ]
 
 
@@ -263,6 +298,56 @@ def aligned_mask(dataset: h5py.Dataset, row: dict[str, str]) -> np.ndarray:
     )
 
 
+def read_segmentation_manifest(segmentation_dir: Path) -> dict[str, Any]:
+    path = segmentation_dir / "segmentation_manifest.json"
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid segmentation_manifest.json: {path}") from exc
+
+
+def aligned_flow_domain(raw: np.ndarray, expected_shape: tuple[int, int]) -> np.ndarray:
+    mask = np.asarray(raw) > 0
+    if mask.shape == expected_shape:
+        return mask
+    if mask.T.shape == expected_shape:
+        return mask.T
+    raise ValueError(f"flow_domain_mask shape {mask.shape} does not match expected {expected_shape}")
+
+
+def load_flow_domain_from_segmentation(
+    segmentation_dir: Path,
+    expected_shape: tuple[int, int],
+) -> tuple[np.ndarray | None, dict[str, Any]]:
+    manifest = read_segmentation_manifest(segmentation_dir)
+    cache_dir_text = manifest.get("cache_dir", "")
+    if not cache_dir_text:
+        return None, {
+            "geometry_status": "missing_cache_dir",
+            "geometry_source": "",
+            "interface_solid_dilation_px": math.nan,
+        }
+    cache_dir = Path(cache_dir_text)
+    mask_path = cache_dir / "mask_crop.h5"
+    if not mask_path.is_file():
+        return None, {
+            "geometry_status": "missing_mask_crop_h5",
+            "geometry_source": str(mask_path),
+            "interface_solid_dilation_px": finite_or_nan(manifest.get("interface_solid_dilation", math.nan)),
+        }
+    with h5py.File(mask_path, "r") as handle:
+        if "flow_domain_mask" not in handle:
+            raise KeyError(f"flow_domain_mask dataset not found in {mask_path}")
+        flow_domain = aligned_flow_domain(np.asarray(handle["flow_domain_mask"]), expected_shape)
+    return flow_domain, {
+        "geometry_status": "ok",
+        "geometry_source": str(mask_path),
+        "interface_solid_dilation_px": finite_or_nan(manifest.get("interface_solid_dilation", 1)),
+    }
+
+
 def contiguous_true_segments(values: np.ndarray) -> int:
     if values.size == 0:
         return 0
@@ -294,6 +379,7 @@ def analyze_stack(
     outlet_active_min_px: int = 10,
     leading_front_breakthrough_fraction: float = 0.98,
     finger_band_fraction: float = 0.03,
+    core_flow_min_dist_px: float = 3.0,
 ) -> dict[str, Any]:
     manifest_rows = load_stack_manifest(segmentation_dir)
     timeline = timeline_lookup(timeline_dir)
@@ -447,6 +533,19 @@ def analyze_stack(
         full_frame_count=full_frame_count,
         residual_frame_count=residual_frame_count,
     )
+    flow_domain, geometry_metadata = load_flow_domain_from_segmentation(segmentation_dir, toa_frame.shape)
+    geometry_context: dict[str, Any] | None = None
+    geometry_outputs: dict[str, str] = {}
+    if flow_domain is not None:
+        interface_dilation = finite_or_nan(geometry_metadata.get("interface_solid_dilation_px"))
+        if not math.isfinite(interface_dilation):
+            interface_dilation = 1.0
+        geometry_context = build_core_edge_context(
+            flow_domain,
+            core_flow_min_dist_px=core_flow_min_dist_px,
+            interface_solid_dilation_px=interface_dilation,
+        )
+        geometry_outputs = save_core_edge_maps(out_dir, geometry_context)
     with h5py.File(stack_path, "r") as handle:
         dataset = handle[dataset_name]
         phase_rows = build_phase_timeseries_rows(
@@ -455,9 +554,21 @@ def analyze_stack(
             timeline,
             full_seen_count=full_seen_count,
         )
+        geometry_rows = (
+            build_geometry_core_edge_rows(
+                dataset,
+                manifest_rows,
+                timeline,
+                full_seen_count=full_seen_count,
+                context=geometry_context,
+            )
+            if geometry_context is not None
+            else []
+        )
     write_csv(out_dir / "mask_stack_analysis_timeseries.csv", mask_rows, MASK_TIMESERIES_FIELDS)
     write_csv(out_dir / "toa_x_summary.csv", toa_x_rows, TOA_X_FIELDS)
     write_csv(out_dir / "phase_mask_timeseries.csv", phase_rows, PHASE_TIMESERIES_FIELDS)
+    write_csv(out_dir / "geometry_core_edge_timeseries.csv", geometry_rows, GEOMETRY_CORE_EDGE_FIELDS)
 
     breakthrough = breakthrough_summary(
         mask_rows,
@@ -470,6 +581,7 @@ def analyze_stack(
         full_frame_count=full_frame_count,
         residual_frame_count=residual_frame_count,
     )
+    geometry = geometry_core_edge_summary(geometry_rows, geometry_context, geometry_metadata)
     return {
         "mask_timeseries_rows": len(mask_rows),
         "toa_frame_index_npy": str(toa_path),
@@ -477,6 +589,9 @@ def analyze_stack(
         "phase_mask_timeseries_rows": len(phase_rows),
         "phase_outputs": phase_outputs,
         "phase_aware": phase,
+        "geometry_core_edge_timeseries_rows": len(geometry_rows),
+        "geometry_outputs": geometry_outputs,
+        "geometry_core_edge": geometry,
         "breakthrough": breakthrough,
         "first_label_by_frame": first_label_by_frame,
     }
@@ -661,6 +776,166 @@ def build_phase_timeseries_rows(
         }
         rows.append(row)
     return rows
+
+
+def binary_boundary(mask: np.ndarray) -> np.ndarray:
+    mask = np.asarray(mask, dtype=bool)
+    if not np.any(mask):
+        return np.zeros(mask.shape, dtype=bool)
+    eroded = ndi.binary_erosion(mask, structure=np.ones((3, 3), dtype=bool), border_value=0)
+    return mask & ~eroded
+
+
+def build_core_edge_context(
+    flow_domain: np.ndarray,
+    *,
+    core_flow_min_dist_px: float,
+    interface_solid_dilation_px: float,
+) -> dict[str, Any]:
+    flow_domain = np.asarray(flow_domain, dtype=bool)
+    solid_distance = ndi.distance_transform_edt(flow_domain)
+    core_flow = flow_domain & (solid_distance >= core_flow_min_dist_px)
+    edge_band = flow_domain & ~core_flow
+    solid_contact_zone = flow_domain & (solid_distance <= interface_solid_dilation_px)
+    return {
+        "flow_domain": flow_domain,
+        "solid_distance": solid_distance,
+        "core_flow": core_flow,
+        "edge_band": edge_band,
+        "solid_contact_zone": solid_contact_zone,
+        "flow_domain_area_px": int(flow_domain.sum()),
+        "core_flow_area_px": int(core_flow.sum()),
+        "edge_band_area_px": int(edge_band.sum()),
+        "core_flow_min_dist_px": float(core_flow_min_dist_px),
+        "interface_solid_dilation_px": float(interface_solid_dilation_px),
+        "core_edge_definition": "core_flow=flow_domain&distance_transform_edt(flow_domain)>=core_flow_min_dist_px;edge_band=flow_domain&~core_flow",
+    }
+
+
+def save_core_edge_maps(out_dir: Path, context: dict[str, Any]) -> dict[str, str]:
+    outputs = {
+        "flow_domain_mask_npy": out_dir / "flow_domain_mask.npy",
+        "core_flow_mask_npy": out_dir / "core_flow_mask.npy",
+        "edge_band_mask_npy": out_dir / "edge_band_mask.npy",
+        "solid_distance_px_npy": out_dir / "solid_distance_px.npy",
+        "solid_contact_zone_mask_npy": out_dir / "solid_contact_zone_mask.npy",
+    }
+    np.save(outputs["flow_domain_mask_npy"], context["flow_domain"].astype(np.uint8))
+    np.save(outputs["core_flow_mask_npy"], context["core_flow"].astype(np.uint8))
+    np.save(outputs["edge_band_mask_npy"], context["edge_band"].astype(np.uint8))
+    np.save(outputs["solid_distance_px_npy"], context["solid_distance"].astype(np.float32))
+    np.save(outputs["solid_contact_zone_mask_npy"], context["solid_contact_zone"].astype(np.uint8))
+    return {key: str(value) for key, value in outputs.items()}
+
+
+def build_geometry_core_edge_rows(
+    dataset: h5py.Dataset,
+    manifest_rows: list[dict[str, str]],
+    timeline: dict[str, dict[str, str]],
+    *,
+    full_seen_count: np.ndarray,
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    flow_domain = context["flow_domain"]
+    core_flow = context["core_flow"]
+    edge_band = context["edge_band"]
+    solid_contact_zone = context["solid_contact_zone"]
+    full_baseline = full_seen_count > 0
+    core_full_area = int((full_baseline & core_flow).sum())
+    edge_full_area = int((full_baseline & edge_band).sum())
+    core_area = int(context["core_flow_area_px"])
+    edge_area = int(context["edge_band_area_px"])
+    rows: list[dict[str, Any]] = []
+    for manifest_row in manifest_rows:
+        frame_index = int_value(manifest_row["frame_index"])
+        label = manifest_row["label"]
+        role = manifest_row["role"]
+        mask = aligned_mask(dataset, manifest_row) & flow_domain
+        if mask.shape != flow_domain.shape:
+            raise ValueError(f"Mask shape changed within stack: {mask.shape} vs {flow_domain.shape}")
+        boundary = binary_boundary(mask)
+        water_boundary = boundary & ~solid_contact_zone
+        solid_boundary = boundary & solid_contact_zone
+        current_area = int(mask.sum())
+        core_mask_area = int((mask & core_flow).sum())
+        edge_mask_area = int((mask & edge_band).sum())
+        core_retained = int((mask & full_baseline & core_flow).sum())
+        edge_retained = int((mask & full_baseline & edge_band).sum())
+        core_fraction = safe_fraction(float(core_mask_area), float(core_area))
+        edge_fraction = safe_fraction(float(edge_mask_area), float(edge_area))
+        row = {
+            **time_fields(label, frame_index, timeline),
+            "role": role,
+            "mask_grid": manifest_row["mask_grid"],
+            "processing_scale_factor": finite_or_nan(manifest_row.get("processing_scale_factor")),
+            "core_edge_definition": context["core_edge_definition"],
+            "core_flow_min_dist_px": context["core_flow_min_dist_px"],
+            "interface_solid_dilation_px": context["interface_solid_dilation_px"],
+            "flow_domain_area_px": context["flow_domain_area_px"],
+            "core_flow_area_px": core_area,
+            "edge_band_area_px": edge_area,
+            "current_mask_area_px": current_area,
+            "core_mask_area_px": core_mask_area,
+            "edge_mask_area_px": edge_mask_area,
+            "core_red_mask_fraction": core_fraction,
+            "edge_red_mask_fraction": edge_fraction,
+            "core_fraction_of_mask": safe_fraction(float(core_mask_area), float(current_area)),
+            "edge_fraction_of_mask": safe_fraction(float(edge_mask_area), float(current_area)),
+            "core_to_edge_red_mask_fraction_ratio": core_fraction / edge_fraction if math.isfinite(core_fraction) and math.isfinite(edge_fraction) and edge_fraction else math.nan,
+            "core_retained_from_full_px": core_retained,
+            "core_retained_from_full_fraction": safe_fraction(float(core_retained), float(core_full_area)),
+            "edge_retained_from_full_px": edge_retained,
+            "edge_retained_from_full_fraction": safe_fraction(float(edge_retained), float(edge_full_area)),
+            "core_depleted_from_full_fraction": 1 - safe_fraction(float(core_retained), float(core_full_area)) if core_full_area else math.nan,
+            "edge_depleted_from_full_fraction": 1 - safe_fraction(float(edge_retained), float(edge_full_area)) if edge_full_area else math.nan,
+            "core_dnapl_water_boundary_px": int((water_boundary & core_flow).sum()),
+            "edge_dnapl_water_boundary_px": int((water_boundary & edge_band).sum()),
+            "core_dnapl_solid_boundary_px": int((solid_boundary & core_flow).sum()),
+            "edge_dnapl_solid_boundary_px": int((solid_boundary & edge_band).sum()),
+        }
+        rows.append(row)
+    return rows
+
+
+def median_finite(rows: list[dict[str, Any]], column: str) -> float:
+    values = np.asarray([finite_or_nan(row.get(column)) for row in rows], dtype=float)
+    values = values[np.isfinite(values)]
+    return float(np.median(values)) if values.size else math.nan
+
+
+def geometry_core_edge_summary(
+    rows: list[dict[str, Any]],
+    context: dict[str, Any] | None,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    if context is None:
+        return {
+            "geometry_status": metadata.get("geometry_status", "not_available"),
+            "geometry_source": metadata.get("geometry_source", ""),
+            "geometry_core_edge_rows": len(rows),
+        }
+    residual_rows = [row for row in rows if row.get("role") == "residual"]
+    final_residual = residual_rows[-1] if residual_rows else {}
+    return {
+        "geometry_status": metadata.get("geometry_status", "ok"),
+        "geometry_source": metadata.get("geometry_source", ""),
+        "geometry_core_edge_rows": len(rows),
+        "core_edge_definition": context["core_edge_definition"],
+        "core_flow_min_dist_px": context["core_flow_min_dist_px"],
+        "interface_solid_dilation_px": context["interface_solid_dilation_px"],
+        "flow_domain_area_px": context["flow_domain_area_px"],
+        "core_flow_area_px": context["core_flow_area_px"],
+        "edge_band_area_px": context["edge_band_area_px"],
+        "edge_band_fraction_of_flow_domain": safe_fraction(float(context["edge_band_area_px"]), float(context["flow_domain_area_px"])),
+        "residual_core_red_mask_fraction_median": median_finite(residual_rows, "core_red_mask_fraction"),
+        "residual_edge_red_mask_fraction_median": median_finite(residual_rows, "edge_red_mask_fraction"),
+        "residual_core_to_edge_red_mask_fraction_ratio_median": median_finite(residual_rows, "core_to_edge_red_mask_fraction_ratio"),
+        "final_residual_core_retained_from_full_fraction": finite_or_nan(final_residual.get("core_retained_from_full_fraction")),
+        "final_residual_edge_retained_from_full_fraction": finite_or_nan(final_residual.get("edge_retained_from_full_fraction")),
+        "final_residual_core_depleted_from_full_fraction": finite_or_nan(final_residual.get("core_depleted_from_full_fraction")),
+        "final_residual_edge_depleted_from_full_fraction": finite_or_nan(final_residual.get("edge_depleted_from_full_fraction")),
+        "boundary_length_semantics": "core/edge boundary fields are C2 boundary-pixel proxies split by geometric region and solid-contact zone",
+    }
 
 
 def first_row_where(rows: list[dict[str, Any]], predicate: Any) -> dict[str, Any] | None:
@@ -865,10 +1140,12 @@ def build_summary(
         "toa_x_summary_csv": str(out_dir / "toa_x_summary.csv"),
         "toa_frame_index_npy": stack_summary["toa_frame_index_npy"],
         "phase_mask_timeseries_csv": str(out_dir / "phase_mask_timeseries.csv"),
+        "geometry_core_edge_timeseries_csv": str(out_dir / "geometry_core_edge_timeseries.csv"),
         "blob_morphology_timeseries_csv": str(out_dir / "blob_morphology_timeseries.csv"),
         "mask_stack_analysis_summary_json": str(out_dir / "mask_stack_analysis_summary.json"),
     }
     outputs.update(stack_summary.get("phase_outputs", {}))
+    outputs.update(stack_summary.get("geometry_outputs", {}))
     readiness = {
         "mask_stack_ready": stack_summary["mask_timeseries_rows"] > 0,
         "toa_ready": stack_summary["toa_x_summary_rows"] > 0 and Path(stack_summary["toa_frame_index_npy"]).is_file(),
@@ -876,6 +1153,10 @@ def build_summary(
         "phase_aware_mask_ready": stack_summary["phase_mask_timeseries_rows"] > 0
         and stack_summary.get("phase_aware", {}).get("full_baseline_area_px", 0) > 0
         and stack_summary.get("phase_aware", {}).get("residual_frame_count", 0) > 0,
+        "geometric_core_edge_ready": stack_summary["geometry_core_edge_timeseries_rows"] > 0
+        and stack_summary.get("geometry_core_edge", {}).get("geometry_status") == "ok"
+        and stack_summary.get("geometry_core_edge", {}).get("core_flow_area_px", 0) > 0
+        and stack_summary.get("geometry_core_edge", {}).get("edge_band_area_px", 0) > 0,
         "blob_detail_distribution_ready": blob_summary["blob_detail_frames_with_rows"] > 0,
     }
     return {
@@ -891,18 +1172,22 @@ def build_summary(
             "mask_stack_analysis_timeseries": stack_summary["mask_timeseries_rows"],
             "toa_x_summary": stack_summary["toa_x_summary_rows"],
             "phase_mask_timeseries": stack_summary["phase_mask_timeseries_rows"],
+            "geometry_core_edge_timeseries": stack_summary["geometry_core_edge_timeseries_rows"],
             "blob_morphology_timeseries": blob_summary["blob_morphology_rows"],
             "blob_detail_frames_with_rows": blob_summary["blob_detail_frames_with_rows"],
         },
         "readiness": readiness,
         "breakthrough": stack_summary["breakthrough"],
         "phase_aware": stack_summary["phase_aware"],
+        "geometry_core_edge": stack_summary["geometry_core_edge"],
         "semantics": {
             "TOA": "pixel-level first frame index from C2 red_mask_stack.h5; 0 in the .npy map means never arrived",
             "leading_front_fraction": "rightmost active C2 red-mask column normalized by processing-grid width",
             "finger_count_proxy": "contiguous active row segments within the current leading-front band; mask-stack derived, not pore-graph fingering",
             "phase_aware": "full-NAPL union defines the baseline; residual metrics report retained, depleted, transient, and new-outside-full mask support",
             "phase_retention_class": "0 background/not-full-baseline, 1 full baseline absent in residual, 2 residual transient but absent final, 3 retained in final residual, 4 residual outside full baseline",
+            "geometric_core_edge": "core_flow and edge_band are split from flow_domain_mask by distance_transform_edt(flow_domain) on the 3X processing grid",
+            "core_edge_boundary_px": "core/edge DNAPL-water and DNAPL-solid fields are boundary-pixel proxies, not chain-code MATLAB global L_ow",
             "AreaGini": "per-frame inequality of C2 per-blob Area_processing_px2 distribution",
         },
     }
@@ -923,6 +1208,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
         outlet_active_min_px=args.outlet_active_min_px,
         leading_front_breakthrough_fraction=args.leading_front_breakthrough_fraction,
         finger_band_fraction=args.finger_band_fraction,
+        core_flow_min_dist_px=getattr(args, "core_flow_min_dist_px", 3.0),
     )
     blob_summary = analyze_blob_detail(args.segmentation_dir, args.timeline_dir, out_dir, manifest_rows)
     summary = build_summary(out_dir, args.segmentation_dir, args.timeline_dir, stack_summary, blob_summary)
@@ -942,6 +1228,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outlet-active-min-px", type=int, default=10)
     parser.add_argument("--leading-front-breakthrough-fraction", type=float, default=0.98)
     parser.add_argument("--finger-band-fraction", type=float, default=0.03)
+    parser.add_argument("--core-flow-min-dist-px", type=float, default=3.0)
     return parser.parse_args()
 
 

@@ -59,6 +59,7 @@ RESIDUAL_FILES = {
 MASK_ANALYSIS_FILES = {
     "timeseries": "mask_stack_analysis_timeseries.csv",
     "phase_timeseries": "phase_mask_timeseries.csv",
+    "geometry_core_edge": "geometry_core_edge_timeseries.csv",
     "blob_morphology": "blob_morphology_timeseries.csv",
     "toa_x": "toa_x_summary.csv",
     "summary_json": "mask_stack_analysis_summary.json",
@@ -322,6 +323,7 @@ def load_mask_analysis(mask_analysis_dir: Path | None) -> dict[str, Any]:
         "dir": str(mask_analysis_dir),
         "timeseries": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["timeseries"]),
         "phase_timeseries": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["phase_timeseries"]),
+        "geometry_core_edge": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["geometry_core_edge"]),
         "blob_morphology": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["blob_morphology"]),
         "toa_x": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["toa_x"]),
         "summary_json": read_optional_json(mask_analysis_dir / MASK_ANALYSIS_FILES["summary_json"]),
@@ -813,6 +815,51 @@ def plot_phase_aware_retention(derived_rows: list[dict[str, object]], figures_di
     return save_figure(fig, figures_dir, "13_phase_aware_retention")
 
 
+def plot_geometric_core_edge(derived_rows: list[dict[str, object]], figures_dir: Path) -> dict[str, str]:
+    fig, axes = plt.subplots(2, 1, figsize=(180 / MM_PER_INCH, 106 / MM_PER_INCH), sharex=True)
+    x = derived_series(derived_rows, "Time_min")
+    for column, label, color in (
+        ("geom_core_red_mask_fraction", "core red-mask fraction", WONG["blue"]),
+        ("geom_edge_red_mask_fraction", "edge red-mask fraction", WONG["vermillion"]),
+    ):
+        axes[0].plot(
+            x,
+            derived_series(derived_rows, column),
+            color=color,
+            linewidth=1.2,
+            marker=MARKER,
+            markersize=MARKER_SIZE,
+            markerfacecolor="white",
+            markeredgecolor=color,
+            markevery=markevery([{} for _ in derived_rows]),
+            label=label,
+        )
+    for column, label, color in (
+        ("geom_core_retained_from_full_fraction", "core retained from full", WONG["sky_blue"]),
+        ("geom_edge_retained_from_full_fraction", "edge retained from full", WONG["orange"]),
+    ):
+        axes[1].plot(
+            x,
+            derived_series(derived_rows, column),
+            color=color,
+            linewidth=1.2,
+            marker=MARKER,
+            markersize=MARKER_SIZE,
+            markerfacecolor="white",
+            markeredgecolor=color,
+            markevery=markevery([{} for _ in derived_rows]),
+            label=label,
+        )
+    axes[0].set_ylabel("red-mask fraction")
+    axes[1].set_ylabel("fraction of full baseline")
+    axes[1].set_xlabel("Time (min)")
+    for ax in axes:
+        ax.set_ylim(-0.03, 1.05)
+        ax.legend(frameon=False, ncols=2)
+        style_axes(ax)
+    return save_figure(fig, figures_dir, "14_geometric_core_edge")
+
+
 def create_figures(
     data: dict[str, Any],
     out_dir: Path,
@@ -838,6 +885,7 @@ def create_figures(
         "qc_alignment_summary": plot_qc_alignment_summary(qc_rows, figures_dir),
         "mask_stack_toa_fingering": plot_mask_stack_toa_fingering(derived_rows, figures_dir),
         "phase_aware_retention": plot_phase_aware_retention(derived_rows, figures_dir),
+        "geometric_core_edge": plot_geometric_core_edge(derived_rows, figures_dir),
     }
 
 
@@ -913,6 +961,7 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     mask_analysis = data.get("mask_analysis", {})
     mask_analysis_summary = mask_analysis.get("summary_json", {})
     phase_aware = mask_analysis_summary.get("phase_aware", {}) if isinstance(mask_analysis_summary, dict) else {}
+    geometry_core_edge = mask_analysis_summary.get("geometry_core_edge", {}) if isinstance(mask_analysis_summary, dict) else {}
     primary = timeline["primary"]
     comparison = timeline["comparison"]
     xzone = timeline["xzone"]
@@ -931,9 +980,11 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     residual_blob = rows_by_role(blob, "residual")
     mask_stack_rows = mask_analysis.get("timeseries", [])
     phase_mask_rows = mask_analysis.get("phase_timeseries", [])
+    geometry_core_edge_rows = mask_analysis.get("geometry_core_edge", [])
     blob_morphology_rows = mask_analysis.get("blob_morphology", [])
     residual_mask_stack = rows_by_role(mask_stack_rows, "residual")
     residual_phase_mask = rows_by_role(phase_mask_rows, "residual")
+    residual_geometry_core_edge = rows_by_role(geometry_core_edge_rows, "residual")
     residual_blob_morphology = rows_by_role(blob_morphology_rows, "residual")
 
     rows: list[dict[str, str]] = []
@@ -1039,6 +1090,20 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     add_parameter(rows, "phase_aware", "residual_persistence_frequency_p90", phase_aware.get("residual_persistence_frequency_p90", math.nan), "fraction")
     add_parameter(rows, "phase_aware", "residual_retained_from_full_fraction_median", median_column(residual_phase_mask, "retained_from_full_fraction"), "fraction")
     add_parameter(rows, "phase_aware", "residual_depleted_from_full_fraction_median", median_column(residual_phase_mask, "depleted_from_full_fraction"), "fraction")
+
+    add_parameter(rows, "geometric_core_edge", "geometry_core_edge_timeseries_rows", len(geometry_core_edge_rows), "frames")
+    add_parameter(rows, "geometric_core_edge", "core_flow_min_dist_px", geometry_core_edge.get("core_flow_min_dist_px", math.nan), "processing px")
+    add_parameter(rows, "geometric_core_edge", "flow_domain_area_px", geometry_core_edge.get("flow_domain_area_px", math.nan), "px")
+    add_parameter(rows, "geometric_core_edge", "core_flow_area_px", geometry_core_edge.get("core_flow_area_px", math.nan), "px")
+    add_parameter(rows, "geometric_core_edge", "edge_band_area_px", geometry_core_edge.get("edge_band_area_px", math.nan), "px")
+    add_parameter(rows, "geometric_core_edge", "edge_band_fraction_of_flow_domain", geometry_core_edge.get("edge_band_fraction_of_flow_domain", math.nan), "fraction")
+    add_parameter(rows, "geometric_core_edge", "residual_core_red_mask_fraction_median", geometry_core_edge.get("residual_core_red_mask_fraction_median", math.nan), "fraction")
+    add_parameter(rows, "geometric_core_edge", "residual_edge_red_mask_fraction_median", geometry_core_edge.get("residual_edge_red_mask_fraction_median", math.nan), "fraction")
+    add_parameter(rows, "geometric_core_edge", "residual_core_to_edge_red_mask_fraction_ratio_median", geometry_core_edge.get("residual_core_to_edge_red_mask_fraction_ratio_median", math.nan), "ratio")
+    add_parameter(rows, "geometric_core_edge", "final_residual_core_retained_from_full_fraction", geometry_core_edge.get("final_residual_core_retained_from_full_fraction", math.nan), "fraction")
+    add_parameter(rows, "geometric_core_edge", "final_residual_edge_retained_from_full_fraction", geometry_core_edge.get("final_residual_edge_retained_from_full_fraction", math.nan), "fraction")
+    add_parameter(rows, "geometric_core_edge", "residual_core_boundary_water_px_median", median_column(residual_geometry_core_edge, "core_dnapl_water_boundary_px"), "boundary px")
+    add_parameter(rows, "geometric_core_edge", "residual_edge_boundary_solid_px_median", median_column(residual_geometry_core_edge, "edge_dnapl_solid_boundary_px"), "boundary px")
 
     add_parameter(rows, "blob_detail", "blob_morphology_rows", len(blob_morphology_rows), "frames")
     add_parameter(rows, "blob_detail", "residual_AreaGini_median", median_column(residual_blob_morphology, "AreaGini"), "unitless")
@@ -1175,6 +1240,7 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
     residual_by_label = row_by_label(data["residual"]["timeseries"])
     mask_stack_by_label = row_by_label(data.get("mask_analysis", {}).get("timeseries", []))
     phase_mask_by_label = row_by_label(data.get("mask_analysis", {}).get("phase_timeseries", []))
+    geometry_core_edge_by_label = row_by_label(data.get("mask_analysis", {}).get("geometry_core_edge", []))
     blob_morphology_by_label = row_by_label(data.get("mask_analysis", {}).get("blob_morphology", []))
     baseline = normalization_baseline(primary, "S_NAPL_color")
     if not math.isfinite(baseline) or baseline == 0:
@@ -1200,6 +1266,7 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
         residual = residual_by_label.get(label, {})
         mask_stack = mask_stack_by_label.get(label, {})
         phase_mask = phase_mask_by_label.get(label, {})
+        geometry_core_edge = geometry_core_edge_by_label.get(label, {})
         blob_morphology = blob_morphology_by_label.get(label, {})
 
         s_a = number(comparison, "S_NAPL_color_A")
@@ -1331,6 +1398,19 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
             "phase_new_outside_full_fraction": finite_or_nan(phase_mask, "new_outside_full_fraction"),
             "phase_residual_cumulative_union_px": finite_or_nan(phase_mask, "residual_cumulative_union_px"),
             "phase_residual_cumulative_union_fraction_of_full": finite_or_nan(phase_mask, "residual_cumulative_union_fraction_of_full"),
+            "geom_core_red_mask_fraction": finite_or_nan(geometry_core_edge, "core_red_mask_fraction"),
+            "geom_edge_red_mask_fraction": finite_or_nan(geometry_core_edge, "edge_red_mask_fraction"),
+            "geom_core_fraction_of_mask": finite_or_nan(geometry_core_edge, "core_fraction_of_mask"),
+            "geom_edge_fraction_of_mask": finite_or_nan(geometry_core_edge, "edge_fraction_of_mask"),
+            "geom_core_to_edge_red_mask_fraction_ratio": finite_or_nan(geometry_core_edge, "core_to_edge_red_mask_fraction_ratio"),
+            "geom_core_retained_from_full_fraction": finite_or_nan(geometry_core_edge, "core_retained_from_full_fraction"),
+            "geom_edge_retained_from_full_fraction": finite_or_nan(geometry_core_edge, "edge_retained_from_full_fraction"),
+            "geom_core_depleted_from_full_fraction": finite_or_nan(geometry_core_edge, "core_depleted_from_full_fraction"),
+            "geom_edge_depleted_from_full_fraction": finite_or_nan(geometry_core_edge, "edge_depleted_from_full_fraction"),
+            "geom_core_dnapl_water_boundary_px": finite_or_nan(geometry_core_edge, "core_dnapl_water_boundary_px"),
+            "geom_edge_dnapl_water_boundary_px": finite_or_nan(geometry_core_edge, "edge_dnapl_water_boundary_px"),
+            "geom_core_dnapl_solid_boundary_px": finite_or_nan(geometry_core_edge, "core_dnapl_solid_boundary_px"),
+            "geom_edge_dnapl_solid_boundary_px": finite_or_nan(geometry_core_edge, "edge_dnapl_solid_boundary_px"),
             "AreaGini": finite_or_nan(blob_morphology, "AreaGini"),
             "AreaEntropy": finite_or_nan(blob_morphology, "AreaEntropy"),
             "ShapeEntropy_count": finite_or_nan(blob_morphology, "ShapeEntropy_count"),
@@ -1517,6 +1597,19 @@ DERIVED_FIELDNAMES = [
     "phase_new_outside_full_fraction",
     "phase_residual_cumulative_union_px",
     "phase_residual_cumulative_union_fraction_of_full",
+    "geom_core_red_mask_fraction",
+    "geom_edge_red_mask_fraction",
+    "geom_core_fraction_of_mask",
+    "geom_edge_fraction_of_mask",
+    "geom_core_to_edge_red_mask_fraction_ratio",
+    "geom_core_retained_from_full_fraction",
+    "geom_edge_retained_from_full_fraction",
+    "geom_core_depleted_from_full_fraction",
+    "geom_edge_depleted_from_full_fraction",
+    "geom_core_dnapl_water_boundary_px",
+    "geom_edge_dnapl_water_boundary_px",
+    "geom_core_dnapl_solid_boundary_px",
+    "geom_edge_dnapl_solid_boundary_px",
     "AreaGini",
     "AreaEntropy",
     "ShapeEntropy_count",
@@ -1837,6 +1930,7 @@ def compute_qc_summary(
     add("toa_ready", bool(mask_readiness.get("toa_ready", False)), "", "True when pixel-level TOA map and x-summary are available.")
     add("mask_front_fingering_ready", bool(mask_readiness.get("mask_front_fingering_ready", False)), "", "True when mask-stack front roughness/finger proxy metrics are available.")
     add("phase_aware_mask_ready", bool(mask_readiness.get("phase_aware_mask_ready", False)), "", "True when full-NAPL baseline and residual persistence/depletion metrics are available.")
+    add("geometric_core_edge_ready", bool(mask_readiness.get("geometric_core_edge_ready", False)), "", "True when flow-domain distance-based core/edge masks and per-frame region metrics are available.")
     add("true_fingering_ready", bool(mask_readiness.get("mask_front_fingering_ready", False)), "", "Mask-stack fingering proxy is available; pore-graph fingering remains a separate validation step.")
     add("blob_detail_distribution_ready", bool(mask_readiness.get("blob_detail_distribution_ready", False)), "", "True when per-blob C2 detail has been summarized by frame.")
     add("pore_graph_fingering_ready", False, "", "Requires a pore graph or solid/core graph definition.")
@@ -1865,6 +1959,7 @@ def make_alignment_rows(
     toa_ready = bool(mask_readiness.get("toa_ready", False))
     mask_fingering_ready = bool(mask_readiness.get("mask_front_fingering_ready", False))
     phase_aware_ready = bool(mask_readiness.get("phase_aware_mask_ready", False))
+    geometric_core_edge_ready = bool(mask_readiness.get("geometric_core_edge_ready", False))
     blob_distribution_ready = bool(mask_readiness.get("blob_detail_distribution_ready", False))
     metadata_trusted = bool(physical_metadata.get("trusted", False))
     pixel_size_ready = metadata_trusted and math.isfinite(
@@ -1910,7 +2005,11 @@ def make_alignment_rows(
         "" if scale_recorded else "not present in aggregate CSV inputs",
         "record in manifest/provenance during Branch C/C2 generation",
     )
-    add("regional_bin_columns", "visualization/plot_timeseries_pv_common.py", "S_x_inlet/S_x_mid/S_x_outlet and x-zone extent fields", "aligned_proxy", "flow-direction x-zone color-index proxies", "not geometric core/edge", "provide solid/core mask for geometric core/edge")
+    add("regional_bin_columns", "visualization/plot_timeseries_pv_common.py", "S_x_inlet/S_x_mid/S_x_outlet and x-zone extent fields", "aligned_proxy", "flow-direction x-zone color-index proxies", "not geometric core/edge", "use geometric_core_edge_timeseries for pore-geometry regions")
+    add("geometric_core_edge_regions", "compute_bulk_sn_color.m / bwdist solid-mask convention", "geometry_core_edge_timeseries.csv", "aligned_geometric_mask" if geometric_core_edge_ready else "not_computable", "distance-transform core_flow and edge_band on the C2 processing grid", "" if geometric_core_edge_ready else "requires cache mask_crop.h5 flow_domain_mask", "run maskanalysis with segmentation_manifest cache_dir")
+    add("core_edge_S(t)", "compute_bulk_sn_color.m core/edge outputs", "geom_core_red_mask_fraction / geom_edge_red_mask_fraction", "aligned_geometric_mask" if geometric_core_edge_ready else "not_computable", "strict C2 red-mask occupancy split by geometric core/edge", "" if geometric_core_edge_ready else "requires geometric core/edge maskanalysis", "run maskanalysis")
+    add("edge_retention", "residual trapping edge-band metrics", "geom_edge_retained_from_full_fraction / geom_edge_depleted_from_full_fraction", "aligned_geometric_mask" if geometric_core_edge_ready else "not_computable", "residual retention/depletion in the edge band relative to full-NAPL baseline", "" if geometric_core_edge_ready else "requires full/residual roles and geometric core/edge masks", "run phase-aware geometric maskanalysis")
+    add("core_edge_contact_boundary", "DNAPL-solid / DNAPL-water contact by region", "geom_*_dnapl_*_boundary_px", "partial_proxy" if geometric_core_edge_ready else "not_computable", "boundary-pixel proxy split by core/edge and solid-contact zone", "not MATLAB chain-code L_ow by region", "port exact region chain-code length if needed")
     add("RemovalFraction", "plot_timeseries.py", "RemovalFraction", "aligned_proxy", "1 - S_color_norm", "not physical removal fraction", "physical Sn endpoint calibration")
     add("DissolutionRate_per_min", "plot_timeseries.py; plot_rate_correlations.py", "DissolutionRate_time_lr_per_min", "aligned_proxy", "-dS_color_norm/dt", "not physical dissolution rate", "physical Sn or mass calibration")
     add("DissolutionRate_Sn_*", "plot_rate_correlations.py", "DissolutionRate_Sn_time_lr/movmed/lr", "aligned_proxy", "proxy rate variants for legacy scripts", "not physical rate", "physical Sn calibration")
@@ -2114,6 +2213,7 @@ def write_report(
         "front_proxy",
         "mask_stack",
         "phase_aware",
+        "geometric_core_edge",
         "blob_detail",
     }
     for row in parameter_rows:
@@ -2151,6 +2251,8 @@ def write_report(
             "- `a_i_2D_proxy` is a 2D mask-derived proxy, not calibrated interfacial area.",
             "- `TOA` and front/fingering proxy fields come from C2 `red_mask_stack.h5`, not x-zone color-index curves.",
             "- Phase-aware metrics use the full-NAPL role mask union as the baseline for residual retention/depletion.",
+            "- Geometric core/edge metrics use `flow_domain_mask` distance on the C2 processing grid; they are not x-direction bins.",
+            "- Core/edge boundary fields are boundary-pixel proxies and should not be mixed with MATLAB chain-code global `L_ow` without validation.",
             "- `AreaGini`, `ShapeEntropy_*`, `AspectRatio_*`, `Solidity_*`, and `EulerNumber_*` come from C2 per-blob detail.",
             "- Physical-unit fields are emitted only when a trusted physical metadata manifest is supplied.",
             "- Current A1 Branch C/C2 processing records `processing_scale_factor = 3`; historical 2X preview notes are not the active processing-grid contract.",

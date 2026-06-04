@@ -774,6 +774,7 @@ The strict postprocess writes:
 ```text
 mask_stack_analysis_timeseries.csv
 phase_mask_timeseries.csv
+geometry_core_edge_timeseries.csv
 blob_morphology_timeseries.csv
 toa_x_summary.csv
 toa_frame_index.npy
@@ -784,6 +785,11 @@ residual_persistence_count.npy
 last_seen_frame_index.npy
 final_residual_mask.npy
 phase_retention_class.npy
+flow_domain_mask.npy
+core_flow_mask.npy
+edge_band_mask.npy
+solid_distance_px.npy
+solid_contact_zone_mask.npy
 mask_stack_analysis_summary.json
 ```
 
@@ -793,12 +799,14 @@ For the A1 full3585 chunked-blob-detail run:
 mask_stack_analysis.status = pass
 mask_stack_analysis_timeseries rows = 3585
 phase_mask_timeseries rows = 3585
+geometry_core_edge_timeseries rows = 3585
 blob_morphology_timeseries rows = 3585
 toa_x_summary rows = 2391
 mask_stack_ready = true
 toa_ready = true
 mask_front_fingering_ready = true
 phase_aware_mask_ready = true
+geometric_core_edge_ready = true
 blob_detail_distribution_ready = true
 ```
 
@@ -806,12 +814,14 @@ The regenerated analysis package now reports:
 
 ```text
 analysis_package.status = pass
-analysis figures = 13 PNG + 13 SVG
+analysis figures = 14 PNG + 14 SVG
 analysis_timeseries_derived rows = 3585
 research_parameter_alignment.TOA = aligned_mask_stack
 research_parameter_alignment.full_NAPL_baseline_mask = aligned_phase_mask
 research_parameter_alignment.residual_persistence_map = aligned_phase_mask
 research_parameter_alignment.depletion/last_seen_map = aligned_phase_mask
+research_parameter_alignment.geometric_core_edge_regions = aligned_geometric_mask
+research_parameter_alignment.edge_retention = aligned_geometric_mask
 research_parameter_alignment.mask_stack_front = aligned_mask_stack
 research_parameter_alignment.true_fingering = aligned_mask_stack_proxy
 research_parameter_alignment.AreaGini = aligned_blob_detail
@@ -827,6 +837,8 @@ Semantic boundary:
 TOA/front/finger fields come from C2 red_mask_stack.h5, not x-zone color proxies.
 finger_count_proxy is a mask-stack leading-front-band proxy, not pore-graph branch density.
 phase-aware residual metrics use the union of full_napl role C2 masks as the baseline.
+geometric core/edge metrics use flow_domain distance on the 3X C2 processing grid.
+core/edge boundary contact fields are boundary-pixel proxies, not MATLAB chain-code L_ow.
 pore_graph_fingering_ready remains false until graph/skeleton analysis is added.
 ```
 
@@ -855,4 +867,20 @@ transient_residual_from_full_fraction = 0.072860
 depleted_before_residual_fraction = 0.772649
 new_outside_full_fraction_of_full = 0.004624
 residual_persistence_frequency_p90 = 0.998704
+```
+
+For the same rerun, geometric core/edge metrics used the cached
+`mask_crop.h5:/flow_domain_mask` on the 3X C2 processing grid:
+
+```text
+core_flow_min_dist_px = 3.0
+flow_domain_area_px = 1794675
+core_flow_area_px = 1783223
+edge_band_area_px = 11452
+edge_band_fraction_of_flow_domain = 0.006381
+residual_core_red_mask_fraction_median = 0.071665
+residual_edge_red_mask_fraction_median = 0.022005
+residual_core_to_edge_red_mask_fraction_ratio_median = 3.258645
+final_residual_core_retained_from_full_fraction = 0.155099
+final_residual_edge_retained_from_full_fraction = 0.042787
 ```

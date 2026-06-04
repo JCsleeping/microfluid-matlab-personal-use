@@ -36,7 +36,7 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert (out_dir / "research_parameter_alignment.csv").is_file()
     assert (out_dir / "analysis_package_provenance.json").is_file()
     figures = provenance["outputs"]["figures"]
-    assert len(figures) == 13
+    assert len(figures) == 14
     for outputs in figures.values():
         for path_value in outputs.values():
             path = Path(path_value)
@@ -95,6 +95,7 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert qc["mask_stack_ready"] == "false"
     assert qc["toa_ready"] == "false"
     assert qc["phase_aware_mask_ready"] == "false"
+    assert qc["geometric_core_edge_ready"] == "false"
 
     alignment_rows = read_csv(out_dir / "research_parameter_alignment.csv")
     alignment = {row["parameter"]: row for row in alignment_rows}
@@ -132,12 +133,14 @@ def test_branch_c_analysis_package_consumes_mask_stack_analysis(tmp_path: Path) 
 
     assert provenance["status"] == "pass"
     assert provenance["mask_analysis"]["status"] == "pass"
-    assert provenance["figure_counts"]["figure_count"] == 13
+    assert provenance["figure_counts"]["figure_count"] == 14
 
     derived_rows = read_csv(out_dir / "analysis_timeseries_derived.csv")
     assert derived_rows[0]["mask_stack_leading_front_fraction"] == "0.1"
     assert derived_rows[-1]["phase_retained_from_full_fraction"] == "0.2"
     assert derived_rows[-1]["phase_depleted_from_full_fraction"] == "0.8"
+    assert derived_rows[-1]["geom_core_red_mask_fraction"] == "0.22"
+    assert derived_rows[-1]["geom_edge_retained_from_full_fraction"] == "0.18"
     assert derived_rows[-1]["AreaGini"] == "0.4"
     assert derived_rows[-1]["AspectRatio_median"] == "2.5"
     assert derived_rows[-1]["EulerNumber_median"] == "-1"
@@ -148,6 +151,7 @@ def test_branch_c_analysis_package_consumes_mask_stack_analysis(tmp_path: Path) 
     assert qc["toa_ready"] == "true"
     assert qc["mask_front_fingering_ready"] == "true"
     assert qc["phase_aware_mask_ready"] == "true"
+    assert qc["geometric_core_edge_ready"] == "true"
     assert qc["true_fingering_ready"] == "true"
     assert qc["blob_detail_distribution_ready"] == "true"
 
@@ -156,6 +160,8 @@ def test_branch_c_analysis_package_consumes_mask_stack_analysis(tmp_path: Path) 
     assert alignment["TOA"]["status"] == "aligned_mask_stack"
     assert alignment["full_NAPL_baseline_mask"]["status"] == "aligned_phase_mask"
     assert alignment["residual_persistence_map"]["status"] == "aligned_phase_mask"
+    assert alignment["geometric_core_edge_regions"]["status"] == "aligned_geometric_mask"
+    assert alignment["edge_retention"]["status"] == "aligned_geometric_mask"
     assert alignment["AreaGini"]["status"] == "aligned_blob_detail"
     assert alignment["AspectRatio*"]["status"] == "aligned_blob_detail"
     assert alignment["true_fingering"]["status"] == "aligned_mask_stack_proxy"
@@ -372,6 +378,7 @@ def write_residual_inputs(residual_dir: Path) -> None:
 def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
     mask_rows = []
     phase_rows = []
+    geometry_rows = []
     blob_rows = []
     for idx, row in enumerate(base_rows()):
         mask_rows.append(
@@ -422,6 +429,37 @@ def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
                 "phase_is_residual": row["role"] == "residual",
             }
         )
+        geometry_rows.append(
+            {
+                **row,
+                "mask_grid": "processing_grid",
+                "processing_scale_factor": 3,
+                "core_edge_definition": "unit_core_edge",
+                "core_flow_min_dist_px": 3,
+                "interface_solid_dilation_px": 1,
+                "flow_domain_area_px": 1000,
+                "core_flow_area_px": 600,
+                "edge_band_area_px": 400,
+                "current_mask_area_px": [90, 95, 30, 20][idx],
+                "core_mask_area_px": [55, 60, 18, 12][idx],
+                "edge_mask_area_px": [35, 35, 12, 8][idx],
+                "core_red_mask_fraction": [0.91, 0.92, 0.25, 0.22][idx],
+                "edge_red_mask_fraction": [0.88, 0.87, 0.2, 0.18][idx],
+                "core_fraction_of_mask": [0.61, 0.63, 0.6, 0.6][idx],
+                "edge_fraction_of_mask": [0.39, 0.37, 0.4, 0.4][idx],
+                "core_to_edge_red_mask_fraction_ratio": [1.03, 1.06, 1.25, 1.22][idx],
+                "core_retained_from_full_px": [55, 60, 18, 12][idx],
+                "core_retained_from_full_fraction": [0.9, 1.0, 0.3, 0.2][idx],
+                "edge_retained_from_full_px": [35, 35, 12, 8][idx],
+                "edge_retained_from_full_fraction": [0.8, 0.8, 0.25, 0.18][idx],
+                "core_depleted_from_full_fraction": [0.1, 0.0, 0.7, 0.8][idx],
+                "edge_depleted_from_full_fraction": [0.2, 0.2, 0.75, 0.82][idx],
+                "core_dnapl_water_boundary_px": [10, 11, 20, 21][idx],
+                "edge_dnapl_water_boundary_px": [12, 13, 25, 26][idx],
+                "core_dnapl_solid_boundary_px": [1, 1, 5, 6][idx],
+                "edge_dnapl_solid_boundary_px": [3, 4, 10, 11][idx],
+            }
+        )
         blob_rows.append(
             {
                 **row,
@@ -457,6 +495,7 @@ def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
         )
     write_csv(mask_analysis_dir / "mask_stack_analysis_timeseries.csv", mask_rows)
     write_csv(mask_analysis_dir / "phase_mask_timeseries.csv", phase_rows)
+    write_csv(mask_analysis_dir / "geometry_core_edge_timeseries.csv", geometry_rows)
     write_csv(mask_analysis_dir / "blob_morphology_timeseries.csv", blob_rows)
     write_csv(
         mask_analysis_dir / "toa_x_summary.csv",
@@ -479,6 +518,7 @@ def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
             "toa_ready": True,
             "mask_front_fingering_ready": True,
             "phase_aware_mask_ready": True,
+            "geometric_core_edge_ready": True,
             "blob_detail_distribution_ready": True,
         },
         "phase_aware": {
@@ -489,6 +529,20 @@ def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
             "new_outside_full_fraction_of_full": 0.04,
             "residual_persistence_frequency_p50": 0.2,
             "residual_persistence_frequency_p90": 0.8,
+        },
+        "geometry_core_edge": {
+            "geometry_status": "ok",
+            "geometry_core_edge_rows": 4,
+            "core_flow_min_dist_px": 3,
+            "flow_domain_area_px": 1000,
+            "core_flow_area_px": 600,
+            "edge_band_area_px": 400,
+            "edge_band_fraction_of_flow_domain": 0.4,
+            "residual_core_red_mask_fraction_median": 0.235,
+            "residual_edge_red_mask_fraction_median": 0.19,
+            "residual_core_to_edge_red_mask_fraction_ratio_median": 1.235,
+            "final_residual_core_retained_from_full_fraction": 0.2,
+            "final_residual_edge_retained_from_full_fraction": 0.18,
         },
     }
     (mask_analysis_dir / "mask_stack_analysis_summary.json").write_text(

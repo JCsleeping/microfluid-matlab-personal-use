@@ -56,8 +56,10 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
     segmentation_dir = tmp_path / "segmentation"
     timeline_dir = tmp_path / "timeline"
     out_dir = tmp_path / "mask_analysis"
+    cache_dir = tmp_path / "cache"
     segmentation_dir.mkdir()
     timeline_dir.mkdir()
+    cache_dir.mkdir()
 
     masks = np.zeros((3, 5, 4), dtype=np.uint8)
     masks[0, 1:4, 0] = 1
@@ -67,6 +69,21 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
         # MATLAB-created stacks are observed by h5py as frame,width,height;
         # the tool must transpose to the manifest processing-grid H/W.
         handle.create_dataset("/red_mask", data=np.transpose(masks, (0, 2, 1)))
+    flow_domain = np.ones((5, 4), dtype=np.uint8)
+    flow_domain[:, 0] = 0
+    with h5py.File(cache_dir / "mask_crop.h5", "w") as handle:
+        handle.create_dataset("/flow_domain_mask", data=flow_domain)
+    (segmentation_dir / "segmentation_manifest.json").write_text(
+        json.dumps(
+            {
+                "cache_dir": str(cache_dir),
+                "interface_solid_dilation": 1,
+                "mask_grid": "processing_grid",
+                "processing_scale_factor": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     write_csv(
         segmentation_dir / "red_mask_stack_manifest.csv",
@@ -109,6 +126,7 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
                 "outlet_active_min_px": 1,
                 "leading_front_breakthrough_fraction": 0.95,
                 "finger_band_fraction": 0.25,
+                "core_flow_min_dist_px": 2.0,
             },
         )()
     )
@@ -118,6 +136,7 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
     assert summary["readiness"]["toa_ready"] is True
     assert summary["readiness"]["mask_front_fingering_ready"] is True
     assert summary["readiness"]["phase_aware_mask_ready"] is True
+    assert summary["readiness"]["geometric_core_edge_ready"] is True
     assert summary["readiness"]["blob_detail_distribution_ready"] is True
     assert summary["phase_aware"]["full_baseline_area_px"] == 3
     assert summary["phase_aware"]["final_residual_retained_from_full_fraction"] == 1.0
@@ -125,6 +144,8 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
     assert (out_dir / "full_baseline_union_mask.npy").is_file()
     assert (out_dir / "residual_frequency.npy").is_file()
     assert (out_dir / "phase_retention_class.npy").is_file()
+    assert (out_dir / "core_flow_mask.npy").is_file()
+    assert (out_dir / "edge_band_mask.npy").is_file()
     assert json.loads((out_dir / "mask_stack_analysis_summary.json").read_text())["status"] == "pass"
 
     mask_rows = read_csv(out_dir / "mask_stack_analysis_timeseries.csv")
@@ -145,6 +166,14 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
     retention_class = np.load(out_dir / "phase_retention_class.npy")
     assert int(retention_class[2, 0]) == 3
     assert int(retention_class[2, 3]) == 4
+    geometry_rows = read_csv(out_dir / "geometry_core_edge_timeseries.csv")
+    assert len(geometry_rows) == 3
+    assert geometry_rows[-1]["core_flow_area_px"] == "10"
+    assert geometry_rows[-1]["edge_band_area_px"] == "5"
+    assert geometry_rows[-1]["core_mask_area_px"] == "6"
+    assert geometry_rows[-1]["edge_mask_area_px"] == "3"
+    assert geometry_rows[-1]["core_red_mask_fraction"] == "0.6"
+    assert geometry_rows[-1]["edge_red_mask_fraction"] == "0.6"
 
     blob_rows = read_csv(out_dir / "blob_morphology_timeseries.csv")
     by_label = {row["label"]: row for row in blob_rows}

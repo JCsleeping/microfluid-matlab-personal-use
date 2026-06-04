@@ -58,6 +58,7 @@ regenerating masks from RGB:
 ```text
 mask_stack_analysis\<run_id>\mask_stack_analysis_timeseries.csv
 mask_stack_analysis\<run_id>\phase_mask_timeseries.csv
+mask_stack_analysis\<run_id>\geometry_core_edge_timeseries.csv
 mask_stack_analysis\<run_id>\blob_morphology_timeseries.csv
 mask_stack_analysis\<run_id>\toa_x_summary.csv
 mask_stack_analysis\<run_id>\toa_frame_index.npy
@@ -68,6 +69,11 @@ mask_stack_analysis\<run_id>\residual_persistence_count.npy
 mask_stack_analysis\<run_id>\last_seen_frame_index.npy
 mask_stack_analysis\<run_id>\final_residual_mask.npy
 mask_stack_analysis\<run_id>\phase_retention_class.npy
+mask_stack_analysis\<run_id>\flow_domain_mask.npy
+mask_stack_analysis\<run_id>\core_flow_mask.npy
+mask_stack_analysis\<run_id>\edge_band_mask.npy
+mask_stack_analysis\<run_id>\solid_distance_px.npy
+mask_stack_analysis\<run_id>\solid_contact_zone_mask.npy
 mask_stack_analysis\<run_id>\mask_stack_analysis_summary.json
 ```
 
@@ -496,9 +502,22 @@ statistics.
 This is intentionally not geometric core/edge. Literature and the existing
 MATLAB code use a pore geometry concept for core/edge: distance from
 solid/pillar/wall boundaries, typically via `bwdist(solid_mask)` and a
-`core_flow_min_dist_px` threshold. The current standalone Branch C run has only
-the user-provided ROI/measurement mask, so true geometric `core_flow` and
-`edge_flow` remain disabled until a solid/core mask is supplied.
+`core_flow_min_dist_px` threshold. After C2 `segmorph` has written
+`segmentation_manifest.json`, `maskanalysis` can now recover the cached
+`mask_crop.h5:/flow_domain_mask` and emit geometric core/edge outputs:
+
+```text
+core_flow = flow_domain & distance_transform_edt(flow_domain) >= core_flow_min_dist_px
+edge_band = flow_domain & ~core_flow
+```
+
+For A1, the default `core_flow_min_dist_px = 3` is on the 3X processing grid.
+These geometric fields are separate from x-zone fields and are written to
+`geometry_core_edge_timeseries.csv` as red-mask occupancy, retained/depleted
+fraction relative to the full-NAPL baseline, and boundary-pixel contact
+proxies split by core/edge. The core/edge boundary fields are not MATLAB
+chain-code `L_ow` by region; they are conservative C2 boundary-pixel proxies
+until exact regional chain-code length is ported.
 
 ## C2 Segmentation Pilot
 
@@ -680,6 +699,7 @@ analysis_package_full3585\figures\10_proxy_architecture_stage.png/svg
 analysis_package_full3585\figures\11_qc_alignment_summary.png/svg
 analysis_package_full3585\figures\12_mask_stack_toa_fingering.png/svg
 analysis_package_full3585\figures\13_phase_aware_retention.png/svg
+analysis_package_full3585\figures\14_geometric_core_edge.png/svg
 ```
 
 The analysis package is read-only with respect to the source Branch C/C2 CSVs.
@@ -693,11 +713,11 @@ top/right spines, light major grid, 600 dpi PNG output, and editable SVG text.
 `analysis_parameter_summary.csv` records run duration, full/residual phase
 counts, endpoint A/B sensitivity, red-mask occupancy, L_ow and solid-contact
 metrics, residual blob morphology, x-zone extent proxies, mask-stack
-TOA/front/finger proxies, phase-aware residual retention/depletion metrics, and
-blob-detail distribution statistics such as AreaGini, ShapeEntropy,
-AspectRatio, Solidity, and EulerNumber. These are operational descriptors
-derived from existing Branch C/C2 outputs; they do not upgrade `S_NAPL_color`
-to endpoint-validated physical Sn. The package records
+TOA/front/finger proxies, phase-aware residual retention/depletion metrics,
+geometric core/edge mask metrics, and blob-detail distribution statistics such
+as AreaGini, ShapeEntropy, AspectRatio, Solidity, and EulerNumber. These are
+operational descriptors derived from existing Branch C/C2 outputs; they do not
+upgrade `S_NAPL_color` to endpoint-validated physical Sn. The package records
 both all-sequence outlet-zone first-active times and residual-role-only
 first-active times; the all-sequence value can be 0 min when the full-NAPL
 phase is already active at the outlet.
@@ -752,6 +772,7 @@ mask_stack_ready = true
 toa_ready = true
 mask_front_fingering_ready = true
 phase_aware_mask_ready = true
+geometric_core_edge_ready = true
 true_fingering_ready = true
 blob_detail_distribution_ready = true
 pore_graph_fingering_ready = false
