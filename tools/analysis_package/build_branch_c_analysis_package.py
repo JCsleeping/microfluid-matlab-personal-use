@@ -58,6 +58,7 @@ RESIDUAL_FILES = {
 
 MASK_ANALYSIS_FILES = {
     "timeseries": "mask_stack_analysis_timeseries.csv",
+    "phase_timeseries": "phase_mask_timeseries.csv",
     "blob_morphology": "blob_morphology_timeseries.csv",
     "toa_x": "toa_x_summary.csv",
     "summary_json": "mask_stack_analysis_summary.json",
@@ -320,6 +321,7 @@ def load_mask_analysis(mask_analysis_dir: Path | None) -> dict[str, Any]:
     return {
         "dir": str(mask_analysis_dir),
         "timeseries": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["timeseries"]),
+        "phase_timeseries": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["phase_timeseries"]),
         "blob_morphology": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["blob_morphology"]),
         "toa_x": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["toa_x"]),
         "summary_json": read_optional_json(mask_analysis_dir / MASK_ANALYSIS_FILES["summary_json"]),
@@ -783,6 +785,34 @@ def plot_mask_stack_toa_fingering(derived_rows: list[dict[str, object]], figures
     return save_figure(fig, figures_dir, "12_mask_stack_toa_fingering")
 
 
+def plot_phase_aware_retention(derived_rows: list[dict[str, object]], figures_dir: Path) -> dict[str, str]:
+    fig, ax = plt.subplots(figsize=WIDE_SIZE)
+    x = derived_series(derived_rows, "Time_min")
+    for column, label, color in (
+        ("phase_retained_from_full_fraction", "retained from full", WONG["blue"]),
+        ("phase_depleted_from_full_fraction", "depleted from full", WONG["vermillion"]),
+        ("phase_residual_cumulative_union_fraction_of_full", "residual cumulative union", WONG["bluish_green"]),
+    ):
+        ax.plot(
+            x,
+            derived_series(derived_rows, column),
+            color=color,
+            linewidth=1.2,
+            marker=MARKER,
+            markersize=MARKER_SIZE,
+            markerfacecolor="white",
+            markeredgecolor=color,
+            markevery=markevery([{} for _ in derived_rows]),
+            label=label,
+        )
+    ax.set_xlabel("Time (min)")
+    ax.set_ylabel("fraction of full-NAPL baseline")
+    ax.set_ylim(-0.03, 1.05)
+    ax.legend(frameon=False, ncols=3)
+    style_axes(ax)
+    return save_figure(fig, figures_dir, "13_phase_aware_retention")
+
+
 def create_figures(
     data: dict[str, Any],
     out_dir: Path,
@@ -807,6 +837,7 @@ def create_figures(
         "proxy_architecture_stage": plot_proxy_architecture_stage(derived_rows, figures_dir),
         "qc_alignment_summary": plot_qc_alignment_summary(qc_rows, figures_dir),
         "mask_stack_toa_fingering": plot_mask_stack_toa_fingering(derived_rows, figures_dir),
+        "phase_aware_retention": plot_phase_aware_retention(derived_rows, figures_dir),
     }
 
 
@@ -880,6 +911,8 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     summary_json = data["summary_json"]
     physical_metadata = data.get("physical_metadata", {})
     mask_analysis = data.get("mask_analysis", {})
+    mask_analysis_summary = mask_analysis.get("summary_json", {})
+    phase_aware = mask_analysis_summary.get("phase_aware", {}) if isinstance(mask_analysis_summary, dict) else {}
     primary = timeline["primary"]
     comparison = timeline["comparison"]
     xzone = timeline["xzone"]
@@ -897,8 +930,10 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     full_blob = rows_by_role(blob, "full_napl")
     residual_blob = rows_by_role(blob, "residual")
     mask_stack_rows = mask_analysis.get("timeseries", [])
+    phase_mask_rows = mask_analysis.get("phase_timeseries", [])
     blob_morphology_rows = mask_analysis.get("blob_morphology", [])
     residual_mask_stack = rows_by_role(mask_stack_rows, "residual")
+    residual_phase_mask = rows_by_role(phase_mask_rows, "residual")
     residual_blob_morphology = rows_by_role(blob_morphology_rows, "residual")
 
     rows: list[dict[str, str]] = []
@@ -993,6 +1028,17 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     add_parameter(rows, "mask_stack", "residual_finger_count_proxy_median", median_column(residual_mask_stack, "finger_count_proxy"), "count")
     add_parameter(rows, "mask_stack", "final_toa_cumulative_arrived_fraction", final_column(mask_stack_rows, "toa_cumulative_arrived_fraction"), "fraction")
     add_parameter(rows, "mask_stack", "first_outlet_band_breakthrough_time_min", first_time_truthy(mask_stack_rows, "outlet_band_breakthrough"), "min", "first C2 mask-stack outlet-band breakthrough")
+
+    add_parameter(rows, "phase_aware", "phase_mask_timeseries_rows", len(phase_mask_rows), "frames")
+    add_parameter(rows, "phase_aware", "full_baseline_area_px", phase_aware.get("full_baseline_area_px", math.nan), "px")
+    add_parameter(rows, "phase_aware", "final_residual_retained_from_full_fraction", phase_aware.get("final_residual_retained_from_full_fraction", math.nan), "fraction")
+    add_parameter(rows, "phase_aware", "transient_residual_from_full_fraction", phase_aware.get("transient_residual_from_full_fraction", math.nan), "fraction")
+    add_parameter(rows, "phase_aware", "depleted_before_residual_fraction", phase_aware.get("depleted_before_residual_fraction", math.nan), "fraction")
+    add_parameter(rows, "phase_aware", "new_outside_full_fraction_of_full", phase_aware.get("new_outside_full_fraction_of_full", math.nan), "fraction")
+    add_parameter(rows, "phase_aware", "residual_persistence_frequency_p50", phase_aware.get("residual_persistence_frequency_p50", math.nan), "fraction")
+    add_parameter(rows, "phase_aware", "residual_persistence_frequency_p90", phase_aware.get("residual_persistence_frequency_p90", math.nan), "fraction")
+    add_parameter(rows, "phase_aware", "residual_retained_from_full_fraction_median", median_column(residual_phase_mask, "retained_from_full_fraction"), "fraction")
+    add_parameter(rows, "phase_aware", "residual_depleted_from_full_fraction_median", median_column(residual_phase_mask, "depleted_from_full_fraction"), "fraction")
 
     add_parameter(rows, "blob_detail", "blob_morphology_rows", len(blob_morphology_rows), "frames")
     add_parameter(rows, "blob_detail", "residual_AreaGini_median", median_column(residual_blob_morphology, "AreaGini"), "unitless")
@@ -1128,6 +1174,7 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
     blob_by_label = row_by_label(timeline["blob"])
     residual_by_label = row_by_label(data["residual"]["timeseries"])
     mask_stack_by_label = row_by_label(data.get("mask_analysis", {}).get("timeseries", []))
+    phase_mask_by_label = row_by_label(data.get("mask_analysis", {}).get("phase_timeseries", []))
     blob_morphology_by_label = row_by_label(data.get("mask_analysis", {}).get("blob_morphology", []))
     baseline = normalization_baseline(primary, "S_NAPL_color")
     if not math.isfinite(baseline) or baseline == 0:
@@ -1152,6 +1199,7 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
         blob = blob_by_label.get(label, {})
         residual = residual_by_label.get(label, {})
         mask_stack = mask_stack_by_label.get(label, {})
+        phase_mask = phase_mask_by_label.get(label, {})
         blob_morphology = blob_morphology_by_label.get(label, {})
 
         s_a = number(comparison, "S_NAPL_color_A")
@@ -1274,6 +1322,15 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
             "mask_stack_toa_new_pixel_count": finite_or_nan(mask_stack, "toa_new_pixel_count"),
             "mask_stack_toa_cumulative_arrived_fraction": finite_or_nan(mask_stack, "toa_cumulative_arrived_fraction"),
             "mask_stack_area_delta_px": finite_or_nan(mask_stack, "mask_stack_area_delta_px"),
+            "phase_full_baseline_area_px": finite_or_nan(phase_mask, "full_baseline_area_px"),
+            "phase_retained_from_full_px": finite_or_nan(phase_mask, "retained_from_full_px"),
+            "phase_retained_from_full_fraction": finite_or_nan(phase_mask, "retained_from_full_fraction"),
+            "phase_depleted_from_full_px": finite_or_nan(phase_mask, "depleted_from_full_px"),
+            "phase_depleted_from_full_fraction": finite_or_nan(phase_mask, "depleted_from_full_fraction"),
+            "phase_new_outside_full_px": finite_or_nan(phase_mask, "new_outside_full_px"),
+            "phase_new_outside_full_fraction": finite_or_nan(phase_mask, "new_outside_full_fraction"),
+            "phase_residual_cumulative_union_px": finite_or_nan(phase_mask, "residual_cumulative_union_px"),
+            "phase_residual_cumulative_union_fraction_of_full": finite_or_nan(phase_mask, "residual_cumulative_union_fraction_of_full"),
             "AreaGini": finite_or_nan(blob_morphology, "AreaGini"),
             "AreaEntropy": finite_or_nan(blob_morphology, "AreaEntropy"),
             "ShapeEntropy_count": finite_or_nan(blob_morphology, "ShapeEntropy_count"),
@@ -1451,6 +1508,15 @@ DERIVED_FIELDNAMES = [
     "mask_stack_toa_new_pixel_count",
     "mask_stack_toa_cumulative_arrived_fraction",
     "mask_stack_area_delta_px",
+    "phase_full_baseline_area_px",
+    "phase_retained_from_full_px",
+    "phase_retained_from_full_fraction",
+    "phase_depleted_from_full_px",
+    "phase_depleted_from_full_fraction",
+    "phase_new_outside_full_px",
+    "phase_new_outside_full_fraction",
+    "phase_residual_cumulative_union_px",
+    "phase_residual_cumulative_union_fraction_of_full",
     "AreaGini",
     "AreaEntropy",
     "ShapeEntropy_count",
@@ -1770,6 +1836,7 @@ def compute_qc_summary(
     add("mask_stack_ready", bool(mask_readiness.get("mask_stack_ready", False)), "", "True when C2 red_mask_stack.h5 has been analyzed.")
     add("toa_ready", bool(mask_readiness.get("toa_ready", False)), "", "True when pixel-level TOA map and x-summary are available.")
     add("mask_front_fingering_ready", bool(mask_readiness.get("mask_front_fingering_ready", False)), "", "True when mask-stack front roughness/finger proxy metrics are available.")
+    add("phase_aware_mask_ready", bool(mask_readiness.get("phase_aware_mask_ready", False)), "", "True when full-NAPL baseline and residual persistence/depletion metrics are available.")
     add("true_fingering_ready", bool(mask_readiness.get("mask_front_fingering_ready", False)), "", "Mask-stack fingering proxy is available; pore-graph fingering remains a separate validation step.")
     add("blob_detail_distribution_ready", bool(mask_readiness.get("blob_detail_distribution_ready", False)), "", "True when per-blob C2 detail has been summarized by frame.")
     add("pore_graph_fingering_ready", False, "", "Requires a pore graph or solid/core graph definition.")
@@ -1797,6 +1864,7 @@ def make_alignment_rows(
     mask_stack_ready = bool(mask_readiness.get("mask_stack_ready", False))
     toa_ready = bool(mask_readiness.get("toa_ready", False))
     mask_fingering_ready = bool(mask_readiness.get("mask_front_fingering_ready", False))
+    phase_aware_ready = bool(mask_readiness.get("phase_aware_mask_ready", False))
     blob_distribution_ready = bool(mask_readiness.get("blob_detail_distribution_ready", False))
     metadata_trusted = bool(physical_metadata.get("trusted", False))
     pixel_size_ready = metadata_trusted and math.isfinite(
@@ -1932,6 +2000,9 @@ def make_alignment_rows(
     add("projected_interface_mass_flux", "plot_rate_correlations.py", "", "missing_metadata", "mass flux normalized by projected L_ow or area convention", "missing mass calibration and physical interface units", "provide mass calibration and pixel size/depth convention")
     add("MassTransferProxy_*", "plot_rate_correlations.py", "DissolutionRate_* with InterfaceArea/a_i_2D_proxy", "partial_proxy", "possible proxy correlations only", "not physical mass-transfer coefficient", "provide mass calibration, physical interface units, and flow metadata")
     add("TOA", "utilities/generate_toa_map.m", "toa_frame_index.npy + toa_x_summary.csv", "aligned_mask_stack" if toa_ready else "not_computable", "pixel-level time of arrival from C2 red-mask stack", "" if toa_ready else "requires frame-level mask stack", "run maskanalysis")
+    add("full_NAPL_baseline_mask", "new Branch C/C2 contract", "full_baseline_union_mask.npy", "aligned_phase_mask" if phase_aware_ready else "not_computable", "union of full-NAPL role C2 masks used as phase baseline", "" if phase_aware_ready else "requires full_napl and residual roles in mask stack", "run phase-aware maskanalysis")
+    add("residual_persistence_map", "new Branch C/C2 contract", "residual_frequency.npy / residual_persistence_count.npy", "aligned_phase_mask" if phase_aware_ready else "not_computable", "per-pixel residual retention frequency relative to residual frames", "" if phase_aware_ready else "requires residual-role mask stack", "run phase-aware maskanalysis")
+    add("depletion/last_seen_map", "new Branch C/C2 contract", "last_seen_frame_index.npy / phase_retention_class.npy", "aligned_phase_mask" if phase_aware_ready else "not_computable", "last frame seen and retained/depleted/transient residual classes", "" if phase_aware_ready else "requires full/residual phase-aware pass", "run phase-aware maskanalysis")
     add("xzone_front_extent_proxy", "analysis/fingering", "x-zone extent proxy", "partial_proxy", "thresholded x-zone color-index front/extent proxy", "not graph fingering", "run maskanalysis for strict mask front")
     add("mask_stack_front", "analysis/fingering", "mask_stack_analysis_timeseries.leading_front_fraction/front_roughness_px", "aligned_mask_stack" if mask_stack_ready else "not_computable", "strict C2 mask-stack leading front and roughness", "" if mask_stack_ready else "requires frame-level mask stack", "run maskanalysis")
     add("true_fingering", "analysis/fingering", "mask_stack_analysis_timeseries.finger_count_proxy", "aligned_mask_stack_proxy" if mask_fingering_ready else "not_computable", "mask-stack front-band finger-count proxy; pore-graph fingering remains separate", "" if mask_fingering_ready else "requires frame-level connected masks", "add pore graph for graph fingering")
@@ -2042,6 +2113,7 @@ def write_report(
         "xzone",
         "front_proxy",
         "mask_stack",
+        "phase_aware",
         "blob_detail",
     }
     for row in parameter_rows:
@@ -2078,6 +2150,7 @@ def write_report(
             "- `InterfaceArea` is a legacy alias of `dnapl_water_length_px`; it is not area.",
             "- `a_i_2D_proxy` is a 2D mask-derived proxy, not calibrated interfacial area.",
             "- `TOA` and front/fingering proxy fields come from C2 `red_mask_stack.h5`, not x-zone color-index curves.",
+            "- Phase-aware metrics use the full-NAPL role mask union as the baseline for residual retention/depletion.",
             "- `AreaGini`, `ShapeEntropy_*`, `AspectRatio_*`, `Solidity_*`, and `EulerNumber_*` come from C2 per-blob detail.",
             "- Physical-unit fields are emitted only when a trusted physical metadata manifest is supplied.",
             "- Current A1 Branch C/C2 processing records `processing_scale_factor = 3`; historical 2X preview notes are not the active processing-grid contract.",

@@ -773,9 +773,17 @@ The strict postprocess writes:
 
 ```text
 mask_stack_analysis_timeseries.csv
+phase_mask_timeseries.csv
 blob_morphology_timeseries.csv
 toa_x_summary.csv
 toa_frame_index.npy
+full_baseline_union_mask.npy
+full_baseline_frequency.npy
+residual_frequency.npy
+residual_persistence_count.npy
+last_seen_frame_index.npy
+final_residual_mask.npy
+phase_retention_class.npy
 mask_stack_analysis_summary.json
 ```
 
@@ -784,11 +792,13 @@ For the A1 full3585 chunked-blob-detail run:
 ```text
 mask_stack_analysis.status = pass
 mask_stack_analysis_timeseries rows = 3585
+phase_mask_timeseries rows = 3585
 blob_morphology_timeseries rows = 3585
 toa_x_summary rows = 2391
 mask_stack_ready = true
 toa_ready = true
 mask_front_fingering_ready = true
+phase_aware_mask_ready = true
 blob_detail_distribution_ready = true
 ```
 
@@ -796,9 +806,12 @@ The regenerated analysis package now reports:
 
 ```text
 analysis_package.status = pass
-analysis figures = 12 PNG + 12 SVG
+analysis figures = 13 PNG + 13 SVG
 analysis_timeseries_derived rows = 3585
 research_parameter_alignment.TOA = aligned_mask_stack
+research_parameter_alignment.full_NAPL_baseline_mask = aligned_phase_mask
+research_parameter_alignment.residual_persistence_map = aligned_phase_mask
+research_parameter_alignment.depletion/last_seen_map = aligned_phase_mask
 research_parameter_alignment.mask_stack_front = aligned_mask_stack
 research_parameter_alignment.true_fingering = aligned_mask_stack_proxy
 research_parameter_alignment.AreaGini = aligned_blob_detail
@@ -813,5 +826,33 @@ Semantic boundary:
 ```text
 TOA/front/finger fields come from C2 red_mask_stack.h5, not x-zone color proxies.
 finger_count_proxy is a mask-stack leading-front-band proxy, not pore-graph branch density.
+phase-aware residual metrics use the union of full_napl role C2 masks as the baseline.
 pore_graph_fingering_ready remains false until graph/skeleton analysis is added.
+```
+
+The phase-aware outputs answer a different question from TOA: given the
+full-NAPL baseline mask, how much red DNAPL support remains in residual frames,
+how much has depleted, and where residual mask support appears outside the
+baseline. `phase_retention_class.npy` is a compact map of those classes:
+
+```text
+0 = background / not in full baseline
+1 = full baseline pixel absent in all residual frames
+2 = residual transient but absent from final residual frame
+3 = retained in the final residual frame
+4 = residual outside the full baseline
+```
+
+For the A1 full3585 chunked-blob-detail rerun, the phase-aware summary was:
+
+```text
+full_frame_count = 498
+residual_frame_count = 3087
+full_baseline_area_px = 825419
+residual_union_fraction_of_full = 0.227351
+final_residual_retained_from_full_fraction = 0.154491
+transient_residual_from_full_fraction = 0.072860
+depleted_before_residual_fraction = 0.772649
+new_outside_full_fraction_of_full = 0.004624
+residual_persistence_frequency_p90 = 0.998704
 ```

@@ -57,9 +57,17 @@ regenerating masks from RGB:
 
 ```text
 mask_stack_analysis\<run_id>\mask_stack_analysis_timeseries.csv
+mask_stack_analysis\<run_id>\phase_mask_timeseries.csv
 mask_stack_analysis\<run_id>\blob_morphology_timeseries.csv
 mask_stack_analysis\<run_id>\toa_x_summary.csv
 mask_stack_analysis\<run_id>\toa_frame_index.npy
+mask_stack_analysis\<run_id>\full_baseline_union_mask.npy
+mask_stack_analysis\<run_id>\full_baseline_frequency.npy
+mask_stack_analysis\<run_id>\residual_frequency.npy
+mask_stack_analysis\<run_id>\residual_persistence_count.npy
+mask_stack_analysis\<run_id>\last_seen_frame_index.npy
+mask_stack_analysis\<run_id>\final_residual_mask.npy
+mask_stack_analysis\<run_id>\phase_retention_class.npy
 mask_stack_analysis\<run_id>\mask_stack_analysis_summary.json
 ```
 
@@ -67,6 +75,19 @@ mask_stack_analysis\<run_id>\mask_stack_analysis_summary.json
 x-zone color-index proxy crossings. `finger_count_proxy` counts contiguous
 active row segments in the current leading-front band; it is not yet a
 pore-graph tortuosity or branch-density analysis.
+
+Phase-aware mask metrics use the union of rows labeled `full_napl` as the
+full-NAPL baseline. Residual-role rows are then reported as retained from that
+baseline, depleted from that baseline, transient residual, or new outside the
+full baseline. `phase_retention_class.npy` uses this coding:
+
+```text
+0 = background / not in full baseline
+1 = full baseline pixel absent in all residual frames
+2 = residual transient but absent from final residual frame
+3 = retained in the final residual frame
+4 = residual outside the full baseline
+```
 
 C2 interface/contact fields are computed from the locked red DNAPL mask and the
 flow-domain mask, not approximated from blob perimeters:
@@ -658,6 +679,7 @@ analysis_package_full3585\figures\09_legacy_morphology_metrics.png/svg
 analysis_package_full3585\figures\10_proxy_architecture_stage.png/svg
 analysis_package_full3585\figures\11_qc_alignment_summary.png/svg
 analysis_package_full3585\figures\12_mask_stack_toa_fingering.png/svg
+analysis_package_full3585\figures\13_phase_aware_retention.png/svg
 ```
 
 The analysis package is read-only with respect to the source Branch C/C2 CSVs.
@@ -671,10 +693,11 @@ top/right spines, light major grid, 600 dpi PNG output, and editable SVG text.
 `analysis_parameter_summary.csv` records run duration, full/residual phase
 counts, endpoint A/B sensitivity, red-mask occupancy, L_ow and solid-contact
 metrics, residual blob morphology, x-zone extent proxies, mask-stack
-TOA/front/finger proxies, and blob-detail distribution statistics such as
-AreaGini, ShapeEntropy, AspectRatio, Solidity, and EulerNumber. These are
-operational descriptors derived from existing Branch C/C2 outputs; they do not
-upgrade `S_NAPL_color` to endpoint-validated physical Sn. The package records
+TOA/front/finger proxies, phase-aware residual retention/depletion metrics, and
+blob-detail distribution statistics such as AreaGini, ShapeEntropy,
+AspectRatio, Solidity, and EulerNumber. These are operational descriptors
+derived from existing Branch C/C2 outputs; they do not upgrade `S_NAPL_color`
+to endpoint-validated physical Sn. The package records
 both all-sequence outlet-zone first-active times and residual-role-only
 first-active times; the all-sequence value can be 0 min when the full-NAPL
 phase is already active at the outlet.
@@ -682,10 +705,11 @@ phase is already active at the outlet.
 `analysis_timeseries_derived.csv` is the main researcher-facing derived table.
 It joins Branch C color-index saturation, endpoint A/B sensitivity, C2 red-mask
 occupancy, blob morphology, interface/contact metrics, x-zone proxies,
-mask-stack TOA/front/fingering proxies, blob-detail distribution metrics, rate
-proxies, and stage/architecture proxy labels by `label`. The compatibility
-columns `Sn`, `SnNorm`, `DissolutionRate_per_min`, and related legacy names are
-operational `S_NAPL_color` proxies, not endpoint-validated physical saturation.
+mask-stack TOA/front/fingering proxies, phase-aware mask retention/depletion
+fields, blob-detail distribution metrics, rate proxies, and stage/architecture
+proxy labels by `label`. The compatibility columns `Sn`, `SnNorm`,
+`DissolutionRate_per_min`, and related legacy names are operational
+`S_NAPL_color` proxies, not endpoint-validated physical saturation.
 
 `branch_c_legacy_plot_timeseries.csv` is a guarded adapter for the older
 `visualization/plot_timeseries.py` style scripts. It includes the required
@@ -727,6 +751,7 @@ inputs are supplied. After `maskanalysis` passes, the package can report:
 mask_stack_ready = true
 toa_ready = true
 mask_front_fingering_ready = true
+phase_aware_mask_ready = true
 true_fingering_ready = true
 blob_detail_distribution_ready = true
 pore_graph_fingering_ready = false

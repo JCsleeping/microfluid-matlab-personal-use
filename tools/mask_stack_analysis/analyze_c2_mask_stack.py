@@ -94,6 +94,28 @@ TOA_X_FIELDS = [
     "p90_arrival_frame_index",
 ]
 
+PHASE_TIMESERIES_FIELDS = [
+    "frame_index",
+    "label",
+    "role",
+    "RealTime_s",
+    "Time_min",
+    "mask_grid",
+    "processing_scale_factor",
+    "full_baseline_area_px",
+    "current_mask_area_px",
+    "current_mask_fraction_of_full_baseline",
+    "retained_from_full_px",
+    "retained_from_full_fraction",
+    "depleted_from_full_px",
+    "depleted_from_full_fraction",
+    "new_outside_full_px",
+    "new_outside_full_fraction",
+    "residual_cumulative_union_px",
+    "residual_cumulative_union_fraction_of_full",
+    "phase_is_residual",
+]
+
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.is_file():
@@ -283,6 +305,12 @@ def analyze_stack(
     first_time_by_frame: dict[int, float] = {}
     first_label_by_frame: dict[int, str] = {}
     toa_frame: np.ndarray | None = None
+    full_seen_count: np.ndarray | None = None
+    residual_seen_count: np.ndarray | None = None
+    last_seen_frame: np.ndarray | None = None
+    final_residual_mask: np.ndarray | None = None
+    full_frame_count = 0
+    residual_frame_count = 0
     cumulative_arrived = 0
 
     with h5py.File(stack_path, "r") as handle:
@@ -301,14 +329,30 @@ def analyze_stack(
             height, width = mask.shape
             if toa_frame is None:
                 toa_frame = np.zeros(mask.shape, dtype=np.int32)
+                full_seen_count = np.zeros(mask.shape, dtype=np.int32)
+                residual_seen_count = np.zeros(mask.shape, dtype=np.int32)
+                last_seen_frame = np.zeros(mask.shape, dtype=np.int32)
+                final_residual_mask = np.zeros(mask.shape, dtype=bool)
             elif toa_frame.shape != mask.shape:
                 raise ValueError(f"Mask shape changed within stack: {mask.shape} vs {toa_frame.shape}")
+            assert full_seen_count is not None
+            assert residual_seen_count is not None
+            assert last_seen_frame is not None
+            assert final_residual_mask is not None
 
             new_arrivals = (toa_frame == 0) & mask
             new_count = int(new_arrivals.sum())
             if new_count:
                 toa_frame[new_arrivals] = frame_index
                 cumulative_arrived += new_count
+            last_seen_frame[mask] = frame_index
+            if role == "full_napl":
+                full_seen_count += mask.astype(np.int32)
+                full_frame_count += 1
+            elif role == "residual":
+                residual_seen_count += mask.astype(np.int32)
+                final_residual_mask = mask.copy()
+                residual_frame_count += 1
             time_row = timeline.get(label, {})
             time_min = finite_or_nan(time_row.get("Time_min"))
             if math.isfinite(time_min):
@@ -385,22 +429,54 @@ def analyze_stack(
 
     if toa_frame is None:
         raise ValueError("No mask frames were analyzed.")
+    assert full_seen_count is not None
+    assert residual_seen_count is not None
+    assert last_seen_frame is not None
+    assert final_residual_mask is not None
 
     toa_path = out_dir / "toa_frame_index.npy"
     out_dir.mkdir(parents=True, exist_ok=True)
     np.save(toa_path, toa_frame)
     toa_x_rows = build_toa_x_rows(toa_frame, first_time_by_frame)
+    phase_outputs = save_phase_maps(
+        out_dir,
+        full_seen_count=full_seen_count,
+        residual_seen_count=residual_seen_count,
+        last_seen_frame=last_seen_frame,
+        final_residual_mask=final_residual_mask,
+        full_frame_count=full_frame_count,
+        residual_frame_count=residual_frame_count,
+    )
+    with h5py.File(stack_path, "r") as handle:
+        dataset = handle[dataset_name]
+        phase_rows = build_phase_timeseries_rows(
+            dataset,
+            manifest_rows,
+            timeline,
+            full_seen_count=full_seen_count,
+        )
     write_csv(out_dir / "mask_stack_analysis_timeseries.csv", mask_rows, MASK_TIMESERIES_FIELDS)
     write_csv(out_dir / "toa_x_summary.csv", toa_x_rows, TOA_X_FIELDS)
+    write_csv(out_dir / "phase_mask_timeseries.csv", phase_rows, PHASE_TIMESERIES_FIELDS)
 
     breakthrough = breakthrough_summary(
         mask_rows,
         leading_front_breakthrough_fraction=leading_front_breakthrough_fraction,
     )
+    phase = phase_summary(
+        full_seen_count=full_seen_count,
+        residual_seen_count=residual_seen_count,
+        final_residual_mask=final_residual_mask,
+        full_frame_count=full_frame_count,
+        residual_frame_count=residual_frame_count,
+    )
     return {
         "mask_timeseries_rows": len(mask_rows),
         "toa_frame_index_npy": str(toa_path),
         "toa_x_summary_rows": len(toa_x_rows),
+        "phase_mask_timeseries_rows": len(phase_rows),
+        "phase_outputs": phase_outputs,
+        "phase_aware": phase,
         "breakthrough": breakthrough,
         "first_label_by_frame": first_label_by_frame,
     }
@@ -424,6 +500,166 @@ def build_toa_x_rows(toa_frame: np.ndarray, first_time_by_frame: dict[int, float
                 "p90_arrival_frame_index": percentile(arrived, 90) if arrived.size else math.nan,
             }
         )
+    return rows
+
+
+def finite_stats(values: np.ndarray) -> dict[str, float]:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return {"p10": math.nan, "p50": math.nan, "p90": math.nan, "mean": math.nan}
+    return {
+        "p10": float(np.percentile(arr, 10)),
+        "p50": float(np.percentile(arr, 50)),
+        "p90": float(np.percentile(arr, 90)),
+        "mean": float(np.mean(arr)),
+    }
+
+
+def save_phase_maps(
+    out_dir: Path,
+    *,
+    full_seen_count: np.ndarray,
+    residual_seen_count: np.ndarray,
+    last_seen_frame: np.ndarray,
+    final_residual_mask: np.ndarray,
+    full_frame_count: int,
+    residual_frame_count: int,
+) -> dict[str, str]:
+    full_baseline = full_seen_count > 0
+    residual_union = residual_seen_count > 0
+    retained_final = full_baseline & final_residual_mask
+    transient_residual = full_baseline & residual_union & ~final_residual_mask
+    depleted_before_residual = full_baseline & ~residual_union
+    new_outside_full = (~full_baseline) & residual_union
+
+    retention_class = np.zeros(full_baseline.shape, dtype=np.uint8)
+    retention_class[depleted_before_residual] = 1
+    retention_class[transient_residual] = 2
+    retention_class[retained_final] = 3
+    retention_class[new_outside_full] = 4
+
+    full_frequency = (
+        full_seen_count.astype(np.float32) / float(full_frame_count)
+        if full_frame_count
+        else np.zeros(full_seen_count.shape, dtype=np.float32)
+    )
+    residual_frequency = (
+        residual_seen_count.astype(np.float32) / float(residual_frame_count)
+        if residual_frame_count
+        else np.zeros(residual_seen_count.shape, dtype=np.float32)
+    )
+    outputs = {
+        "full_baseline_union_mask_npy": out_dir / "full_baseline_union_mask.npy",
+        "full_baseline_frequency_npy": out_dir / "full_baseline_frequency.npy",
+        "residual_frequency_npy": out_dir / "residual_frequency.npy",
+        "residual_persistence_count_npy": out_dir / "residual_persistence_count.npy",
+        "last_seen_frame_index_npy": out_dir / "last_seen_frame_index.npy",
+        "final_residual_mask_npy": out_dir / "final_residual_mask.npy",
+        "phase_retention_class_npy": out_dir / "phase_retention_class.npy",
+    }
+    np.save(outputs["full_baseline_union_mask_npy"], full_baseline.astype(np.uint8))
+    np.save(outputs["full_baseline_frequency_npy"], full_frequency)
+    np.save(outputs["residual_frequency_npy"], residual_frequency)
+    np.save(outputs["residual_persistence_count_npy"], residual_seen_count.astype(np.int32))
+    np.save(outputs["last_seen_frame_index_npy"], last_seen_frame.astype(np.int32))
+    np.save(outputs["final_residual_mask_npy"], final_residual_mask.astype(np.uint8))
+    np.save(outputs["phase_retention_class_npy"], retention_class)
+    return {key: str(value) for key, value in outputs.items()}
+
+
+def phase_summary(
+    *,
+    full_seen_count: np.ndarray,
+    residual_seen_count: np.ndarray,
+    final_residual_mask: np.ndarray,
+    full_frame_count: int,
+    residual_frame_count: int,
+) -> dict[str, Any]:
+    full_baseline = full_seen_count > 0
+    residual_union = residual_seen_count > 0
+    full_area = int(full_baseline.sum())
+    residual_union_area = int(residual_union.sum())
+    final_area = int(final_residual_mask.sum())
+    retained_final = full_baseline & final_residual_mask
+    transient_residual = full_baseline & residual_union & ~final_residual_mask
+    depleted_before_residual = full_baseline & ~residual_union
+    new_outside_full = (~full_baseline) & residual_union
+    frequency_values = residual_seen_count[full_baseline].astype(float) / float(residual_frame_count) if residual_frame_count and full_area else np.array([], dtype=float)
+    count_values = residual_seen_count[full_baseline].astype(float) if full_area else np.array([], dtype=float)
+    frequency_stats = finite_stats(frequency_values)
+    count_stats = finite_stats(count_values)
+    return {
+        "full_frame_count": full_frame_count,
+        "residual_frame_count": residual_frame_count,
+        "full_baseline_area_px": full_area,
+        "residual_union_area_px": residual_union_area,
+        "residual_union_fraction_of_full": safe_fraction(float((residual_union & full_baseline).sum()), float(full_area)),
+        "new_outside_full_area_px": int(new_outside_full.sum()),
+        "new_outside_full_fraction_of_full": safe_fraction(float(new_outside_full.sum()), float(full_area)),
+        "final_residual_area_px": final_area,
+        "final_residual_retained_from_full_px": int(retained_final.sum()),
+        "final_residual_retained_from_full_fraction": safe_fraction(float(retained_final.sum()), float(full_area)),
+        "transient_residual_from_full_px": int(transient_residual.sum()),
+        "transient_residual_from_full_fraction": safe_fraction(float(transient_residual.sum()), float(full_area)),
+        "depleted_before_residual_px": int(depleted_before_residual.sum()),
+        "depleted_before_residual_fraction": safe_fraction(float(depleted_before_residual.sum()), float(full_area)),
+        "residual_persistence_frequency_p10": frequency_stats["p10"],
+        "residual_persistence_frequency_p50": frequency_stats["p50"],
+        "residual_persistence_frequency_p90": frequency_stats["p90"],
+        "residual_persistence_frequency_mean": frequency_stats["mean"],
+        "residual_persistence_count_p10": count_stats["p10"],
+        "residual_persistence_count_p50": count_stats["p50"],
+        "residual_persistence_count_p90": count_stats["p90"],
+        "residual_persistence_count_mean": count_stats["mean"],
+    }
+
+
+def build_phase_timeseries_rows(
+    dataset: h5py.Dataset,
+    manifest_rows: list[dict[str, str]],
+    timeline: dict[str, dict[str, str]],
+    *,
+    full_seen_count: np.ndarray,
+) -> list[dict[str, Any]]:
+    full_baseline = full_seen_count > 0
+    full_area = int(full_baseline.sum())
+    residual_cumulative_union = np.zeros(full_baseline.shape, dtype=bool)
+    rows: list[dict[str, Any]] = []
+    for manifest_row in manifest_rows:
+        frame_index = int_value(manifest_row["frame_index"])
+        label = manifest_row["label"]
+        role = manifest_row["role"]
+        mask = aligned_mask(dataset, manifest_row)
+        if mask.shape != full_baseline.shape:
+            raise ValueError(f"Mask shape changed within stack: {mask.shape} vs {full_baseline.shape}")
+        if role == "residual":
+            residual_cumulative_union |= mask
+
+        current_area = int(mask.sum())
+        retained = int((mask & full_baseline).sum())
+        depleted = full_area - retained
+        new_outside = int((mask & ~full_baseline).sum())
+        cumulative_retained = int((residual_cumulative_union & full_baseline).sum())
+        row = {
+            **time_fields(label, frame_index, timeline),
+            "role": role,
+            "mask_grid": manifest_row["mask_grid"],
+            "processing_scale_factor": finite_or_nan(manifest_row.get("processing_scale_factor")),
+            "full_baseline_area_px": full_area,
+            "current_mask_area_px": current_area,
+            "current_mask_fraction_of_full_baseline": safe_fraction(float(current_area), float(full_area)),
+            "retained_from_full_px": retained,
+            "retained_from_full_fraction": safe_fraction(float(retained), float(full_area)),
+            "depleted_from_full_px": depleted,
+            "depleted_from_full_fraction": safe_fraction(float(depleted), float(full_area)),
+            "new_outside_full_px": new_outside,
+            "new_outside_full_fraction": safe_fraction(float(new_outside), float(full_area)),
+            "residual_cumulative_union_px": cumulative_retained if role == "residual" else math.nan,
+            "residual_cumulative_union_fraction_of_full": safe_fraction(float(cumulative_retained), float(full_area)) if role == "residual" else math.nan,
+            "phase_is_residual": role == "residual",
+        }
+        rows.append(row)
     return rows
 
 
@@ -628,13 +864,18 @@ def build_summary(
         "mask_stack_analysis_timeseries_csv": str(out_dir / "mask_stack_analysis_timeseries.csv"),
         "toa_x_summary_csv": str(out_dir / "toa_x_summary.csv"),
         "toa_frame_index_npy": stack_summary["toa_frame_index_npy"],
+        "phase_mask_timeseries_csv": str(out_dir / "phase_mask_timeseries.csv"),
         "blob_morphology_timeseries_csv": str(out_dir / "blob_morphology_timeseries.csv"),
         "mask_stack_analysis_summary_json": str(out_dir / "mask_stack_analysis_summary.json"),
     }
+    outputs.update(stack_summary.get("phase_outputs", {}))
     readiness = {
         "mask_stack_ready": stack_summary["mask_timeseries_rows"] > 0,
         "toa_ready": stack_summary["toa_x_summary_rows"] > 0 and Path(stack_summary["toa_frame_index_npy"]).is_file(),
         "mask_front_fingering_ready": stack_summary["mask_timeseries_rows"] > 0,
+        "phase_aware_mask_ready": stack_summary["phase_mask_timeseries_rows"] > 0
+        and stack_summary.get("phase_aware", {}).get("full_baseline_area_px", 0) > 0
+        and stack_summary.get("phase_aware", {}).get("residual_frame_count", 0) > 0,
         "blob_detail_distribution_ready": blob_summary["blob_detail_frames_with_rows"] > 0,
     }
     return {
@@ -649,15 +890,19 @@ def build_summary(
         "row_counts": {
             "mask_stack_analysis_timeseries": stack_summary["mask_timeseries_rows"],
             "toa_x_summary": stack_summary["toa_x_summary_rows"],
+            "phase_mask_timeseries": stack_summary["phase_mask_timeseries_rows"],
             "blob_morphology_timeseries": blob_summary["blob_morphology_rows"],
             "blob_detail_frames_with_rows": blob_summary["blob_detail_frames_with_rows"],
         },
         "readiness": readiness,
         "breakthrough": stack_summary["breakthrough"],
+        "phase_aware": stack_summary["phase_aware"],
         "semantics": {
             "TOA": "pixel-level first frame index from C2 red_mask_stack.h5; 0 in the .npy map means never arrived",
             "leading_front_fraction": "rightmost active C2 red-mask column normalized by processing-grid width",
             "finger_count_proxy": "contiguous active row segments within the current leading-front band; mask-stack derived, not pore-graph fingering",
+            "phase_aware": "full-NAPL union defines the baseline; residual metrics report retained, depleted, transient, and new-outside-full mask support",
+            "phase_retention_class": "0 background/not-full-baseline, 1 full baseline absent in residual, 2 residual transient but absent final, 3 retained in final residual, 4 residual outside full baseline",
             "AreaGini": "per-frame inequality of C2 per-blob Area_processing_px2 distribution",
         },
     }

@@ -117,8 +117,14 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
     assert summary["readiness"]["mask_stack_ready"] is True
     assert summary["readiness"]["toa_ready"] is True
     assert summary["readiness"]["mask_front_fingering_ready"] is True
+    assert summary["readiness"]["phase_aware_mask_ready"] is True
     assert summary["readiness"]["blob_detail_distribution_ready"] is True
+    assert summary["phase_aware"]["full_baseline_area_px"] == 3
+    assert summary["phase_aware"]["final_residual_retained_from_full_fraction"] == 1.0
     assert (out_dir / "toa_frame_index.npy").is_file()
+    assert (out_dir / "full_baseline_union_mask.npy").is_file()
+    assert (out_dir / "residual_frequency.npy").is_file()
+    assert (out_dir / "phase_retention_class.npy").is_file()
     assert json.loads((out_dir / "mask_stack_analysis_summary.json").read_text())["status"] == "pass"
 
     mask_rows = read_csv(out_dir / "mask_stack_analysis_timeseries.csv")
@@ -131,6 +137,14 @@ def test_mask_stack_analysis_writes_toa_front_and_blob_metrics(tmp_path: Path) -
     assert toa.shape == (5, 4)
     assert int(toa[2, 0]) == 1
     assert int(toa[2, 3]) == 3
+    phase_rows = read_csv(out_dir / "phase_mask_timeseries.csv")
+    assert len(phase_rows) == 3
+    assert phase_rows[-1]["retained_from_full_fraction"] == "1"
+    assert phase_rows[-1]["new_outside_full_px"] == "9"
+
+    retention_class = np.load(out_dir / "phase_retention_class.npy")
+    assert int(retention_class[2, 0]) == 3
+    assert int(retention_class[2, 3]) == 4
 
     blob_rows = read_csv(out_dir / "blob_morphology_timeseries.csv")
     by_label = {row["label"]: row for row in blob_rows}
