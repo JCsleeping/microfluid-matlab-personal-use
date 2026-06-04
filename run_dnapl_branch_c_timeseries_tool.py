@@ -15,7 +15,7 @@ from typing import Any
 REPO = Path(__file__).resolve().parent
 DEFAULT_CONFIG = REPO / "configs" / "a1_1bo_6ul_branch_c_timeseries.json"
 DEFAULT_STEPS = ("manifest", "cache", "matlab", "segpilot", "segmorph", "validate")
-STEPS = DEFAULT_STEPS + ("timeline", "residual", "analysis")
+STEPS = DEFAULT_STEPS + ("timeline", "residual", "maskanalysis", "analysis")
 SEGMORPH_INTERFACE_COLUMNS = (
     "dnapl_water_length_px",
     "dnapl_solid_length_px",
@@ -169,6 +169,10 @@ def build_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, P
         resolve_path(args.residual_dir)
         or output_root / "residual_trapping_postprocess" / run_id
     )
+    mask_stack_analysis_dir = (
+        resolve_path(getattr(args, "mask_stack_analysis_dir", None))
+        or output_root / "mask_stack_analysis" / run_id
+    )
     analysis_dir = (
         resolve_path(args.analysis_dir)
         or output_root / f"analysis_package_{run_suffix or run_name}"
@@ -183,6 +187,7 @@ def build_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, P
         "segmentation_morphology_dir": segmentation_morphology_dir,
         "timeline_dir": timeline_dir,
         "residual_dir": residual_dir,
+        "mask_stack_analysis_dir": mask_stack_analysis_dir,
         "analysis_dir": analysis_dir,
         "run_config_dir": run_config_dir,
     }
@@ -741,6 +746,33 @@ def residual_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str
     return command
 
 
+def mask_stack_analysis_command(config: dict[str, Any], paths: dict[str, Path]) -> list[str]:
+    mask_config = config.get("mask_stack_analysis", {})
+    command = [
+        sys.executable,
+        str(REPO / "tools" / "mask_stack_analysis" / "analyze_c2_mask_stack.py"),
+        "--segmentation-dir",
+        str(paths["segmentation_morphology_dir"]),
+        "--timeline-dir",
+        str(paths["timeline_dir"]),
+        "--out-dir",
+        str(paths["mask_stack_analysis_dir"]),
+    ]
+    option_map = {
+        "h5_dataset": "--h5-dataset",
+        "column_active_fraction": "--column-active-fraction",
+        "outlet_band_fraction": "--outlet-band-fraction",
+        "outlet_active_fraction_threshold": "--outlet-active-fraction-threshold",
+        "outlet_active_min_px": "--outlet-active-min-px",
+        "leading_front_breakthrough_fraction": "--leading-front-breakthrough-fraction",
+        "finger_band_fraction": "--finger-band-fraction",
+    }
+    for key, flag in option_map.items():
+        if mask_config.get(key) is not None:
+            command.extend([flag, str(mask_config[key])])
+    return command
+
+
 def analysis_run_label(config: dict[str, Any]) -> str:
     analysis_config = config.get("analysis_package", {})
     if analysis_config.get("run_label"):
@@ -761,6 +793,8 @@ def analysis_command(
         str(paths["timeline_dir"]),
         "--residual-dir",
         str(paths["residual_dir"]),
+        "--mask-analysis-dir",
+        str(paths["mask_stack_analysis_dir"]),
         "--out-dir",
         str(paths["analysis_dir"]),
         "--run-label",
@@ -1860,7 +1894,7 @@ def main() -> None:
         default=None,
         help=(
             "Steps to run: manifest cache matlab segpilot segmorph validate "
-            "timeline residual analysis. "
+            "timeline residual maskanalysis analysis. "
             "Comma-separated values are also accepted."
         ),
     )
@@ -1874,6 +1908,7 @@ def main() -> None:
     parser.add_argument("--segmentation-morphology-dir", default=None)
     parser.add_argument("--timeline-dir", default=None)
     parser.add_argument("--residual-dir", default=None)
+    parser.add_argument("--mask-stack-analysis-dir", default=None)
     parser.add_argument("--analysis-dir", default=None)
     parser.add_argument("--analysis-run-label", default=None)
     parser.add_argument("--physical-metadata", default=None)
@@ -2041,6 +2076,8 @@ def main() -> None:
         run_command(timeline_command(config, paths), args.dry_run, commands)
     if "residual" in selected_steps:
         run_command(residual_command(config, paths), args.dry_run, commands)
+    if "maskanalysis" in selected_steps:
+        run_command(mask_stack_analysis_command(config, paths), args.dry_run, commands)
     if "analysis" in selected_steps:
         run_command(
             analysis_command(config, paths, physical_metadata_input),

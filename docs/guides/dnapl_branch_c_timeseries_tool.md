@@ -28,19 +28,45 @@ logic:
    `S_NAPL_color(x,frame)` for endpoint A and B.
 4. The runner validates row counts, label alignment, NaNs, and endpoint
    sensitivity, then writes `run_summary.json`.
-5. Optional `timeline`, `residual`, and `analysis` steps run the realtime
-   joiner, residual trapping proxy postprocess, and analysis-package builder.
+5. Optional `timeline`, `residual`, `maskanalysis`, and `analysis` steps run
+   the realtime joiner, residual trapping proxy postprocess, strict C2
+   mask-stack analysis, and analysis-package builder.
 
 Optional C2 segmentation/morphology stages use the same BasicPy HDF5 cache:
 
 ```text
 segpilot  -> MATLAB red-mask score/threshold sweep for pilot review
 segmorph  -> MATLAB locked-threshold red-mask morphology time series
+maskanalysis -> Python strict TOA/front/blob-detail postprocess from C2 HDF5/CSV
 ```
 
 These stages produce segmentation-derived 2D occupancy, morphology, and
 projected interface/contact metrics. They do not replace Branch C
 `S_NAPL_color`.
+
+`maskanalysis` reads the `segmorph` outputs directly:
+
+```text
+red_mask_stack.h5
+red_mask_stack_manifest.csv
+red_blob_detail_all_frames.csv
+```
+
+It writes pixel-level TOA/front and blob-detail distribution outputs without
+regenerating masks from RGB:
+
+```text
+mask_stack_analysis\<run_id>\mask_stack_analysis_timeseries.csv
+mask_stack_analysis\<run_id>\blob_morphology_timeseries.csv
+mask_stack_analysis\<run_id>\toa_x_summary.csv
+mask_stack_analysis\<run_id>\toa_frame_index.npy
+mask_stack_analysis\<run_id>\mask_stack_analysis_summary.json
+```
+
+`TOA` and front/fingering proxy fields are strict C2 mask-stack outputs, not
+x-zone color-index proxy crossings. `finger_count_proxy` counts contiguous
+active row segments in the current leading-front band; it is not yet a
+pore-graph tortuosity or branch-density analysis.
 
 C2 interface/contact fields are computed from the locked red DNAPL mask and the
 flow-domain mask, not approximated from blob perimeters:
@@ -78,6 +104,25 @@ B: water_ep_00_napl_01_1s   -> full_00_water_3s_2_p001
 
 When `expand_pages` is enabled, the manifest builder appends `_p001` to
 production NAPL endpoint labels unless the suffix is already present.
+
+Production role overrides may be limited to specific pages when a TIFF spans
+both calibration and transition frames. Use `page_start`/`page_end`, `pages`,
+or `page_ranges` on a `production_role_overrides` entry; pages outside the
+selector fall back to the default filename-derived role. For example, to mark
+only p001-p036 as full NAPL:
+
+```json
+{
+  "production_role_overrides": [
+    {
+      "file_name": "03 WATER 1 SECOND_2.tif",
+      "role": "full_napl",
+      "page_start": 1,
+      "page_end": 36
+    }
+  ]
+}
+```
 
 Default processing metadata:
 
@@ -145,7 +190,7 @@ rebuilt. If those outputs already exist and only the figure/report package needs
 rebuilding, run:
 
 ```powershell
-python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps analysis
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps maskanalysis analysis
 ```
 
 Custom postprocess output locations can be supplied with `--timeline-dir`,
@@ -587,7 +632,7 @@ with the mode-specific default run label. The package builder can still be run
 directly for diagnostics:
 
 ```powershell
-python tools\analysis_package\build_branch_c_analysis_package.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --residual-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585 --run-label "A1 1-BO 6uL full3585 Branch C/C2"
+python tools\analysis_package\build_branch_c_analysis_package.py --timeline-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\timeline_postprocess\a1_1bo_6ul_manual_roi_full3585 --residual-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\residual_trapping_postprocess\a1_1bo_6ul_manual_roi_full3585 --mask-analysis-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\mask_stack_analysis\a1_1bo_6ul_manual_roi_full3585 --out-dir outputs\standalone_branch_c_runs_20260601\A1_1BO_6UL_manual_roi\analysis_package_full3585 --run-label "A1 1-BO 6uL full3585 Branch C/C2"
 ```
 
 The package writes:
@@ -612,28 +657,32 @@ analysis_package_full3585\figures\08_S_color_norm_and_rate.png/svg
 analysis_package_full3585\figures\09_legacy_morphology_metrics.png/svg
 analysis_package_full3585\figures\10_proxy_architecture_stage.png/svg
 analysis_package_full3585\figures\11_qc_alignment_summary.png/svg
+analysis_package_full3585\figures\12_mask_stack_toa_fingering.png/svg
 ```
 
 The analysis package is read-only with respect to the source Branch C/C2 CSVs.
 Its provenance JSON records input paths, output files, row counts, unmatched
 label counts, current Git SHA, figure style, summary metrics, derived
 parameters, and `analysis_policy_version =
-branch_c_proxy_alignment_v1`. Figures use the same compact Nature-style conventions as
+branch_c_proxy_alignment_v3_recovered_metadata_gate`. Figures use the same compact Nature-style conventions as
 `visualization/plot_timeseries.py`: Wong colors, white-face markers, hidden
 top/right spines, light major grid, 600 dpi PNG output, and editable SVG text.
 
 `analysis_parameter_summary.csv` records run duration, full/residual phase
 counts, endpoint A/B sensitivity, red-mask occupancy, L_ow and solid-contact
-metrics, residual blob morphology, x-zone extent proxies, and outlet-zone
-front timing proxies. These are operational descriptors derived from existing
-Branch C/C2 CSVs; they do not upgrade `S_NAPL_color` to endpoint-validated
-physical Sn. The package records both all-sequence outlet-zone first-active
-times and residual-role-only first-active times; the all-sequence value can be
-0 min when the full-NAPL phase is already active at the outlet.
+metrics, residual blob morphology, x-zone extent proxies, mask-stack
+TOA/front/finger proxies, and blob-detail distribution statistics such as
+AreaGini, ShapeEntropy, AspectRatio, Solidity, and EulerNumber. These are
+operational descriptors derived from existing Branch C/C2 outputs; they do not
+upgrade `S_NAPL_color` to endpoint-validated physical Sn. The package records
+both all-sequence outlet-zone first-active times and residual-role-only
+first-active times; the all-sequence value can be 0 min when the full-NAPL
+phase is already active at the outlet.
 
 `analysis_timeseries_derived.csv` is the main researcher-facing derived table.
 It joins Branch C color-index saturation, endpoint A/B sensitivity, C2 red-mask
-occupancy, blob morphology, interface/contact metrics, x-zone proxies, rate
+occupancy, blob morphology, interface/contact metrics, x-zone proxies,
+mask-stack TOA/front/fingering proxies, blob-detail distribution metrics, rate
 proxies, and stage/architecture proxy labels by `label`. The compatibility
 columns `Sn`, `SnNorm`, `DissolutionRate_per_min`, and related legacy names are
 operational `S_NAPL_color` proxies, not endpoint-validated physical saturation.
@@ -672,7 +721,22 @@ toa_ready = false
 ```
 
 Those fields stay false until the required physical metadata or mask-stack
-inputs are supplied. `processing_scale_factor = 3` is recorded separately as
+inputs are supplied. After `maskanalysis` passes, the package can report:
+
+```text
+mask_stack_ready = true
+toa_ready = true
+mask_front_fingering_ready = true
+true_fingering_ready = true
+blob_detail_distribution_ready = true
+pore_graph_fingering_ready = false
+```
+
+Here `true_fingering_ready` means strict C2 mask-stack front/finger proxy
+metrics are available. Pore-graph fingering, tortuosity, and branch-density
+metrics remain gated by a separate graph/skeleton analysis.
+
+`processing_scale_factor = 3` is recorded separately as
 processing-grid provenance, and physical length conversion uses
 `processing_pixel_size_um`, not native `pixel_size_um`, when the source length
 is a processing-grid pixel count. Missing physical quantities are written as

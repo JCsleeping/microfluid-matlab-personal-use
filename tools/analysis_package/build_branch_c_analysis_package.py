@@ -56,6 +56,13 @@ RESIDUAL_FILES = {
     "summary_json": "residual_trapping_summary.json",
 }
 
+MASK_ANALYSIS_FILES = {
+    "timeseries": "mask_stack_analysis_timeseries.csv",
+    "blob_morphology": "blob_morphology_timeseries.csv",
+    "toa_x": "toa_x_summary.csv",
+    "summary_json": "mask_stack_analysis_summary.json",
+}
+
 
 @dataclass(frozen=True)
 class PackageInputs:
@@ -64,6 +71,7 @@ class PackageInputs:
     out_dir: Path
     run_label: str
     physical_metadata_path: Path | None = None
+    mask_analysis_dir: Path | None = None
 
 
 POSITIVE_METADATA_FIELDS = {
@@ -210,6 +218,18 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def read_optional_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    return read_csv_rows(path)
+
+
+def read_optional_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def require_columns(rows: list[dict[str, str]], columns: list[str], source: str) -> None:
     available = set(rows[0])
     missing = [column for column in columns if column not in available]
@@ -288,6 +308,24 @@ def time_range(rows: list[dict[str, str]]) -> tuple[float, float, float]:
     return min(values), max(values), max(values) - min(values)
 
 
+def load_mask_analysis(mask_analysis_dir: Path | None) -> dict[str, Any]:
+    if mask_analysis_dir is None:
+        return {
+            "dir": "",
+            "timeseries": [],
+            "blob_morphology": [],
+            "toa_x": [],
+            "summary_json": {},
+        }
+    return {
+        "dir": str(mask_analysis_dir),
+        "timeseries": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["timeseries"]),
+        "blob_morphology": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["blob_morphology"]),
+        "toa_x": read_optional_csv_rows(mask_analysis_dir / MASK_ANALYSIS_FILES["toa_x"]),
+        "summary_json": read_optional_json(mask_analysis_dir / MASK_ANALYSIS_FILES["summary_json"]),
+    }
+
+
 def load_inputs(inputs: PackageInputs) -> dict[str, Any]:
     timeline = {
         key: read_csv_rows(inputs.timeline_dir / filename)
@@ -347,6 +385,7 @@ def load_inputs(inputs: PackageInputs) -> dict[str, Any]:
         "residual": residual,
         "summary_json": summary_json,
         "physical_metadata": physical_metadata,
+        "mask_analysis": load_mask_analysis(inputs.mask_analysis_dir),
     }
 
 
@@ -717,6 +756,33 @@ def plot_qc_alignment_summary(qc_rows: list[dict[str, object]], figures_dir: Pat
     return save_figure(fig, figures_dir, "11_qc_alignment_summary")
 
 
+def plot_mask_stack_toa_fingering(derived_rows: list[dict[str, object]], figures_dir: Path) -> dict[str, str]:
+    fig, axes = plt.subplots(3, 1, figsize=TALL_SIZE, sharex=True)
+    x = derived_series(derived_rows, "Time_min")
+    specs = [
+        (axes[0], "mask_stack_leading_front_fraction", "leading front", WONG["blue"], "front fraction"),
+        (axes[1], "mask_stack_front_roughness_px", "front roughness", WONG["orange"], "roughness (px)"),
+        (axes[2], "mask_stack_finger_count_proxy", "finger count proxy", WONG["bluish_green"], "count"),
+    ]
+    for ax, column, label, color, ylabel in specs:
+        ax.plot(
+            x,
+            derived_series(derived_rows, column),
+            color=color,
+            linewidth=1.2,
+            marker=MARKER,
+            markersize=MARKER_SIZE,
+            markerfacecolor="white",
+            markeredgecolor=color,
+            markevery=markevery([{} for _ in derived_rows]),
+            label=label,
+        )
+        ax.set_ylabel(ylabel)
+        style_axes(ax)
+    axes[-1].set_xlabel("Time (min)")
+    return save_figure(fig, figures_dir, "12_mask_stack_toa_fingering")
+
+
 def create_figures(
     data: dict[str, Any],
     out_dir: Path,
@@ -740,6 +806,7 @@ def create_figures(
         "legacy_morphology_metrics": plot_legacy_morphology(derived_rows, figures_dir),
         "proxy_architecture_stage": plot_proxy_architecture_stage(derived_rows, figures_dir),
         "qc_alignment_summary": plot_qc_alignment_summary(qc_rows, figures_dir),
+        "mask_stack_toa_fingering": plot_mask_stack_toa_fingering(derived_rows, figures_dir),
     }
 
 
@@ -781,6 +848,15 @@ def first_time_where(rows: list[dict[str, str]], column: str, threshold: float) 
     return min(candidates) if candidates else math.nan
 
 
+def first_time_truthy(rows: list[dict[str, str]], column: str) -> float:
+    candidates = []
+    for row in rows:
+        time_value = number(row, "Time_min")
+        if truthy(row.get(column, "")) and math.isfinite(time_value):
+            candidates.append(time_value)
+    return min(candidates) if candidates else math.nan
+
+
 def final_column(rows: list[dict[str, str]], column: str) -> float:
     finite_rows = [row for row in rows if math.isfinite(number(row, "Time_min"))]
     if not finite_rows:
@@ -803,6 +879,7 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     timeline = data["timeline"]
     summary_json = data["summary_json"]
     physical_metadata = data.get("physical_metadata", {})
+    mask_analysis = data.get("mask_analysis", {})
     primary = timeline["primary"]
     comparison = timeline["comparison"]
     xzone = timeline["xzone"]
@@ -819,6 +896,10 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     residual_mask = rows_by_role(mask, "residual")
     full_blob = rows_by_role(blob, "full_napl")
     residual_blob = rows_by_role(blob, "residual")
+    mask_stack_rows = mask_analysis.get("timeseries", [])
+    blob_morphology_rows = mask_analysis.get("blob_morphology", [])
+    residual_mask_stack = rows_by_role(mask_stack_rows, "residual")
+    residual_blob_morphology = rows_by_role(blob_morphology_rows, "residual")
 
     rows: list[dict[str, str]] = []
     start_min, end_min, duration_min = time_range(primary)
@@ -905,6 +986,20 @@ def compute_parameter_summary(data: dict[str, Any]) -> list[dict[str, str]]:
     add_parameter(rows, "front_proxy", "residual_first_outlet_zone_ge_0p2_since_residual_start_min", residual_first_02 - residual_start_min, "min")
     add_parameter(rows, "front_proxy", "residual_first_outlet_zone_ge_0p5_since_residual_start_min", residual_first_05 - residual_start_min, "min")
     add_parameter(rows, "front_proxy", "max_napl_extent_fraction_ge_0p2", max_column(xzone, "napl_extent_fraction_ge_0p2"), "fraction")
+
+    add_parameter(rows, "mask_stack", "mask_stack_analysis_rows", len(mask_stack_rows), "frames")
+    add_parameter(rows, "mask_stack", "residual_leading_front_fraction_median", median_column(residual_mask_stack, "leading_front_fraction"), "fraction")
+    add_parameter(rows, "mask_stack", "residual_front_roughness_median_px", median_column(residual_mask_stack, "front_roughness_px"), "px")
+    add_parameter(rows, "mask_stack", "residual_finger_count_proxy_median", median_column(residual_mask_stack, "finger_count_proxy"), "count")
+    add_parameter(rows, "mask_stack", "final_toa_cumulative_arrived_fraction", final_column(mask_stack_rows, "toa_cumulative_arrived_fraction"), "fraction")
+    add_parameter(rows, "mask_stack", "first_outlet_band_breakthrough_time_min", first_time_truthy(mask_stack_rows, "outlet_band_breakthrough"), "min", "first C2 mask-stack outlet-band breakthrough")
+
+    add_parameter(rows, "blob_detail", "blob_morphology_rows", len(blob_morphology_rows), "frames")
+    add_parameter(rows, "blob_detail", "residual_AreaGini_median", median_column(residual_blob_morphology, "AreaGini"), "unitless")
+    add_parameter(rows, "blob_detail", "residual_ShapeEntropy_area_median", median_column(residual_blob_morphology, "ShapeEntropy_area"), "unitless")
+    add_parameter(rows, "blob_detail", "residual_AspectRatio_median", median_column(residual_blob_morphology, "AspectRatio_median"), "unitless")
+    add_parameter(rows, "blob_detail", "residual_Solidity_median", median_column(residual_blob_morphology, "Solidity_median"), "unitless")
+    add_parameter(rows, "blob_detail", "residual_EulerNumber_median", median_column(residual_blob_morphology, "EulerNumber_median"), "unitless")
 
     add_parameter(rows, "semantics", "figure_style", FIGURE_STYLE, "", "matched to visualization/plot_timeseries.py Nature-style defaults")
     return rows
@@ -1032,6 +1127,8 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
     mask_by_label = row_by_label(timeline["mask"])
     blob_by_label = row_by_label(timeline["blob"])
     residual_by_label = row_by_label(data["residual"]["timeseries"])
+    mask_stack_by_label = row_by_label(data.get("mask_analysis", {}).get("timeseries", []))
+    blob_morphology_by_label = row_by_label(data.get("mask_analysis", {}).get("blob_morphology", []))
     baseline = normalization_baseline(primary, "S_NAPL_color")
     if not math.isfinite(baseline) or baseline == 0:
         baseline = 1.0
@@ -1054,6 +1151,8 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
         mask = mask_by_label.get(label, {})
         blob = blob_by_label.get(label, {})
         residual = residual_by_label.get(label, {})
+        mask_stack = mask_stack_by_label.get(label, {})
+        blob_morphology = blob_morphology_by_label.get(label, {})
 
         s_a = number(comparison, "S_NAPL_color_A")
         if not math.isfinite(s_a):
@@ -1165,6 +1264,34 @@ def compute_derived_timeseries(data: dict[str, Any]) -> list[dict[str, object]]:
             "InterfaceArea": finite_or_nan(mask, "InterfaceArea"),
             "solid_contact_fraction": finite_or_nan(mask, "solid_contact_fraction"),
             "a_i_2D_proxy": finite_or_nan(mask, "a_i_2D_proxy"),
+            "mask_stack_leading_front_x_px": finite_or_nan(mask_stack, "leading_front_x_px"),
+            "mask_stack_leading_front_fraction": finite_or_nan(mask_stack, "leading_front_fraction"),
+            "mask_stack_front_roughness_px": finite_or_nan(mask_stack, "front_roughness_px"),
+            "mask_stack_active_row_fraction": finite_or_nan(mask_stack, "active_row_fraction"),
+            "mask_stack_outlet_band_active_fraction": finite_or_nan(mask_stack, "outlet_band_active_fraction"),
+            "mask_stack_outlet_band_breakthrough": truthy(mask_stack.get("outlet_band_breakthrough", "")),
+            "mask_stack_finger_count_proxy": finite_or_nan(mask_stack, "finger_count_proxy"),
+            "mask_stack_toa_new_pixel_count": finite_or_nan(mask_stack, "toa_new_pixel_count"),
+            "mask_stack_toa_cumulative_arrived_fraction": finite_or_nan(mask_stack, "toa_cumulative_arrived_fraction"),
+            "mask_stack_area_delta_px": finite_or_nan(mask_stack, "mask_stack_area_delta_px"),
+            "AreaGini": finite_or_nan(blob_morphology, "AreaGini"),
+            "AreaEntropy": finite_or_nan(blob_morphology, "AreaEntropy"),
+            "ShapeEntropy_count": finite_or_nan(blob_morphology, "ShapeEntropy_count"),
+            "ShapeEntropy_area": finite_or_nan(blob_morphology, "ShapeEntropy_area"),
+            "AspectRatio_median": finite_or_nan(blob_morphology, "AspectRatio_median"),
+            "AspectRatio_p90": finite_or_nan(blob_morphology, "AspectRatio_p90"),
+            "AspectRatio_area_weighted_mean": finite_or_nan(blob_morphology, "AspectRatio_area_weighted_mean"),
+            "Solidity_median": finite_or_nan(blob_morphology, "Solidity_median"),
+            "Solidity_p10": finite_or_nan(blob_morphology, "Solidity_p10"),
+            "Solidity_area_weighted_mean": finite_or_nan(blob_morphology, "Solidity_area_weighted_mean"),
+            "EulerNumber_median": finite_or_nan(blob_morphology, "EulerNumber_median"),
+            "EulerNumber_mean": finite_or_nan(blob_morphology, "EulerNumber_mean"),
+            "EulerNumber_min": finite_or_nan(blob_morphology, "EulerNumber_min"),
+            "EulerHoleCount_sum": finite_or_nan(blob_morphology, "EulerHoleCount_sum"),
+            "TopologyType_droplet_area_fraction": finite_or_nan(blob_morphology, "TopologyType_droplet_area_fraction"),
+            "TopologyType_column_area_fraction": finite_or_nan(blob_morphology, "TopologyType_column_area_fraction"),
+            "TopologyType_cluster_area_fraction": finite_or_nan(blob_morphology, "TopologyType_cluster_area_fraction"),
+            "TopologyType_other_area_fraction": finite_or_nan(blob_morphology, "TopologyType_other_area_fraction"),
             "S_x_inlet": finite_or_nan(xzone, "S_x_inlet"),
             "S_x_mid": finite_or_nan(xzone, "S_x_mid"),
             "S_x_outlet": finite_or_nan(xzone, "S_x_outlet"),
@@ -1314,6 +1441,34 @@ DERIVED_FIELDNAMES = [
     "InterfaceArea",
     "solid_contact_fraction",
     "a_i_2D_proxy",
+    "mask_stack_leading_front_x_px",
+    "mask_stack_leading_front_fraction",
+    "mask_stack_front_roughness_px",
+    "mask_stack_active_row_fraction",
+    "mask_stack_outlet_band_active_fraction",
+    "mask_stack_outlet_band_breakthrough",
+    "mask_stack_finger_count_proxy",
+    "mask_stack_toa_new_pixel_count",
+    "mask_stack_toa_cumulative_arrived_fraction",
+    "mask_stack_area_delta_px",
+    "AreaGini",
+    "AreaEntropy",
+    "ShapeEntropy_count",
+    "ShapeEntropy_area",
+    "AspectRatio_median",
+    "AspectRatio_p90",
+    "AspectRatio_area_weighted_mean",
+    "Solidity_median",
+    "Solidity_p10",
+    "Solidity_area_weighted_mean",
+    "EulerNumber_median",
+    "EulerNumber_mean",
+    "EulerNumber_min",
+    "EulerHoleCount_sum",
+    "TopologyType_droplet_area_fraction",
+    "TopologyType_column_area_fraction",
+    "TopologyType_cluster_area_fraction",
+    "TopologyType_other_area_fraction",
     "S_x_inlet",
     "S_x_mid",
     "S_x_outlet",
@@ -1553,6 +1708,9 @@ def compute_qc_summary(
 ) -> list[dict[str, object]]:
     summary_json = data["summary_json"]
     physical_metadata = data.get("physical_metadata", {})
+    mask_analysis = data.get("mask_analysis", {})
+    mask_analysis_summary = mask_analysis.get("summary_json", {})
+    mask_readiness = mask_analysis_summary.get("readiness", {}) if isinstance(mask_analysis_summary, dict) else {}
     rows: list[dict[str, object]] = []
 
     def add(metric: str, value: object, units: str = "", notes: str = "") -> None:
@@ -1609,9 +1767,13 @@ def compute_qc_summary(
     add("pv_ready", pv_ready, "", "Requires trusted flow_rate_ul_min and pore_volume_ul.")
     add("capillary_number_ready", capillary_number_ready, "", "Requires trusted flow rate, channel width/depth, viscosity, and IFT.")
     add("mass_ready", False, "", "Missing mass calibration / MassDissolvedKg.")
-    add("mask_stack_ready", False, "", "Current package reads aggregate CSVs, not per-frame masks.")
-    add("true_fingering_ready", False, "", "Requires connected per-frame masks, not only x-zone color proxies.")
-    add("toa_ready", False, "", "Requires frame-level mask stack.")
+    add("mask_stack_ready", bool(mask_readiness.get("mask_stack_ready", False)), "", "True when C2 red_mask_stack.h5 has been analyzed.")
+    add("toa_ready", bool(mask_readiness.get("toa_ready", False)), "", "True when pixel-level TOA map and x-summary are available.")
+    add("mask_front_fingering_ready", bool(mask_readiness.get("mask_front_fingering_ready", False)), "", "True when mask-stack front roughness/finger proxy metrics are available.")
+    add("true_fingering_ready", bool(mask_readiness.get("mask_front_fingering_ready", False)), "", "Mask-stack fingering proxy is available; pore-graph fingering remains a separate validation step.")
+    add("blob_detail_distribution_ready", bool(mask_readiness.get("blob_detail_distribution_ready", False)), "", "True when per-blob C2 detail has been summarized by frame.")
+    add("pore_graph_fingering_ready", False, "", "Requires a pore graph or solid/core graph definition.")
+    add("mask_stack_analysis_status", mask_analysis_summary.get("status", "not_provided") if isinstance(mask_analysis_summary, dict) else "not_provided")
     add("rate_correlations_ready", legacy_plot_ready, "", "Proxy rate/structure columns are available and required plot fields are finite.")
     add("multi_experiment_ready", legacy_plot_ready, "", "Legacy adapter exposes finite standard comparison columns.")
     add("architecture_ready", True, "", "Only proxy architecture labels are available.")
@@ -1624,8 +1786,18 @@ def compute_qc_summary(
 QC_FIELDNAMES = ["metric", "value", "units", "notes"]
 
 
-def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list[dict[str, object]]:
+def make_alignment_rows(
+    physical_metadata: dict[str, Any] | None = None,
+    mask_analysis: dict[str, Any] | None = None,
+) -> list[dict[str, object]]:
     physical_metadata = physical_metadata or {}
+    mask_analysis = mask_analysis or {}
+    mask_summary = mask_analysis.get("summary_json", {})
+    mask_readiness = mask_summary.get("readiness", {}) if isinstance(mask_summary, dict) else {}
+    mask_stack_ready = bool(mask_readiness.get("mask_stack_ready", False))
+    toa_ready = bool(mask_readiness.get("toa_ready", False))
+    mask_fingering_ready = bool(mask_readiness.get("mask_front_fingering_ready", False))
+    blob_distribution_ready = bool(mask_readiness.get("blob_detail_distribution_ready", False))
     metadata_trusted = bool(physical_metadata.get("trusted", False))
     pixel_size_ready = metadata_trusted and math.isfinite(
         metadata_number(physical_metadata, "values", "processing_pixel_size_um")
@@ -1683,15 +1855,15 @@ def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list
     add("MaxBlobFlowFrac", "plot_timeseries.py", "MaxBlobFlowFrac_proxy", "aligned_proxy", "red_mask_area_fraction * MaxBlobFrac")
     add("ReqMedian/Mean/Std", "plot_timeseries.py", "Req_median/mean/std", "aligned", "equivalent-radius summary in pixels")
     add("MeanCircularity*", "compute_area_weighted_circularity.py", "mean_circularity and valid proxy", "partial_proxy", "frame-level circularity summary; no per-blob area-weighted recomputation", "missing per-blob detail for strict valid area-weighting", "provide blob_detail_all_frames.csv")
-    add("Area*", "analyze_blob_population_morphology.py", "red_mask_area_px/MeanBlobSize", "partial_proxy", "frame-level area and mean component size only", "missing per-blob area distribution", "provide blob_detail_all_frames.csv")
+    add("Area*", "analyze_blob_population_morphology.py", "red_mask_area_px/MeanBlobSize + blob_morphology_timeseries.csv", "aligned_blob_detail" if blob_distribution_ready else "partial_proxy", "frame-level area and per-blob area distribution summaries", "" if blob_distribution_ready else "missing per-blob area distribution", "run maskanalysis")
     add("EquivRadius*", "analyze_blob_population_morphology.py", "ReqMedian/Mean/Std", "aligned", "equivalent-radius summary in pixels")
-    add("Circularity2D*", "analyze_blob_population_morphology.py", "MeanCircularity", "partial_proxy", "frame-level mean circularity only", "missing per-blob valid/area-weighted variants", "provide blob_detail_all_frames.csv")
-    add("AspectRatio*", "analyze_blob_population_morphology.py", "", "not_computable", "aspect-ratio distribution", "requires per-blob major/minor axes", "provide blob_detail_all_frames.csv")
-    add("Solidity*", "analyze_blob_population_morphology.py", "", "not_computable", "solidity distribution", "requires per-blob convex area", "provide blob_detail_all_frames.csv")
-    add("EulerNumber*", "analyze_blob_population_morphology.py", "", "not_computable", "per-blob topology summary", "requires per-blob hole/topology detail", "provide blob_detail_all_frames.csv")
-    add("AreaGini", "analyze_blob_population_morphology.py", "", "not_computable", "blob area inequality", "requires per-blob area distribution", "provide blob_detail_all_frames.csv")
-    add("size_distribution_slope", "analyze_blob_population_morphology.py", "", "not_computable", "blob size-distribution slope", "requires per-blob area distribution", "provide blob_detail_all_frames.csv")
-    add("shape_entropy", "analyze_blob_population_morphology.py", "", "not_computable", "shape-distribution entropy", "requires per-blob shape distribution", "provide blob_detail_all_frames.csv")
+    add("Circularity2D*", "analyze_blob_population_morphology.py", "MeanCircularity", "partial_proxy", "frame-level mean circularity only", "missing strict circularity distribution", "extend maskanalysis to summarize per-blob Circularity if needed")
+    add("AspectRatio*", "analyze_blob_population_morphology.py", "blob_morphology_timeseries.AspectRatio_*", "aligned_blob_detail" if blob_distribution_ready else "not_computable", "aspect-ratio distribution from C2 per-blob detail", "" if blob_distribution_ready else "requires per-blob major/minor axes", "run maskanalysis")
+    add("Solidity*", "analyze_blob_population_morphology.py", "blob_morphology_timeseries.Solidity_*", "aligned_blob_detail" if blob_distribution_ready else "not_computable", "solidity distribution from C2 per-blob detail", "" if blob_distribution_ready else "requires per-blob convex area", "run maskanalysis")
+    add("EulerNumber*", "analyze_blob_population_morphology.py", "blob_morphology_timeseries.EulerNumber_*", "aligned_blob_detail" if blob_distribution_ready else "not_computable", "per-blob topology summary", "" if blob_distribution_ready else "requires per-blob hole/topology detail", "run maskanalysis")
+    add("AreaGini", "analyze_blob_population_morphology.py", "blob_morphology_timeseries.AreaGini", "aligned_blob_detail" if blob_distribution_ready else "not_computable", "blob area inequality", "" if blob_distribution_ready else "requires per-blob area distribution", "run maskanalysis")
+    add("size_distribution_slope", "analyze_blob_population_morphology.py", "", "not_computable", "blob size-distribution slope", "not implemented in maskanalysis v1", "add log-log distribution fit")
+    add("shape_entropy", "analyze_blob_population_morphology.py", "blob_morphology_timeseries.ShapeEntropy_*", "aligned_blob_detail" if blob_distribution_ready else "not_computable", "shape/topology-distribution entropy", "" if blob_distribution_ready else "requires per-blob shape distribution", "run maskanalysis")
     add("fracDroplets/Columns/Clusters", "plot_timeseries.py", "frac_droplets/columns/clusters", "aligned_proxy", "classification fractions copied from C2 summary")
     add("areaFrac*/countFrac*Valid", "plot_timeseries.py; analyze_blob_population_morphology.py", "area/count proxy copies", "partial_proxy", "valid variants masked by ValidStructure_proxy", "no per-blob area/count recomputation", "provide blob_detail_all_frames.csv")
     add("InterfaceArea", "utilities/build_solubilization_timeseries_table.m", "dnapl_water_length_px", "aligned_proxy", "legacy alias of L_ow projected length, not area", "", "processing_pixel_size_um for metre units")
@@ -1759,10 +1931,11 @@ def make_alignment_rows(physical_metadata: dict[str, Any] | None = None) -> list
     add("DissolutionRate_mass_kg_per_s", "plot_rate_correlations.py", "", "missing_metadata", "mass dissolution rate", "missing mass calibration", "provide mass calibration and time/PV basis")
     add("projected_interface_mass_flux", "plot_rate_correlations.py", "", "missing_metadata", "mass flux normalized by projected L_ow or area convention", "missing mass calibration and physical interface units", "provide mass calibration and pixel size/depth convention")
     add("MassTransferProxy_*", "plot_rate_correlations.py", "DissolutionRate_* with InterfaceArea/a_i_2D_proxy", "partial_proxy", "possible proxy correlations only", "not physical mass-transfer coefficient", "provide mass calibration, physical interface units, and flow metadata")
-    add("TOA", "utilities/generate_toa_map.m", "", "not_computable", "pixel-level time of arrival", "requires frame-level mask stack", "retain/export per-frame masks")
-    add("xzone_front_extent_proxy", "analysis/fingering", "x-zone extent proxy", "partial_proxy", "thresholded x-zone color-index front/extent proxy", "not graph fingering", "run fingering analysis on mask stack")
-    add("true_fingering", "analysis/fingering", "", "not_computable", "connected-mask fingering metrics", "requires frame-level connected masks and pore graph", "run fingering analysis on mask stack")
-    add("num_fingers/tau/branch_density/x_lead/front_width/A_invaded", "analysis/fingering", "", "not_computable", "true fingering/front geometry", "requires per-frame connected masks", "run fingering pipeline")
+    add("TOA", "utilities/generate_toa_map.m", "toa_frame_index.npy + toa_x_summary.csv", "aligned_mask_stack" if toa_ready else "not_computable", "pixel-level time of arrival from C2 red-mask stack", "" if toa_ready else "requires frame-level mask stack", "run maskanalysis")
+    add("xzone_front_extent_proxy", "analysis/fingering", "x-zone extent proxy", "partial_proxy", "thresholded x-zone color-index front/extent proxy", "not graph fingering", "run maskanalysis for strict mask front")
+    add("mask_stack_front", "analysis/fingering", "mask_stack_analysis_timeseries.leading_front_fraction/front_roughness_px", "aligned_mask_stack" if mask_stack_ready else "not_computable", "strict C2 mask-stack leading front and roughness", "" if mask_stack_ready else "requires frame-level mask stack", "run maskanalysis")
+    add("true_fingering", "analysis/fingering", "mask_stack_analysis_timeseries.finger_count_proxy", "aligned_mask_stack_proxy" if mask_fingering_ready else "not_computable", "mask-stack front-band finger-count proxy; pore-graph fingering remains separate", "" if mask_fingering_ready else "requires frame-level connected masks", "add pore graph for graph fingering")
+    add("num_fingers/tau/branch_density/x_lead/front_width/A_invaded", "analysis/fingering", "finger_count_proxy/leading_front_fraction/front_roughness_px", "partial_mask_stack" if mask_fingering_ready else "not_computable", "front and finger-count proxies only; tortuosity/branch density need graph analysis", "missing pore graph skeleton metrics", "add pore graph/skeleton fingering postprocess")
     return rows
 
 
@@ -1788,6 +1961,8 @@ def write_run_commands(inputs: PackageInputs, path: Path) -> None:
         f"--out-dir \"{inputs.out_dir}\" "
         f"--run-label \"{inputs.run_label}\""
     )
+    if inputs.mask_analysis_dir is not None:
+        command += f" --mask-analysis-dir \"{inputs.mask_analysis_dir}\""
     if inputs.physical_metadata_path is not None:
         command += f" --physical-metadata \"{inputs.physical_metadata_path}\""
     text = "\n".join(
@@ -1835,6 +2010,7 @@ def write_report(
         "",
         f"- timeline_dir: `{inputs.timeline_dir}`",
         f"- residual_dir: `{inputs.residual_dir}`",
+        f"- mask_analysis_dir: `{inputs.mask_analysis_dir or ''}`",
         f"- physical_metadata: `{inputs.physical_metadata_path or ''}`",
         "",
         "## Row Counts",
@@ -1865,6 +2041,8 @@ def write_report(
         "morphology",
         "xzone",
         "front_proxy",
+        "mask_stack",
+        "blob_detail",
     }
     for row in parameter_rows:
         if row["section"] in report_sections:
@@ -1899,6 +2077,8 @@ def write_report(
             "- `dnapl_water_length_px` is DNAPL-water projected interface length, L_ow.",
             "- `InterfaceArea` is a legacy alias of `dnapl_water_length_px`; it is not area.",
             "- `a_i_2D_proxy` is a 2D mask-derived proxy, not calibrated interfacial area.",
+            "- `TOA` and front/fingering proxy fields come from C2 `red_mask_stack.h5`, not x-zone color-index curves.",
+            "- `AreaGini`, `ShapeEntropy_*`, `AspectRatio_*`, `Solidity_*`, and `EulerNumber_*` come from C2 per-blob detail.",
             "- Physical-unit fields are emitted only when a trusted physical metadata manifest is supplied.",
             "- Current A1 Branch C/C2 processing records `processing_scale_factor = 3`; historical 2X preview notes are not the active processing-grid contract.",
             "",
@@ -1913,7 +2093,10 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
     derived_rows = compute_derived_timeseries(data)
     legacy_rows, legacy_nonfinite_count = make_legacy_rows(derived_rows)
     qc_rows = compute_qc_summary(data, derived_rows, legacy_rows, legacy_nonfinite_count)
-    alignment_rows = make_alignment_rows(data.get("physical_metadata", {}))
+    alignment_rows = make_alignment_rows(
+        data.get("physical_metadata", {}),
+        data.get("mask_analysis", {}),
+    )
     figures = create_figures(data, inputs.out_dir, derived_rows, qc_rows)
     parameter_rows = compute_parameter_summary(data)
     report_path = inputs.out_dir / "analysis_report.md"
@@ -1962,6 +2145,7 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
         "input_paths": {
             "timeline_dir": str(inputs.timeline_dir),
             "residual_dir": str(inputs.residual_dir),
+            "mask_analysis_dir": str(inputs.mask_analysis_dir or ""),
             "physical_metadata": str(inputs.physical_metadata_path or ""),
         },
         "outputs": {
@@ -1978,6 +2162,7 @@ def build_package(inputs: PackageInputs) -> dict[str, Any]:
         "missing_label_counts": summary_json.get("missing_label_counts", {}),
         "summary_metrics": summary_json.get("summary_metrics", {}),
         "physical_metadata": physical_metadata,
+        "mask_analysis": data.get("mask_analysis", {}).get("summary_json", {}),
         "derived_parameters": parameter_rows_to_dict(parameter_rows),
         "qc_summary": parameter_rows_to_dict(
             [{"section": "qc", "parameter": row["metric"], "value": format_value(row["value"])} for row in qc_rows]
@@ -1998,6 +2183,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeline-dir", type=Path, required=True)
     parser.add_argument("--residual-dir", type=Path, required=True)
+    parser.add_argument("--mask-analysis-dir", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--run-label", default="DNAPL Branch C full3585")
     parser.add_argument("--physical-metadata", type=Path, default=None)
@@ -2013,6 +2199,7 @@ def main() -> int:
             out_dir=args.out_dir,
             run_label=args.run_label,
             physical_metadata_path=args.physical_metadata,
+            mask_analysis_dir=args.mask_analysis_dir,
         )
     )
     print(f"ANALYSIS_PACKAGE {provenance['outputs']['provenance_json']}")

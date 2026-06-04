@@ -672,7 +672,7 @@ timeline rows = 3585
 residual_trapping_summary.status = pass
 residual timeseries rows = 3585
 analysis_package.status = pass
-analysis figures = 11 PNG + 11 SVG
+analysis figures = 11 PNG + 11 SVG (pre-maskanalysis package)
 analysis_timeseries_derived rows = 3585
 branch_c_legacy_plot_timeseries rows = 3585
 run_summary.commands = 3 postprocess commands
@@ -721,10 +721,11 @@ velocity_m_per_s
 capillary_number
 ```
 
-The package still does not infer physical Sn, mass-transfer coefficients, TOA,
-true fingering, or per-blob shape distributions from aggregate proxy CSVs.
-Those remain gated by endpoint audit, mass calibration, and per-frame mask/blob
-detail inputs.
+The package still does not infer physical Sn, mass-transfer coefficients,
+TOA, fingering, or per-blob shape distributions from aggregate proxy CSVs.
+TOA/front/blob-distribution outputs are unlocked only when `maskanalysis`
+consumes the per-frame C2 mask stack and blob-detail inputs. Physical Sn and
+mass-transfer quantities remain gated by endpoint audit and mass calibration.
 
 ## Usage Notes
 
@@ -744,4 +745,73 @@ After pilot validation passes, run the full series:
 
 ```powershell
 python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full
+```
+
+## 2026-06-04 Strict C2 Mask-Stack TOA / Fingering / Blob Detail Analysis
+
+Added the standalone `maskanalysis` runner step:
+
+```powershell
+python run_dnapl_branch_c_timeseries_tool.py --config configs\a1_1bo_6ul_branch_c_timeseries.json --mode full --steps maskanalysis analysis
+```
+
+The step calls:
+
+```text
+tools\mask_stack_analysis\analyze_c2_mask_stack.py
+```
+
+Inputs are the locked C2 segmentation artifacts:
+
+```text
+red_mask_stack.h5
+red_mask_stack_manifest.csv
+red_blob_detail_all_frames.csv
+```
+
+The strict postprocess writes:
+
+```text
+mask_stack_analysis_timeseries.csv
+blob_morphology_timeseries.csv
+toa_x_summary.csv
+toa_frame_index.npy
+mask_stack_analysis_summary.json
+```
+
+For the A1 full3585 chunked-blob-detail run:
+
+```text
+mask_stack_analysis.status = pass
+mask_stack_analysis_timeseries rows = 3585
+blob_morphology_timeseries rows = 3585
+toa_x_summary rows = 2391
+mask_stack_ready = true
+toa_ready = true
+mask_front_fingering_ready = true
+blob_detail_distribution_ready = true
+```
+
+The regenerated analysis package now reports:
+
+```text
+analysis_package.status = pass
+analysis figures = 12 PNG + 12 SVG
+analysis_timeseries_derived rows = 3585
+research_parameter_alignment.TOA = aligned_mask_stack
+research_parameter_alignment.mask_stack_front = aligned_mask_stack
+research_parameter_alignment.true_fingering = aligned_mask_stack_proxy
+research_parameter_alignment.AreaGini = aligned_blob_detail
+research_parameter_alignment.AspectRatio* = aligned_blob_detail
+research_parameter_alignment.Solidity* = aligned_blob_detail
+research_parameter_alignment.EulerNumber* = aligned_blob_detail
+research_parameter_alignment.shape_entropy = aligned_blob_detail
+```
+
+Semantic boundary:
+
+```text
+TOA/front/finger fields come from C2 red_mask_stack.h5, not x-zone color proxies.
+finger_count_proxy is a mask-stack leading-front-band proxy, not pore-graph branch density.
+pore_graph_fingering_ready remains false until graph/skeleton analysis is added.
 ```

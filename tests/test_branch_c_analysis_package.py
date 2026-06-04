@@ -36,7 +36,7 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert (out_dir / "research_parameter_alignment.csv").is_file()
     assert (out_dir / "analysis_package_provenance.json").is_file()
     figures = provenance["outputs"]["figures"]
-    assert len(figures) == 11
+    assert len(figures) == 12
     for outputs in figures.values():
         for path_value in outputs.values():
             path = Path(path_value)
@@ -92,6 +92,8 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert qc["pv_ready"] == "false"
     assert qc["pixel_size_ready"] == "false"
     assert qc["true_fingering_ready"] == "false"
+    assert qc["mask_stack_ready"] == "false"
+    assert qc["toa_ready"] == "false"
 
     alignment_rows = read_csv(out_dir / "research_parameter_alignment.csv")
     alignment = {row["parameter"]: row for row in alignment_rows}
@@ -103,6 +105,54 @@ def test_branch_c_analysis_package_writes_figures_report_and_provenance(tmp_path
     assert alignment["AreaGini"]["status"] == "not_computable"
     assert alignment["DissolutionRate_mass_kg_per_s"]["status"] == "missing_metadata"
     assert alignment["true_fingering"]["status"] == "not_computable"
+
+
+def test_branch_c_analysis_package_consumes_mask_stack_analysis(tmp_path: Path) -> None:
+    timeline_dir = tmp_path / "timeline"
+    residual_dir = tmp_path / "residual"
+    mask_analysis_dir = tmp_path / "mask_analysis"
+    out_dir = tmp_path / "analysis_package"
+    timeline_dir.mkdir()
+    residual_dir.mkdir()
+    mask_analysis_dir.mkdir()
+    write_timeline_inputs(timeline_dir)
+    write_residual_inputs(residual_dir)
+    write_mask_analysis_inputs(mask_analysis_dir)
+
+    provenance = build_package(
+        PackageInputs(
+            timeline_dir=timeline_dir,
+            residual_dir=residual_dir,
+            mask_analysis_dir=mask_analysis_dir,
+            out_dir=out_dir,
+            run_label="unit full3585 strict mask",
+        )
+    )
+
+    assert provenance["status"] == "pass"
+    assert provenance["mask_analysis"]["status"] == "pass"
+    assert provenance["figure_counts"]["figure_count"] == 12
+
+    derived_rows = read_csv(out_dir / "analysis_timeseries_derived.csv")
+    assert derived_rows[0]["mask_stack_leading_front_fraction"] == "0.1"
+    assert derived_rows[-1]["AreaGini"] == "0.4"
+    assert derived_rows[-1]["AspectRatio_median"] == "2.5"
+    assert derived_rows[-1]["EulerNumber_median"] == "-1"
+
+    qc_rows = read_csv(out_dir / "analysis_qc_summary.csv")
+    qc = {row["metric"]: row["value"] for row in qc_rows}
+    assert qc["mask_stack_ready"] == "true"
+    assert qc["toa_ready"] == "true"
+    assert qc["mask_front_fingering_ready"] == "true"
+    assert qc["true_fingering_ready"] == "true"
+    assert qc["blob_detail_distribution_ready"] == "true"
+
+    alignment_rows = read_csv(out_dir / "research_parameter_alignment.csv")
+    alignment = {row["parameter"]: row for row in alignment_rows}
+    assert alignment["TOA"]["status"] == "aligned_mask_stack"
+    assert alignment["AreaGini"]["status"] == "aligned_blob_detail"
+    assert alignment["AspectRatio*"]["status"] == "aligned_blob_detail"
+    assert alignment["true_fingering"]["status"] == "aligned_mask_stack_proxy"
 
 
 def test_branch_c_analysis_package_applies_trusted_physical_metadata(tmp_path: Path) -> None:
@@ -308,6 +358,103 @@ def write_residual_inputs(residual_dir: Path) -> None:
         },
     }
     (residual_dir / "residual_trapping_summary.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
+
+
+def write_mask_analysis_inputs(mask_analysis_dir: Path) -> None:
+    mask_rows = []
+    blob_rows = []
+    for idx, row in enumerate(base_rows()):
+        mask_rows.append(
+            {
+                **row,
+                "mask_grid": "processing_grid",
+                "processing_scale_factor": 3,
+                "mask_height": 5,
+                "mask_width": 10,
+                "red_mask_area_px_manifest": [45, 50, 10, 9][idx],
+                "red_mask_area_px_stack": [45, 50, 10, 9][idx],
+                "red_mask_area_fraction_stack": [0.45, 0.5, 0.1, 0.09][idx],
+                "mask_stack_area_delta_px": 0,
+                "active_x_min_px": 0,
+                "leading_front_x_px": [1, 4, 8, 9][idx],
+                "leading_front_fraction": [0.1, 0.4, 0.8, 0.9][idx],
+                "row_front_p10_px": [1, 2, 4, 5][idx],
+                "row_front_p50_px": [1, 3, 6, 7][idx],
+                "row_front_p90_px": [1, 4, 8, 9][idx],
+                "front_roughness_px": [0, 2, 4, 4][idx],
+                "active_row_fraction": 0.8,
+                "inlet_band_active_fraction": 0.2,
+                "outlet_band_active_fraction": [0.0, 0.0, 0.1, 0.2][idx],
+                "outlet_band_active_px": [0, 0, 3, 4][idx],
+                "outlet_band_breakthrough": idx >= 2,
+                "finger_count_proxy": [1, 1, 2, 3][idx],
+                "finger_band_width_px": 2,
+                "toa_new_pixel_count": [45, 5, 2, 1][idx],
+                "toa_cumulative_arrived_fraction": [0.45, 0.5, 0.52, 0.53][idx],
+            }
+        )
+        blob_rows.append(
+            {
+                **row,
+                "mask_grid": "processing_grid",
+                "processing_scale_factor": 3,
+                "blob_count_detail": [2, 2, 25, 30][idx],
+                "blob_area_total_px2": [45, 50, 10, 9][idx],
+                "blob_area_max_fraction": [0.9, 0.8, 0.3, 0.2][idx],
+                "blob_area_top3_fraction": [1.0, 1.0, 0.5, 0.4][idx],
+                "AreaGini": [0.1, 0.2, 0.3, 0.4][idx],
+                "AreaEntropy": [0.3, 0.4, 0.5, 0.6][idx],
+                "AspectRatio_median": [1.1, 1.2, 2.0, 2.5][idx],
+                "AspectRatio_p90": [1.5, 1.6, 3.0, 3.5][idx],
+                "AspectRatio_area_weighted_mean": [1.2, 1.3, 2.2, 2.7][idx],
+                "Solidity_median": [0.9, 0.88, 0.7, 0.6][idx],
+                "Solidity_p10": [0.8, 0.78, 0.5, 0.4][idx],
+                "Solidity_area_weighted_mean": [0.91, 0.89, 0.72, 0.62][idx],
+                "EulerNumber_median": [1, 1, 0, -1][idx],
+                "EulerNumber_mean": [1, 1, 0, -1][idx],
+                "EulerNumber_min": [1, 1, -1, -2][idx],
+                "EulerHoleCount_sum": [0, 0, 2, 3][idx],
+                "TopologyType_droplet_count_fraction": [0.8, 0.7, 0.2, 0.1][idx],
+                "TopologyType_column_count_fraction": [0.1, 0.1, 0.3, 0.3][idx],
+                "TopologyType_cluster_count_fraction": [0.1, 0.2, 0.5, 0.6][idx],
+                "TopologyType_other_count_fraction": 0.0,
+                "TopologyType_droplet_area_fraction": [0.8, 0.7, 0.2, 0.1][idx],
+                "TopologyType_column_area_fraction": [0.1, 0.1, 0.3, 0.3][idx],
+                "TopologyType_cluster_area_fraction": [0.1, 0.2, 0.5, 0.6][idx],
+                "TopologyType_other_area_fraction": 0.0,
+                "ShapeEntropy_count": [0.2, 0.3, 0.8, 0.9][idx],
+                "ShapeEntropy_area": [0.2, 0.3, 0.8, 0.9][idx],
+            }
+        )
+    write_csv(mask_analysis_dir / "mask_stack_analysis_timeseries.csv", mask_rows)
+    write_csv(mask_analysis_dir / "blob_morphology_timeseries.csv", blob_rows)
+    write_csv(
+        mask_analysis_dir / "toa_x_summary.csv",
+        [
+            {
+                "x_px": 0,
+                "arrived_pixel_count": 4,
+                "arrived_fraction": 1,
+                "first_arrival_frame_index": 1,
+                "first_arrival_time_min": 0,
+                "p50_arrival_frame_index": 1,
+                "p90_arrival_frame_index": 1,
+            }
+        ],
+    )
+    summary = {
+        "status": "pass",
+        "readiness": {
+            "mask_stack_ready": True,
+            "toa_ready": True,
+            "mask_front_fingering_ready": True,
+            "blob_detail_distribution_ready": True,
+        },
+    }
+    (mask_analysis_dir / "mask_stack_analysis_summary.json").write_text(
         json.dumps(summary),
         encoding="utf-8",
     )
